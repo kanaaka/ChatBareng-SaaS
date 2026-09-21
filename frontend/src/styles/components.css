@@ -1,0 +1,690 @@
+/* ==========================================================================
+   v0.9.0 — components.css · M3 utility classes (dipakai lintas halaman)
+   Semua warna/radius/shadow lewat token — TANPA hex hardcoded di komponen.
+   Import oleh style.css setelah tokens.css.
+   ========================================================================== */
+
+/* ── Base: font + warna token untuk body & elemen umum ── */
+body {
+  font-family: var(--md-sys-font-family);
+  background: var(--md-sys-color-surface-container-low, #f7f2fa);
+  color: var(--md-sys-color-on-surface, #1d1b20);
+}
+
+/* Elevation helpers */
+.elev-1 { box-shadow: var(--md-sys-elevation-1); }
+.elev-2 { box-shadow: var(--md-sys-elevation-2); }
+.elev-3 { box-shadow: var(--md-sys-elevation-3); }
+
+/* Focus ring jelas (aksesibilitas, spec §6) */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: var(--md-sys-focus-ring);
+  outline-offset: 2px;
+}
+
+/* ── Legacy alias (compat shim v0.1.x–v0.8.x → token M3) ──────────────
+   Kelas Tailwind lama dipetakan ke token supaya halaman yang belum dirombak
+   tetap koheren; halaman yang sudah di-reskin memakai kelas m3-* baru. */
+.bg-wa-dark { background-color: var(--wa-legacy-dark) !important; } /* v0.9.1: dulu surface-container-lowest (near-white di light mode) — bikin tombol bg-wa-dark text-white invisible (laporan Kanaka: Import CSV) */
+.text-wa-dark { color: var(--md-sys-color-on-surface) !important; }
+.bg-wa-green { background-color: var(--md-sys-color-primary) !important; }
+.text-wa-green { color: var(--md-sys-color-primary) !important; }
+.bg-wa-light { background-color: var(--md-sys-color-secondary-container) !important; }
+.ring-wa-green { --tw-ring-color: var(--md-sys-color-primary) !important; }
+.border-wa-green { border-color: var(--md-sys-color-primary) !important; }
+.hover\:bg-green-600:hover { background-color: var(--md-sys-color-primary-hover) !important; }
+.hover\:text-wa-green:hover { color: var(--md-sys-color-primary) !important; }
+.active\:text-wa-dark:active { color: var(--md-sys-color-on-surface) !important; }
+.accent-wa-green { accent-color: var(--md-sys-color-primary) !important; }
+.hover\:bg-gray-50:hover { background-color: var(--md-sys-color-surface-container-low) !important; }
+.hover\:bg-gray-100:hover { background-color: var(--md-sys-color-surface-container) !important; }
+.hover\:bg-gray-200:hover { background-color: var(--md-sys-color-surface-container-high) !important; }
+.hover\:bg-orange-50:hover, .hover\:bg-green-50:hover, .hover\:bg-blue-50:hover, .hover\:bg-yellow-50:hover {
+  background-color: var(--md-sys-color-surface-container) !important;
+}
+
+/* Surface tints: warna netral → token M3 (menggantikan kelabu/putih mentah) */
+.bg-white { background-color: var(--md-sys-color-surface-container-lowest) !important; }
+.bg-gray-50 { background-color: var(--md-sys-color-surface-container-low) !important; }
+.bg-gray-100 { background-color: var(--md-sys-color-surface-container) !important; }
+.bg-gray-200 { background-color: var(--md-sys-color-surface-container-high) !important; }
+.bg-gray-300 { background-color: var(--md-sys-color-surface-container-highest) !important; }
+.bg-gray-800 { background-color: var(--md-sys-color-inverse-surface) !important; }
+.border-gray-100 { border-color: var(--md-sys-color-surface-container-high) !important; }
+.border-gray-200 { border-color: var(--md-sys-color-outline-variant) !important; }
+.border-gray-300 { border-color: var(--md-sys-color-outline) !important; }
+.border-gray-400 { border-color: var(--md-sys-color-outline) !important; }
+.divide-gray-100 > :not([hidden]) ~ :not([hidden]) { border-color: var(--md-sys-color-surface-container-high) !important; }
+.divide-gray-200 > :not([hidden]) ~ :not([hidden]) { border-color: var(--md-sys-color-outline-variant) !important; }
+.text-gray-300 { color: var(--md-sys-color-outline-variant) !important; }
+.text-gray-400 { color: var(--md-sys-color-outline) !important; }
+.text-gray-500 { color: var(--md-sys-color-on-surface-variant) !important; }
+.text-gray-600 { color: var(--md-sys-color-on-surface-variant) !important; }
+.text-gray-700 { color: var(--md-sys-color-on-surface) !important; }
+.text-gray-800 { color: var(--md-sys-color-on-surface) !important; }
+.text-gray-900 { color: var(--md-sys-color-on-surface) !important; }
+.text-gray-900\/50, .text-gray-900\/60 { color: var(--md-sys-color-on-surface-variant) !important; }
+
+/* Semantic: hijau → success/primary; merah → error; kuning/amber → warning; biru → info */
+.bg-green-50 { background-color: var(--md-sys-color-success-container) !important; }
+.bg-green-100 { background-color: var(--md-sys-color-success-container) !important; }
+.bg-green-600 { background-color: var(--md-sys-color-primary) !important; }
+.bg-green-500 { background-color: var(--md-sys-color-primary) !important; }
+.bg-green-700 { background-color: var(--md-sys-color-primary-active) !important; }
+.text-green-500 { color: var(--md-sys-color-success) !important; }
+.text-green-600 { color: var(--md-sys-color-success) !important; }
+.text-green-700 { color: var(--md-sys-color-success) !important; }
+.text-green-800 { color: var(--md-sys-color-success) !important; }
+.border-green-200, .border-green-300 { border-color: var(--md-sys-color-success) !important; }
+.bg-red-50 { background-color: var(--md-sys-color-error-container) !important; }
+.bg-red-100 { background-color: var(--md-sys-color-error-container) !important; }
+.bg-red-200 { background-color: var(--md-sys-color-error-container) !important; }
+.bg-red-500 { background-color: var(--md-sys-color-error) !important; }
+.bg-red-600 { background-color: var(--md-sys-color-error) !important; }
+.bg-red-700 { background-color: var(--md-sys-color-error) !important; }
+.text-red-400 { color: var(--md-sys-color-error) !important; }
+.text-red-500 { color: var(--md-sys-color-error) !important; }
+.text-red-600 { color: var(--md-sys-color-error) !important; }
+.text-red-700 { color: var(--md-sys-color-error) !important; }
+.border-red-200, .border-red-300 { border-color: var(--md-sys-color-error) !important; }
+.bg-blue-50 { background-color: var(--md-sys-color-info-container) !important; }
+.bg-blue-100 { background-color: var(--md-sys-color-info-container) !important; }
+.bg-blue-200 { background-color: var(--md-sys-color-info-container) !important; }
+.bg-blue-500 { background-color: var(--md-sys-color-info) !important; }
+.text-blue-500 { color: var(--md-sys-color-info) !important; }
+.text-blue-600 { color: var(--md-sys-color-info) !important; }
+.text-blue-700 { color: var(--md-sys-color-info) !important; }
+.bg-yellow-50 { background-color: var(--md-sys-color-warning-container) !important; }
+.bg-yellow-100 { background-color: var(--md-sys-color-warning-container) !important; }
+.bg-yellow-500 { background-color: var(--md-sys-color-warning) !important; }
+.bg-yellow-600 { background-color: var(--md-sys-color-warning) !important; }
+.text-yellow-500 { color: var(--md-sys-color-warning) !important; }
+.text-yellow-700 { color: var(--md-sys-color-warning) !important; }
+.text-yellow-800 { color: var(--md-sys-color-warning) !important; }
+.border-yellow-300 { border-color: var(--md-sys-color-warning) !important; }
+.bg-amber-50 { background-color: var(--md-sys-color-warning-container) !important; }
+.bg-amber-100 { background-color: var(--md-sys-color-warning-container) !important; }
+.text-amber-600 { color: var(--md-sys-color-warning) !important; }
+.text-amber-700 { color: var(--md-sys-color-warning) !important; }
+.border-amber-200 { border-color: var(--md-sys-color-warning) !important; }
+.border-amber-400 { border-color: var(--md-sys-color-warning) !important; }
+.bg-orange-50 { background-color: var(--md-sys-color-warning-container) !important; }
+.bg-orange-500 { background-color: var(--md-sys-color-warning) !important; }
+.bg-orange-600 { background-color: var(--md-sys-color-warning) !important; }
+.text-orange-600 { color: var(--md-sys-color-warning) !important; }
+.bg-purple-100 { background-color: var(--md-sys-color-primary-container) !important; }
+.text-purple-700 { color: var(--md-sys-color-primary) !important; }
+.bg-emerald-600 { background-color: var(--md-sys-color-primary) !important; }
+.text-emerald-600 { color: var(--md-sys-color-success) !important; }
+.ring-green-500 { --tw-ring-color: var(--md-sys-color-primary) !important; }
+.accent-green-600 { accent-color: var(--md-sys-color-primary) !important; }
+.bg-teal-700 { background-color: var(--md-sys-color-primary-container) !important; }
+
+/* Placeholder inputs ikut token */
+input::placeholder, textarea::placeholder { color: var(--md-sys-color-outline); opacity: 1; }
+
+/* Scrollbar pakai token */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--md-sys-color-outline-variant); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--md-sys-color-outline); }
+
+/* ── Reduced motion (aksesibilitas) ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}
+
+/* ==========================================================================
+   M3 component classes — dipakai komponen manual + halaman yang di-reskin
+   ========================================================================== */
+
+/* Buttons */
+.m3-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  border-radius: var(--md-sys-shape-corner-full);
+  font: var(--md-sys-typescale-label-large);
+  padding: 10px 24px; min-height: 40px;
+  cursor: pointer; border: none; position: relative; overflow: hidden;
+  transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+              box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+.m3-btn:disabled { opacity: 0.38; cursor: not-allowed; }
+.m3-btn--filled { background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); }
+.m3-btn--filled:hover:not(:disabled) { background: var(--md-sys-color-primary-hover); box-shadow: var(--md-sys-elevation-1); }
+.m3-btn--filled:active:not(:disabled) { background: var(--md-sys-color-primary-active); box-shadow: none; }
+.m3-btn--tonal { background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); }
+.m3-btn--tonal:hover:not(:disabled) { background: color-mix(in srgb, var(--md-sys-color-secondary-container) 92%, var(--md-sys-color-on-secondary-container)); box-shadow: var(--md-sys-elevation-1); }
+.m3-btn--outlined { background: transparent; color: var(--md-sys-color-primary); border: 1px solid var(--md-sys-color-outline); }
+.m3-btn--outlined:hover:not(:disabled) { background: var(--md-sys-color-primary-hover); }
+.m3-btn--text { background: transparent; color: var(--md-sys-color-primary); padding: 10px 12px; }
+.m3-btn--text:hover:not(:disabled) { background: var(--md-sys-color-primary-hover); }
+/* Ripple halus (radial, tanpa JS) */
+.m3-btn::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  background: radial-gradient(circle at center, currentColor 0%, transparent 70%);
+  opacity: 0; transition: opacity var(--md-sys-motion-duration-short) linear; pointer-events: none;
+}
+.m3-btn:active::after { opacity: 0.12; }
+
+/* Cards */
+.m3-card {
+  background: var(--md-sys-color-surface-container-lowest);
+  border-radius: var(--md-sys-shape-corner-m);
+  border: 1px solid var(--md-sys-color-outline-variant);
+}
+.m3-card--elevated { border: none; box-shadow: var(--md-sys-elevation-1); }
+.m3-card--filled { background: var(--md-sys-color-surface-container-high); border: none; }
+
+/* Chips (filter) */
+.m3-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border-radius: var(--md-sys-shape-corner-full);
+  padding: 6px 16px; min-height: 32px;
+  font: var(--md-sys-typescale-label-large);
+  border: 1px solid var(--md-sys-color-outline);
+  background: transparent; color: var(--md-sys-color-on-surface-variant);
+  cursor: pointer; white-space: nowrap; flex-shrink: 0;
+  transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.m3-chip--selected {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  border-color: transparent;
+}
+
+/* Dialog M3 */
+.m3-dialog-backdrop {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.m3-dialog {
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+  border-radius: var(--md-sys-shape-corner-xl);
+  box-shadow: var(--md-sys-elevation-3);
+  width: 100%; max-width: 360px; padding: 24px;
+}
+.m3-dialog__headline { font: var(--md-sys-typescale-headline-small); margin-bottom: 16px; }
+.m3-dialog__body { font: var(--md-sys-typescale-body-medium); color: var(--md-sys-color-on-surface-variant); margin-bottom: 24px; white-space: pre-line; }
+.m3-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* Snackbar */
+.m3-snackbar {
+  background: var(--md-sys-color-inverse-surface);
+  color: var(--md-sys-color-inverse-on-surface);
+  border-radius: var(--md-sys-shape-corner-s);
+  box-shadow: var(--md-sys-elevation-3);
+}
+
+/* Text field outlined M3 — legacy util (semua form baru pakai <M3TextField>) */
+.m3-field { position: relative; }
+.m3-field__input {
+  width: 100%;
+  font: var(--md-sys-typescale-body-large);
+  color: var(--md-sys-color-on-surface);
+  background: transparent;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-s);
+  padding: 16px; min-height: 48px;
+  transition: border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.m3-field__input:focus { border-color: var(--md-sys-color-primary); outline: none; }
+.m3-field__label {
+  position: absolute; left: 12px; top: 14px;
+  font: var(--md-sys-typescale-body-large);
+  color: var(--md-sys-color-on-surface-variant);
+  /* notch background = surface-container-lowest (sama dengan bg kartu/form side,
+     light & dark) — var, bukan inline style → ikut pergantian tema live */
+  background: var(--md-sys-color-surface-container-lowest);
+  padding: 0 4px; pointer-events: none;
+  transition: all var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.m3-field__input:focus + .m3-field__label,
+.m3-field__input:not(:placeholder-shown) + .m3-field__label {
+  top: -8px; font: var(--md-sys-typescale-label-medium); color: var(--md-sys-color-primary);
+}
+
+/* ── M3TextField (komponen) — v0.9.0-r2 audit fix #1: floating label outlined ──
+   Label: rest di dalam field → float ke notch di atas stroke saat focus/ada isi
+   (M3 spec). Stroke tebal 1px → 2px saat fokus (indentasi 1px, gap notch otomatis
+   dari background label). Token murni — dark mode & accent runtime ikut otomatis. */
+.m3-text-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+.m3-text-field__leading {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center;
+  color: var(--md-sys-color-on-surface-variant);
+  pointer-events: none; z-index: 1;
+}
+.m3-text-field__input {
+  width: 100%;
+  font: var(--md-sys-typescale-body-large);
+  color: var(--md-sys-color-on-surface);
+  background: transparent;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-s);
+  padding: 16px;
+  min-height: 48px;
+  caret-color: var(--md-sys-color-primary);
+  transition: border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.m3-text-field--with-leading .m3-text-field__input { padding-left: 44px; }
+.m3-text-field__input:focus {
+  border-color: var(--md-sys-color-primary); outline: none;
+  box-shadow: inset 0 0 0 1px var(--md-sys-color-primary);
+}
+.m3-text-field__label {
+  position: absolute; left: 16px; top: 14px;
+  font: var(--md-sys-typescale-body-large);
+  color: var(--md-sys-color-on-surface-variant);
+  /* notch = permukaan container field (card/form di mana field itu berada);
+     via var supaya ikut tema live & accent runtime */
+  background: var(--md-sys-color-surface-container-lowest);
+  padding: 0 4px; pointer-events: none;
+  transition: all var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.m3-text-field__input:focus ~ .m3-text-field__label,
+.m3-text-field__input:not(:placeholder-shown) ~ .m3-text-field__label {
+  top: -8px; font: var(--md-sys-typescale-label-medium); color: var(--md-sys-color-primary);
+}
+/* Ikon leading geser bareng label saat float (notch mulai setelah ikon) */
+.m3-text-field--with-leading .m3-text-field__label { left: 44px; }
+.m3-text-field--with-leading .m3-text-field__input:focus ~ .m3-text-field__label,
+.m3-text-field--with-leading .m3-text-field__input:not(:placeholder-shown) ~ .m3-text-field__label {
+  left: 12px;
+}
+/* Disabled (M3: on-surface 38%) */
+.m3-text-field__input:disabled {
+  color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
+  border-color: color-mix(in srgb, var(--md-sys-color-on-surface) 12%, transparent);
+}
+
+/* Switch M3 */
+.m3-switch {
+  position: relative; width: 52px; height: 32px; border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-highest);
+  border: 2px solid var(--md-sys-color-outline);
+  cursor: pointer; transition: all var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+  flex-shrink: 0;
+}
+.m3-switch[aria-checked="true"] {
+  background: var(--md-sys-color-primary); border-color: var(--md-sys-color-primary);
+}
+.m3-switch__thumb {
+  position: absolute; top: 50%; left: 4px; transform: translateY(-50%);
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--md-sys-color-outline);
+  transition: all var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.m3-switch[aria-checked="true"] .m3-switch__thumb {
+  left: 24px; width: 24px; height: 24px; background: var(--md-sys-color-on-primary);
+}
+
+/* Checkbox M3 */
+.m3-checkbox {
+  width: 18px; height: 18px; border-radius: 2px;
+  border: 2px solid var(--md-sys-color-on-surface-variant);
+  accent-color: var(--md-sys-color-primary);
+  cursor: pointer; flex-shrink: 0;
+}
+
+/* Menu (dropdown) M3 */
+.m3-menu {
+  background: var(--md-sys-color-surface-container);
+  color: var(--md-sys-color-on-surface);
+  border-radius: var(--md-sys-shape-corner-s);
+  box-shadow: var(--md-sys-elevation-2);
+  min-width: 180px; padding: 8px 0;
+}
+.m3-menu__item {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 10px 16px; text-align: left;
+  font: var(--md-sys-typescale-label-large); color: inherit;
+  cursor: pointer; border: none; background: transparent;
+  min-height: 44px;
+  transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.m3-menu__item:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent); }
+.m3-menu__item:disabled { opacity: 0.38; cursor: not-allowed; }
+
+/* List item M3 */
+.m3-list-item {
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 16px; min-height: 56px; width: 100%;
+  background: transparent; border: none; text-align: left;
+  color: var(--md-sys-color-on-surface);
+  cursor: pointer;
+  transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.m3-list-item:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, transparent); }
+.m3-list-item--active { background: var(--md-sys-color-secondary-container); }
+
+/* Badge */
+.m3-badge {
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-error); color: var(--md-sys-color-on-error);
+  font: var(--md-sys-typescale-label-small);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.m3-badge--dot { width: 8px; height: 8px; min-width: 0; padding: 0; }
+
+/* Progress linear M3 */
+.m3-progress {
+  width: 100%; height: 6px; border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-high);
+  overflow: hidden;
+}
+.m3-progress__bar {
+  height: 100%; border-radius: inherit;
+  background: var(--md-sys-color-primary);
+  transition: width var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard);
+}
+.m3-progress--indeterminate .m3-progress__bar {
+  width: 40% !important;
+  animation: m3-progress-slide 1.2s ease-in-out infinite;
+}
+@keyframes m3-progress-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
+/* Kebab/menu icon button */
+.m3-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; border-radius: 50%;
+  background: transparent; border: none; cursor: pointer;
+  color: var(--md-sys-color-on-surface-variant);
+  transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.m3-icon-btn:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent); }
+
+/* Top bar (desktop & mobile headers) */
+.m3-topbar {
+  background: var(--md-sys-color-surface-container-lowest);
+  color: var(--md-sys-color-on-surface);
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+.m3-topbar__link { color: var(--md-sys-color-on-surface-variant); border-radius: var(--md-sys-shape-corner-s); padding: 6px 10px; transition: background-color var(--md-sys-motion-duration-short) linear; }
+.m3-topbar__link:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent); }
+/* Mobile: touch target ≥44px (spec §6) — expand hit area tanpa mengubah visual */
+@media (max-width: 767px) {
+  .m3-topbar__link { position: relative; }
+  .m3-topbar__link::before { content: ''; position: absolute; inset: -6px -4px; }
+}
+
+/* v0.13.5 — tinggi topbar DESKTOP seragam (laporan Kanaka 09:40): sebelumnya
+   tinggi mengikuti konten — Dashboard (logo + chip status + tombol tema 44px)
+   ≈68px, halaman lain (link teks) ≈52px → naik-turun antar halaman. min-height
+   menyamakan SEMUA ke tinggi Dashboard (yang dianggap paling rapi/modern).
+   Mobile topbar TIDAK tersentuh (punya padding safe-area sendiri). */
+@media (min-width: 768px) {
+  .m3-topbar { min-height: 68px; }
+}
+
+/* v0.13.5 — Homerow indikator aktif: pill aksen M3 di belakang ikon item aktif
+   (secondary-container; ikon aktif sudah primary via text-wa-green). Absolute-
+   centered + z-index:-1 (nav fixed z-40 = stacking context → pill di atas bg
+   nav, di bawah svg & badge) — layout & tinggi homerow TIDAK berubah. */
+.homerow-icon-pill {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 52px;
+  height: 28px;
+  border-radius: 9999px;
+  background: var(--md-sys-color-secondary-container);
+  z-index: -1;
+  animation: homerow-pill-in 180ms var(--md-sys-motion-easing-standard, ease);
+}
+@keyframes homerow-pill-in {
+  from { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }
+  to { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+
+/* Theme toggle 3-segmen (Pengaturan) */
+.m3-theme-toggle {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-full);
+  overflow: hidden; width: 100%; max-width: 360px;
+}
+.m3-theme-toggle__opt {
+  padding: 10px 8px; min-height: 44px;
+  font: var(--md-sys-typescale-label-large);
+  background: transparent; border: none; cursor: pointer;
+  color: var(--md-sys-color-on-surface-variant);
+  transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.m3-theme-toggle__opt[aria-pressed="true"] {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+/* Wordmark ChatBareng (Roboto 800 — TANPA logo gambar, spec §5b) */
+.m3-wordmark {
+  font-family: var(--md-sys-font-family);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* ==========================================================================
+   v0.13.6 — Admin shell desktop (sidebar + settings search) — DESKTOP-ONLY
+   Semua kelas di bawah HANYA aktif ≥768px (media query) → mobile <768px
+   100% unchanged (regression gate #1 spec v0.13.6). Warna murni token M3
+   → dark mode + accent runtime ikut otomatis. Homerow/topbar tak tersentuh.
+   ========================================================================== */
+@media (min-width: 768px) {
+  /* v0.13.6 r3 (lapor Kanaka 11:29): akar bug sticky = overflow-x-hidden di root
+     (ancestor dgn overflow hidden mem-break position:sticky — sidebar kegulung
+     saat konten panjang, mis. Menu Gateway). Fix ala Windows Settings: baris shell
+     setinggi viewport + overflow hidden (halaman TIDAK scroll) → panel kanan yang
+     scroll INTERNAL → sidebar permanen terlihat; topbar modul sticky di dalam panel. */
+  .admin-shell-row { height: 100vh; overflow: hidden; }
+  /* Sidebar kiri shell /admin — surface-container (M3 nav surface) */
+  .admin-sidebar {
+    width: 280px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    background: var(--md-sys-color-surface-container);
+    color: var(--md-sys-color-on-surface);
+    border-right: 1px solid var(--md-sys-color-outline-variant);
+  }
+
+  /* Brand "← Dashboard" di atas sidebar (ala Windows) */
+  .admin-sidebar__brand {
+    display: inline-flex; align-items: center; gap: 8px;
+    min-height: 40px; padding: 6px 12px;
+    border-radius: var(--md-sys-shape-corner-full);
+    font: var(--md-sys-typescale-label-large);
+    color: var(--md-sys-color-on-surface-variant);
+    text-decoration: none;
+    transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+  }
+  .admin-sidebar__brand:hover {
+    background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+  }
+
+  /* Item modul: ikon + label + deskripsi pendek */
+  .admin-sidebar__item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px; border-radius: var(--md-sys-shape-corner-full);
+    min-height: 56px; margin-bottom: 2px;
+    color: var(--md-sys-color-on-surface);
+    text-decoration: none;
+    transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+  }
+  .admin-sidebar__item:hover {
+    background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+  }
+  .admin-sidebar__item--active {
+    background: var(--md-sys-color-secondary-container);
+    color: var(--md-sys-color-primary);
+  }
+  .admin-sidebar__item--active:hover {
+    background: color-mix(in srgb, var(--md-sys-color-secondary-container) 92%, var(--md-sys-color-on-secondary-container));
+  }
+  .admin-sidebar__item-icon {
+    font-size: 20px; width: 28px; text-align: center; flex-shrink: 0;
+  }
+  .admin-sidebar__item-main { display: flex; flex-direction: column; min-width: 0; }
+  .admin-sidebar__item-label {
+    font: var(--md-sys-typescale-label-large);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .admin-sidebar__item-desc {
+    font: var(--md-sys-typescale-body-small);
+    color: var(--md-sys-color-on-surface-variant);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .admin-sidebar__item--active .admin-sidebar__item-desc {
+    color: var(--md-sys-color-primary);
+    opacity: 0.8;
+  }
+
+  /* Panel konten kanan — view admin existing dirender utuh di dalamnya.
+     r3: INI yang scroll (internal), bukan halaman → sidebar/topbar gak tergulung. */
+  .admin-content {
+    background: var(--md-sys-color-surface-container-low, #f7f2fa);
+    height: 100vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  /* r4 (lapor Kanaka 11:36): PageShell di dalam panel punya overflow-x-hidden —
+     per spec CSS overflow-x:hidden memaksa overflow-y:auto → PageShell jadi
+     scroll-container pasif → sticky topbar nyantol ke PageShell (yang tak pernah
+     scroll) → header ikut tergulung. Netralkan: .admin-content sudah memotong
+     horizontal, inner harus visible agar sticky bekerja (mobile tak tersentuh). */
+  .admin-content > .overflow-x-hidden { overflow-x: visible; }
+
+  /* r3 — topbar modul (back + judul) sticky di dalam panel: tetap terlihat
+     saat konten panjang ke-scroll (Menu Gateway dsb). Token M3 — dark mode ikut. */
+  .admin-content .m3-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+
+  /* ── B — Settings search (di atas sidebar) ── */
+  .admin-search__input {
+    width: 100%; min-height: 44px; padding: 8px 12px 8px 38px;
+    font: var(--md-sys-typescale-body-large);
+    color: var(--md-sys-color-on-surface);
+    background: var(--md-sys-color-surface-container-highest);
+    border: 1px solid transparent;
+    border-radius: var(--md-sys-shape-corner-full);
+    caret-color: var(--md-sys-color-primary);
+    transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+                border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+  }
+  .admin-search__input::placeholder { color: var(--md-sys-color-outline); }
+  .admin-search__input:focus {
+    outline: none;
+    background: var(--md-sys-color-surface-container-lowest);
+    border-color: var(--md-sys-color-primary);
+  }
+  /* Ikon kaca pembesar di kiri input (pseudo — tanpa elemen tambahan) */
+  .admin-search::before {
+    content: '';
+    position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+    width: 16px; height: 16px;
+    border: 2px solid var(--md-sys-color-on-surface-variant);
+    border-radius: 50%;
+    pointer-events: none;
+  }
+  .admin-search::after {
+    content: '';
+    position: absolute; left: 26px; top: calc(50% + 7px);
+    width: 7px; height: 2px;
+    background: var(--md-sys-color-on-surface-variant);
+    border-radius: 1px;
+    transform: rotate(45deg);
+    pointer-events: none;
+  }
+  .admin-search__dropdown {
+    position: absolute; left: 0; right: 0; top: calc(100% + 4px);
+    z-index: 45;
+    background: var(--md-sys-color-surface-container);
+    color: var(--md-sys-color-on-surface);
+    border-radius: var(--md-sys-shape-corner-m);
+    box-shadow: var(--md-sys-elevation-2);
+    padding: 8px 0;
+    max-height: 320px; overflow-y: auto;
+  }
+  .admin-search__item {
+    display: flex; align-items: center; gap: 12px;
+    width: calc(100% - 8px); margin: 0 4px;
+    padding: 8px 12px; min-height: 52px;
+    text-align: left; border: none; background: transparent;
+    color: var(--md-sys-color-on-surface);
+    border-radius: var(--md-sys-shape-corner-s);
+    cursor: pointer;
+    transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+  }
+  .admin-search__item:hover,
+  .admin-search__item--active {
+    background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+  }
+  .admin-search__item-icon { font-size: 18px; width: 24px; text-align: center; flex-shrink: 0; }
+  .admin-search__item-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .admin-search__item-label { font: var(--md-sys-typescale-body-large); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .admin-search__item-hint {
+    font: var(--md-sys-typescale-body-small);
+    color: var(--md-sys-color-on-surface-variant);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .admin-search__item-enter { color: var(--md-sys-color-outline); font-size: 12px; flex-shrink: 0; }
+  .admin-search__empty { padding: 16px; text-align: center; font: var(--md-sys-typescale-body-medium); color: var(--md-sys-color-on-surface-variant); }
+  .admin-search__empty-hint { display: block; margin-top: 4px; font: var(--md-sys-typescale-body-small); color: var(--md-sys-color-outline); }
+}
+/* ==========================================================================
+   v0.13.6 r6 — Search pill ala admin sidebar (request Kanaka 11:51):
+   konsistensi M3 Expressive — dipakai di chat list. TIDAK dalam media query
+   desktop (chat list dipakai mobile + desktop). Token M3 → dark mode + accent
+   runtime ikut otomatis. Visual identik .admin-search (pill, icon pseudo).
+   ========================================================================== */
+.chat-search { position: relative; }
+.chat-search__input {
+  width: 100%; min-height: 44px; padding: 8px 12px 8px 38px;
+  font: var(--md-sys-typescale-body-large);
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container-highest);
+  border: 1px solid transparent;
+  border-radius: var(--md-sys-shape-corner-full);
+  caret-color: var(--md-sys-color-primary);
+  transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+              border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.chat-search__input::placeholder { color: var(--md-sys-color-outline); }
+.chat-search__input:focus {
+  outline: none;
+  background: var(--md-sys-color-surface-container-lowest);
+  border-color: var(--md-sys-color-primary);
+}
+/* Ikon kaca pembesar di kiri input (pseudo — sama persis dgn admin-search) */
+.chat-search::before {
+  content: '';
+  position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+  width: 16px; height: 16px;
+  border: 2px solid var(--md-sys-color-on-surface-variant);
+  border-radius: 50%;
+  pointer-events: none;
+}
+.chat-search::after {
+  content: '';
+  position: absolute; left: 26px; top: calc(50% + 7px);
+  width: 7px; height: 2px;
+  background: var(--md-sys-color-on-surface-variant);
+  border-radius: 1px;
+  transform: rotate(45deg);
+  pointer-events: none;
+}

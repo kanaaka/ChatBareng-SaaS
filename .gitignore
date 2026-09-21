@@ -1,0 +1,12 @@
+node_modules/
+data/
+public/
+.env
+*.log
+frontend/node_modules/
+# v0.4.0 — asset statis frontend (sw.js, manifest, icons) harus ter-commit;
+# root public/ tetap di-ignore (hasil build vite).
+!frontend/public/
+!frontend/public/**
+# v0.14.2 — snapshot public sebelum build (ops-cleanup, jangan ke-commit)
+public-pre-build-*/

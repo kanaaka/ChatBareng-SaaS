@@ -1,0 +1,1361 @@
+const express = require('express')
+const router = express.Router()
+const multer = require('multer')
+const prisma = require('../prisma')
+const config = require('../config')
+const { requireAuth, requireTenant } = require('../auth')
+const { replyValidation } = require('../utils/validation')
+const wa = require('../wa/pool')
+const broadcast = require('../socket/broadcast')
+const queue = require('../socket/queue')
+const presence = require('../socket/presence')
+const push = require('../push')
+const { saveMedia, loadMedia } = require('../wa/media')
+// v0.11.0 — enkripsi at-rest isi pesan (AES-256-GCM via textCrypto)
+const { encryptText, decryptTextSafe, decryptText } = require('../services/textCrypto')
+// v0.10.0 — CSAT + rate limit catatan internal
+const csat = require('../services/csat')
+// v0.12.9 — Read receipts (blue tick, gate AppConfig admin default OFF)
+const receipts = require('../services/receipts')
+
+// v3.0 — Isolasi tenant: SEMUA endpoint chats = tenant-scoped.
+const rt = [requireAuth, requireTenant]
+
+// v0.10.0 — Rate limit sederhana 1 note / 5 detik / user (in-memory)
+const noteLastAt = new Map() // userId → timestamp ms
+function assertNoteRate(user) {
+  const last = noteLastAt.get(user.id) || 0
+  if (Date.now() - last < 5000) {
+    return false
+  }
+  return true
+}
+function markNoteRate(user) {
+  noteLastAt.set(user.id, Date.now())
+}
+
+// Multer for media uploads (in-memory, limits from config)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: config.maxMediaSizeMb * 1024 * 1024 },
+})
+
+// ─── v0.11.0 — Helpers enkripsi at-rest ───────────────────────────────
+// Dekrip isi pesan utk response API. Legacy plaintext (tanpa prefix) → apa adanya.
+// Error dekrip (kunci ganti/korup) → placeholder, TIDAK crash response.
+function decContent(stored) {
+  return decryptTextSafe(stored)
+}
+
+// Dekrip preview di object chat (single / list / nested) untuk response API
+function decChatPreview(chat) {
+  if (!chat || typeof chat !== 'object') return chat
+  if (chat.lastMessagePreview != null) {
+    chat.lastMessagePreview = decryptTextSafe(chat.lastMessagePreview)
+  }
+  return chat
+}
+
+// Dekrip array messages in-place (response GET messages/detail/search/favorites)
+function decMessagesInPlace(messages) {
+  for (const m of messages || []) {
+    if (m && m.content != null) m.content = decryptTextSafe(m.content)
+  }
+  return messages
+}
+
+// ─── v0.1.21 — Queue discipline helpers ─────────────────────────
+
+// Reply lock TOTAL: chat belum di-Take (assignedToId null) → 403, BERLAKU JUGA UNTUK ADMIN.
+// Return true kalau boleh lanjut kirim.
+function assertTaken(chat, res) {
+  if (chat.assignedToId === null) {
+    res.status(403).json({ error: 'Chat belum di-Take. Ambil chat dulu sebelum membalas.' })
+    return false
+  }
+  return true
+}
+
+// Akses detail chat: admin, pemilik yang open, atau yang resolve (resolvedById=me).
+function canAccessChat(user, chat) {
+  if (user.role === 'admin') return true
+  if (chat.assignedToId === user.id && chat.status === 'open') return true
+  if (chat.resolvedById === user.id) return true
+  return false
+}
+
+function accessDenied(res) {
+  return res.status(403).json({ error: 'Anda tidak memiliki akses ke chat ini' })
+}
+
+// GET /api/chats - list chats
+router.get('/', ...rt, async (req, res) => {
+  try {
+    const filter = req.query.filter || 'all' // mine | unassigned | all | resolved
+    const where = { tenantId: req.tenantId }
+
+    // v0.14.0 — Manajemen Grup: grup @g.us tidak pernah bocor ke list chat 1:1.
+    // Grup punya endpoint sendiri (GET /api/groups).
+    // v0.14.9 — BUGFIX NULL trap: `{ phoneJid: { not: endsWith } }` TIDAK match
+    // row phoneJid NULL → chat @lid (era LID WA modern) hilang dari SEMUA tab
+    // list, padahal queue-count menghitungnya → banner "3 chat di antrean"
+    // tapi tab Unassigned kosong. Jebakan yang sama kayak menuState v0.13.3;
+    // asumsi lama "row NULL tetap muncul" terbukti salah (SQLite 3-valued
+    // logic: NULL NOT LIKE '%@g.us' → NULL → row dibuang). Fix: null-escape
+    // eksplisit via OR + guard id-based (id primary key selalu terisi → NOT
+    // bebas jebakan NULL) supaya grup dengan phoneJid NULL pun tetap
+    // terkecualikan. Ditaruh di where.AND agar komposabel dengan blok
+    // menuState/tagIds di bawah (keduanya append ke where.AND).
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : []),
+      { NOT: { waJid: { endsWith: '@g.us' } } },
+      { OR: [{ phoneJid: null }, { phoneJid: { not: { endsWith: '@g.us' } } }] },
+    ]
+
+    // v0.1.21 — Filter isolation: CS (non-admin) gak boleh lihat unassigned/all,
+    // resolved cuma milik sendiri.
+    if (req.user.role !== 'admin') {
+      if (filter === 'unassigned' || filter === 'all') {
+        return res.status(403).json({ error: 'Filter ini hanya untuk admin' })
+      }
+      if (filter === 'resolved') {
+        where.status = 'resolved'
+        where.resolvedById = req.user.id
+      }
+    } else {
+      if (filter === 'resolved') {
+        where.status = 'resolved'
+      }
+    }
+
+    if (filter === 'mine') {
+      where.assignedToId = req.user.id
+      where.status = 'open' // v0.1.21 — Mine = open + milikku (resolved keluar otomatis)
+    } else if (filter === 'unassigned') {
+      where.assignedToId = null
+      where.status = 'open'
+      // v0.13.3 — invariant §4.1: chat awaiting (limbo Menu Gateway) tidak tampil
+      // di list antrean dashboard. Jejak NULL Prisma: { not: 'awaiting' } TIDAK
+      // match row NULL → wajib OR eksplisit dgn menuState: null.
+      // Ditaruh sbg grup OR di dalam where.AND agar tidak tertimpa blok snooze
+      // (menulis where.OR) dan blok tagIds di bawah.
+      where.AND = [
+        ...(Array.isArray(where.AND) ? where.AND : []),
+        { OR: [{ menuState: null }, { menuState: { not: 'awaiting' } }] },
+      ]
+    } else if (filter === 'all' && req.user.role === 'admin') {
+      // admin: semua chat (no extra where)
+    } else if (filter === 'all') {
+      // CS fallback ke mine kalau somehow lolos — safety net
+      where.assignedToId = req.user.id
+      where.status = 'open'
+    }
+
+    // v0.10.0 — SNOOZE: chat aktif snoozed hilang dari SEMUA list utama;
+    // hanya tampil lewat ?snoozed=1 (chip khusus). queuedAt/assignment NIHIL berubah.
+    if (req.query.snoozed === '1') {
+      where.snoozedUntil = { not: null, gt: new Date() }
+    } else {
+      where.OR = [{ snoozedUntil: null }, { snoozedUntil: { lte: new Date() } }]
+    }
+
+    // Filter by tags (AND logic - chat must have ALL selected tags)
+    const tagIdsRaw = req.query.tagIds
+    if (tagIdsRaw) {
+      const tagIds = tagIdsRaw.split(',').map(id => parseInt(id, 10)).filter(id => !isNaN(id))
+      if (tagIds.length > 0) {
+        // v0.13.3 — append ke where.AND (bukan menimpa) karena blok unassigned di
+        // atas sudah memakai where.AND utk exclusion menuState awaiting.
+        where.AND = [
+          ...(Array.isArray(where.AND) ? where.AND : []),
+          ...tagIds.map(tagId => ({
+            tags: { some: { tagId } }
+          })),
+        ]
+      }
+    }
+
+    // Filter by handler (assigned CS)
+    const handlerId = req.query.handlerId
+    if (handlerId) {
+      // v0.1.21 — CS gak bisa intip chat orang lain via handlerId
+      if (req.user.role !== 'admin') {
+        const hid = parseInt(handlerId, 10)
+        if (!isNaN(hid) && hid !== req.user.id) {
+          return res.status(403).json({ error: 'Anda hanya bisa melihat chat Anda sendiri' })
+        }
+      }
+      const hid = parseInt(handlerId, 10)
+      if (!isNaN(hid)) {
+        where.assignedToId = hid
+      }
+    }
+
+    // Filter by date range (lastMessageAt)
+    const dateFrom = req.query.dateFrom
+    const dateTo = req.query.dateTo
+    if (dateFrom || dateTo) {
+      where.lastMessageAt = where.lastMessageAt || {}
+      if (dateFrom) {
+        where.lastMessageAt.gte = new Date(dateFrom)
+      }
+      if (dateTo) {
+        // Include the full end day
+        const endDate = new Date(dateTo)
+        endDate.setHours(23, 59, 59, 999)
+        where.lastMessageAt.lte = endDate
+      }
+    }
+
+    // v0.1.22 — sembunyikan chat yang sudah tidak punya pesan aktif (habis di-purge)
+    where.messages = { some: { purged: false } }
+
+    const chats = await prisma.chat.findMany({
+      where,
+      orderBy: { lastMessageAt: 'desc' },
+      take: 100,
+      include: {
+        assignedTo: { select: { id: true, username: true } },
+        tags: { include: { tag: true } },
+      },
+    })
+
+    // DEBUG v0.11.0 (temporary)
+    console.log('[LIST-DEBUG] filter=', req.query.filter, '| role=', req.user.role, '| userId=', req.user.id)
+    // v0.11.0 — preview chat list dekrip on-the-fly (DB berisi ciphertext)
+    for (const c of chats) {
+      if (c.lastMessagePreview != null) c.lastMessagePreview = decryptTextSafe(c.lastMessagePreview)
+    }
+
+    res.json({ chats })
+  } catch (e) {
+    console.error('List chats error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/favorites — all favorited messages across all chats
+router.get('/favorites/all', ...rt, async (req, res) => {
+  try {
+    const favorites = await prisma.favoriteMessage.findMany({
+      where: { userId: req.user.id },
+      include: {
+        message: {
+          select: {
+            id: true, chatId: true, direction: true, content: true,
+            mediaType: true, mediaMime: true, senderName: true, senderId: true,
+            timestamp: true, status: true, purged: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+    // v0.11.0 — favorites panel: dekrip content on-the-fly
+    for (const f of favorites) {
+      if (f.message && f.message.content != null) f.message.content = decryptTextSafe(f.message.content)
+    }
+    res.json({ favorites })
+  } catch (e) {
+    console.error('List all favorites error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ─── v0.10.0 — SNOOZE CHAT (Fitur A) ─────────────────────────────────
+// POST /api/chats/:id/snooze { until: ISO } — assigned CS/admin
+router.post('/:id/snooze', ...rt, async (req, res) => {
+  try {
+    const chatId = req.params.id
+    const chat = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+
+    // Akses: assigned CS + admin (konsisten permission transfer/release/resolve)
+    if (chat.assignedToId !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only the assigned agent or admin can snooze this chat' })
+    }
+    if (chat.status === 'resolved') {
+      return res.status(400).json({ error: 'Chat sudah resolved — tidak bisa di-snooze' })
+    }
+
+    const until = new Date(req.body.until)
+    if (!req.body.until || isNaN(until.getTime())) {
+      return res.status(400).json({ error: 'Field `until` (ISO datetime) wajib dan valid' })
+    }
+    const now = new Date()
+    const maxSnooze = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000) // max 30 hari
+    if (until <= now) {
+      return res.status(400).json({ error: 'Waktu snooze harus di masa depan' })
+    }
+    if (until > maxSnooze) {
+      return res.status(400).json({ error: 'Snooze maksimal 30 hari' })
+    }
+
+    const updated = await prisma.chat.update({
+      where: { id: chat.id },
+      data: { snoozedUntil: until, snoozedBy: req.user.id },
+      include: { assignedTo: { select: { id: true, username: true } } },
+    })
+
+    broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: Number(chatId), snoozedUntil: until, snoozedBy: req.user.id })
+    console.log(`[Snooze] ${req.user.username} snooze chat ${chatId} sampai ${until.toISOString()}`)
+    res.json({ chat: updated })
+  } catch (e) {
+    console.error('Snooze error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// DELETE /api/chats/:id/snooze — cancel snooze manual (assigned CS/admin)
+router.delete('/:id/snooze', ...rt, async (req, res) => {
+  try {
+    const chatId = req.params.id
+    const chat = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+    if (chat.assignedToId !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only the assigned agent or admin can cancel snooze' })
+    }
+    if (!chat.snoozedUntil) return res.json({ chat, cancelled: false })
+
+    const updated = await prisma.chat.update({
+      where: { id: chat.id },
+      data: { snoozedUntil: null, snoozedBy: null },
+      include: { assignedTo: { select: { id: true, username: true } } },
+    })
+    broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: Number(chatId), snoozedUntil: null, snoozedBy: null })
+    res.json({ chat: updated, cancelled: true })
+  } catch (e) {
+    console.error('Snooze cancel error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ─── v0.10.0 — CATATAN INTERNAL (Fitur B) ──────────────────────────────
+// GET /api/chats/:id/notes — assigned CS/admin
+router.get('/:id/notes', ...rt, async (req, res) => {
+  try {
+    const chatId = req.params.id
+    const chat = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+    // Assigned CS + admin (sama dengan reply permission). Resolver tetap boleh lihat.
+    if (!canAccessChat(req.user, chat)) return accessDenied(res)
+
+    const notes = await prisma.chatNote.findMany({
+      where: { tenantId: req.tenantId, chatId: Number(chatId) },
+      include: { user: { select: { id: true, username: true, role: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    })
+    // v0.12.4 — enkripsi scope 2: body tersimpan ciphertext, API return plaintext
+    const notesPlain = notes.map(n => ({ ...n, body: decryptTextSafe(n.body) }))
+    res.json({ notes: notesPlain })
+  } catch (e) {
+    console.error('List notes error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/chats/:id/notes { body } — assigned CS/admin; rate 1 note/5s/user
+router.post('/:id/notes', ...rt, async (req, res) => {
+  try {
+    const chatId = req.params.id
+    const body = typeof req.body.body === 'string' ? req.body.body.trim() : ''
+    if (!body) return res.status(400).json({ error: 'Isi catatan tidak boleh kosong' })
+    if (body.length > 2000) return res.status(400).json({ error: 'Catatan maksimal 2000 karakter' })
+
+    const chat = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+    if (chat.assignedToId !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only the assigned agent or admin can add notes' })
+    }
+    if (!assertNoteRate(req.user)) {
+      return res.status(429).json({ error: 'Terlalu cepat — tunggu 5 detik antar catatan' })
+    }
+
+    const note = await prisma.chatNote.create({
+      data: { tenantId: req.tenantId, chatId: Number(chatId), userId: req.user.id, body: encryptText(body) }, // v0.12.4 — body terenkripsi at-rest
+      include: { user: { select: { id: true, username: true, role: true } } },
+    })
+    markNoteRate(req.user)
+
+    const notePlain = { ...note, body: decryptTextSafe(note.body) } // v0.12.4 — API/broadcast plaintext
+    // Real-time: semua viewer chat yang sama update live (pola broadcast existing)
+    broadcast.emitToRoom(`chat:${Number(chatId)}`, 'note_added', { chatId: Number(chatId), note: notePlain })
+    res.status(201).json({ note: notePlain })
+  } catch (e) {
+    console.error('Add note error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// DELETE /api/chats/notes/:noteId — penulis/admin (MUST be above /:id)
+router.delete('/notes/:noteId', ...rt, async (req, res) => {
+  try {
+    const noteId = parseInt(req.params.noteId, 10)
+    if (isNaN(noteId)) return res.status(400).json({ error: 'Invalid note ID' })
+
+    const note = await prisma.chatNote.findFirst({ where: { id: noteId, tenantId: req.tenantId } })
+    if (!note) return res.status(404).json({ error: 'Note not found' })
+    if (note.userId !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Hanya penulis catatan atau admin yang bisa menghapus' })
+    }
+
+    await prisma.chatNote.delete({ where: { id: noteId } })
+    broadcast.emitToRoom(`chat:${note.chatId}`, 'note_deleted', { chatId: note.chatId, noteId })
+    res.json({ success: true })
+  } catch (e) {
+    console.error('Delete note error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ─── Search endpoint ─────────────────────────────────────────────
+
+// GET /api/chats/search-all?q=searchterm — global search across ALL chats
+router.get('/search-all', ...rt, async (req, res) => {
+  try {
+    const q = req.query.q
+    if (!q || q.trim().length < 2) {
+      return res.json({ results: [], total: 0 })
+    }
+
+    // v0.1.21 — Isolasi: admin lihat semua; CS hanya chat yang bisa diaksesnya
+    let accessFilter = null
+    if (req.user.role !== 'admin') {
+      accessFilter = chat => (chat.assignedToId === req.user.id && chat.status === 'open') || chat.resolvedById === req.user.id
+    }
+
+    // v0.11.0 — Global search: SQL LIKE gak bisa di ciphertext → fetch kandidat
+    // terbaru (batas 5000), dekrip in-memory, filter di aplikasi. (Catatan performa:
+    // skala SQLite saat ini ribuan = OK; jutaan → perlu FTS terenkripsi fase 2.)
+    const candidates = await prisma.message.findMany({
+      where: { tenantId: req.tenantId, purged: false, content: { not: null } },
+      orderBy: { timestamp: 'desc' },
+      take: 5000,
+      include: {
+        chat: {
+          select: {
+            id: true,
+            contactName: true,
+            contactPhone: true,
+            assignedToId: true,
+            status: true,
+            resolvedById: true, // v0.1.21 — untuk isolasi CS
+          },
+        },
+      },
+    })
+    const qLower = q.trim().toLowerCase()
+    const messages = []
+    for (const msg of candidates) {
+      if (msg.content == null) continue
+      const plain = decryptTextSafe(msg.content)
+      if (typeof plain !== 'string' || !plain.toLowerCase().includes(qLower)) continue
+      msg.content = plain
+      messages.push(msg)
+      if (messages.length >= 100) break
+    }
+    const scannedCount = candidates.length
+
+    // Group by chatId — one entry per chat with matching messages
+    const chatMap = new Map()
+    for (const msg of messages) {
+      if (accessFilter && !accessFilter(msg.chat)) continue
+      if (!chatMap.has(msg.chatId)) {
+        chatMap.set(msg.chatId, {
+          chat: msg.chat,
+          messages: [],
+          matchCount: 0,
+        })
+      }
+      const entry = chatMap.get(msg.chatId)
+      entry.messages.push({
+        id: msg.id,
+        content: msg.content,
+        direction: msg.direction,
+        senderName: msg.senderName,
+        timestamp: msg.timestamp,
+      })
+      entry.matchCount++
+    }
+
+    const results = Array.from(chatMap.values()).sort((a, b) => b.matchCount - a.matchCount)
+
+    res.json({ results, total: results.length, totalMessages: messages.length, scanned: scannedCount })
+  } catch (e) {
+    console.error('Global search error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ─── v0.1.21 — Queue endpoints (MUST be above /:id) ───────────────
+
+// GET /api/chats/queue-count — jumlah chat di antrean (open + unassigned)
+router.get('/queue-count', ...rt, async (req, res) => {
+  try {
+    const count = await queue.getQueueCount(req.tenantId)
+    res.json({ count })
+  } catch (e) {
+    console.error('Queue count error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/chats/take-next — ambil chat terdepan dari antrean (FIFO)
+router.post('/take-next', ...rt, async (req, res) => {
+  try {
+    // v0.5.0 — Role Cabang (relay) tidak boleh ambil chat dari antrean.
+    // Chat hanya bisa diterima lewat transfer dari CS/Admin.
+    if (req.user.role === 'relay') {
+      return res.status(403).json({ error: 'Role Cabang tidak dapat mengambil chat dari antrean. Chat diterima melalui transfer.' })
+    }
+
+    const userId = req.user.id
+    let result = null
+
+    // SQLite single-writer serializes concurrent takes; loop with race-guard
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const candidate = await prisma.chat.findFirst({
+        // v0.13.3 — invariant §4.1: chat menuState='awaiting' (limbo Menu Gateway)
+        // tidak boleh di-take dari antrean. queueWhere() includes OR null-escape
+        // untuk jebak NULL Prisma ({ not: 'awaiting' } tidak match NULL).
+        where: queue.queueWhere(req.tenantId),
+        orderBy: [
+          { queuedAt: 'asc' },   // FIFO key; nulls-first di SQLite ASC untuk chat lama
+          { lastMessageAt: 'asc' }, // fallback chat lama queuedAt=null
+        ],
+      })
+      if (!candidate) break
+
+      // Race-guard: hanya assign kalau masih unassigned
+      const claimed = await prisma.chat.updateMany({
+        where: { id: candidate.id, tenantId: req.tenantId, assignedToId: null, status: 'open' },
+        data: {
+          assignedToId: userId,
+          lastAssignedAt: new Date(),
+          queuedAt: null, // keluar dari antrean
+          ...(candidate.firstAssignedAt ? {} : { firstAssignedAt: new Date() }),
+        },
+      })
+      if (claimed.count === 1) {
+        result = candidate.id
+        break
+      }
+      // Kalau 0 → chat sudah diambil orang lain di antara findFirst dan updateMany → retry chat berikutnya
+    }
+
+    if (!result) {
+      return res.status(404).json({ error: 'Antrean kosong' })
+    }
+
+    const now = new Date()
+    const chat = await prisma.chat.update({
+      where: { id: result },
+      include: {
+        assignedTo: { select: { id: true, username: true } },
+        tags: { include: { tag: true } },
+      },
+      data: {}, // no-op update untuk refresh updatedAt & include
+    })
+
+    await prisma.chatEvent.create({
+      data: { tenantId: req.tenantId, chatId: result, userId, type: 'taken_queue' },
+    })
+    // Analytics v0.1.19 compatibility: keep 'assigned' event type
+    await prisma.chatEvent.create({
+      data: { tenantId: req.tenantId, chatId: result, userId, type: 'assigned' },
+    })
+
+    broadcast.emitToTenant(req.tenantId, 'chat_update', {
+      chatId: result,
+      assignedTo: chat.assignedTo,
+      queuedAt: null,
+    })
+    queue.emitQueueUpdate(req.tenantId)
+
+    console.log(`[Queue] ${req.user.username} mengambil chat dari antrean: ${result}`)
+    res.json({ chat })
+  } catch (e) {
+    console.error('Take-next error:', e)
+    res.status(500).json({ error: e.message || 'Internal server error' })
+  }
+})
+
+// GET /api/chats/:id - chat detail with paginated messages
+router.get('/:id', ...rt, async (req, res) => {
+  try {
+    const chatId = req.params.id
+    const page = parseInt(req.query.page || '1', 10)
+    const limit = parseInt(req.query.limit || '50', 10)
+    const skip = (page - 1) * limit
+
+    const chat = await prisma.chat.findFirst({
+      where: { id: Number(chatId), tenantId: req.tenantId },
+      include: {
+        assignedTo: { select: { id: true, username: true } },
+        tags: { include: { tag: true } },
+        // v0.10.0 — Fitur C: rating CSAT terakhir (badge "⭐ N" di chat detail).
+        // Read-only additive; tidak mengubah shape endpoint yang dipakai existing.
+        csatSurveys: {
+          where: { rating: { not: null } },
+          orderBy: { id: 'desc' },
+          take: 1,
+          select: { id: true, rating: true, respondedAt: true },
+        },
+      },
+    })
+
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+
+    // v0.1.21 — Isolasi detail chat: admin, pemilik open, atau resolver
+    if (!canAccessChat(req.user, chat)) {
+      return accessDenied(res)
+    }
+
+    // v0.10.0 — datarkan rating CSAT terakhir sebagai field flat (shape aman)
+    chat.lastCsatRating = chat.csatSurveys?.[0]?.rating ?? null
+    delete chat.csatSurveys
+
+    // ─── v0.5.1 — Clear flag "transfer belum dibaca": chat dibuka oleh assignee ──
+    if (req.user.id === chat.assignedToId && chat.transferUnseen) {
+      try {
+        await prisma.chat.update({ where: { id: Number(chatId) }, data: { transferUnseen: false } })
+        chat.transferUnseen = false // respon GET bawa field terbaru
+      } catch (e) {
+        console.error('Clear transferUnseen error:', e.message)
+      }
+    }
+
+    const [messages, total] = await Promise.all([
+      prisma.message.findMany({
+        where: { tenantId: req.tenantId, chatId: Number(chatId), purged: false },
+        orderBy: { timestamp: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.message.count({ where: { tenantId: req.tenantId, chatId: Number(chatId), purged: false } }),
+    ])
+
+    // v0.11.0 — dekrip on-the-fly utk response (DB ciphertext → API plaintext)
+    decMessagesInPlace(messages)
+    decChatPreview(chat)
+
+    res.json({
+      chat,
+      messages: messages.reverse(), // chronological order
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    })
+  } catch (e) {
+    console.error('Chat detail error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/chats/:id/assign
+router.post('/:id/assign', ...rt, async (req, res) => {
+  try {
+    const chatId = req.params.id
+    const userId = req.body.user_id || req.user.id
+
+    const existing = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!existing) return res.status(404).json({ error: 'Chat not found' })
+
+    // v0.1.21 — Anti cherry-picking: CS gak boleh self-assign chat unassigned.
+    // Harus lewat take-next (FIFO). Admin boleh assign manual (Take di tab Unassigned/All).
+    if (existing.assignedToId === null && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Gunakan tombol Take Next untuk mengambil chat dari antrean (FIFO). Ambil manual hanya untuk admin.' })
+    }
+
+    // CS trying to assign to someone else - check if they own the chat
+    if (req.body.user_id && req.body.user_id !== req.user.id && req.user.role !== 'admin') {
+      if (existing.assignedToId !== req.user.id) {
+        return res.status(403).json({ error: 'You can only transfer chats assigned to you' })
+      }
+    }
+
+    // ─── v0.5.0 — Aturan transfer baru (matrix permission role) ─────────
+    const targetUserId = req.body.user_id ? parseInt(req.body.user_id, 10) : null
+    if (targetUserId && targetUserId !== req.user.id) {
+      const targetUser = await prisma.user.findFirst({
+        where: { id: targetUserId, tenantId: req.tenantId },
+        select: { id: true, role: true, status: true },
+      })
+      if (!targetUser || targetUser.status !== 'active') {
+        return res.status(403).json({ error: 'User tujuan tidak ditemukan atau tidak aktif' })
+      }
+      if (req.user.role === 'relay') {
+        // Cabang hanya boleh transfer ke CS/Admin — bukan sesama Cabang
+        if (targetUser.role !== 'cs' && targetUser.role !== 'admin') {
+          return res.status(403).json({ error: 'Cabang hanya dapat transfer ke CS atau Admin' })
+        }
+        // Dan target harus online
+        if (!presence.isOnline(req.tenantId, targetUserId)) {
+          return res.status(403).json({ error: 'User tujuan sedang offline' })
+        }
+      } else if (req.user.role === 'cs') {
+        // CS boleh ke cs/admin/relay, tapi target harus online
+        if (!presence.isOnline(req.tenantId, targetUserId)) {
+          return res.status(403).json({ error: 'User tujuan sedang offline' })
+        }
+      }
+      // admin: bypass (safety valve — boleh reassign paksa ke user offline)
+    }
+
+    const wasInQueue = existing.assignedToId === null
+
+    // Determine timestamp and first/last assignment data
+    const assignNow = new Date()
+    const assignUpdateData = { assignedToId: userId, lastAssignedAt: assignNow }
+    if (!existing.firstAssignedAt) {
+      assignUpdateData.firstAssignedAt = assignNow
+    }
+    if (wasInQueue) {
+      assignUpdateData.queuedAt = null // keluar dari antrean
+    }
+    // v0.5.1 — Transfer antar-agent (target ≠ actor) → tandai "transfer belum dibaca".
+    // Take-next / self-assign TIDAK di-set (tetap false).
+    if (targetUserId && targetUserId !== req.user.id) {
+      assignUpdateData.transferUnseen = true
+    }
+
+    const chat = await prisma.chat.update({
+      where: { id: Number(chatId) },
+      data: assignUpdateData,
+      include: {
+        assignedTo: { select: { id: true, username: true } },
+        tags: { include: { tag: true } },
+      },
+    })
+
+    await prisma.chatEvent.create({
+      data: { tenantId: req.tenantId, chatId: Number(chatId), userId, type: 'assigned' },
+    })
+    // v0.1.21 — event source: manual admin take dari antrean
+    if (wasInQueue && req.user.role === 'admin') {
+      await prisma.chatEvent.create({
+        data: { tenantId: req.tenantId, chatId: Number(chatId), userId, type: 'taken_manual_admin' },
+      })
+    }
+
+    // v0.5.1 — flag transfer hanya utk transfer antar-agent (target ≠ actor)
+    const isTransfer = !!(targetUserId && targetUserId !== req.user.id)
+
+    broadcast.emitToTenant(req.tenantId, 'chat_update', {
+      chatId: Number(chatId),
+      assignedTo: chat.assignedTo,
+      queuedAt: wasInQueue ? null : undefined,
+      // v0.5.1 — username actor, hanya saat transfer antar-agent (payload endpoint lain tidak berubah)
+      ...(isTransfer ? { transferredFrom: req.user.username } : {}),
+    })
+    if (wasInQueue) queue.emitQueueUpdate(req.tenantId)
+
+    // v0.5.0 — Push baru utk event transfer (fire-and-forget, target ≠ actor).
+    // Aman utk semua role — termasuk relay (satu-satunya cara dia dapat chat).
+    if (targetUserId && targetUserId !== req.user.id) {
+      try {
+        push.sendToUser(targetUserId, {
+          kind: 'transfer',
+          chatId: Number(chatId),
+          title: 'Chat ditransfer ke kamu',
+          body: chat.contactName || chat.contactPhone || chatId,
+          url: `/?chat=${Number(chatId)}`,
+        })
+      } catch (pushErr) {
+        console.error('[Chats] transfer push error (non-fatal):', pushErr.message)
+      }
+    }
+
+    res.json({ chat })
+  } catch (e) {
+    console.error('Assign error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/chats/:id/release
+router.post('/:id/release', ...rt, async (req, res) => {
+  try {
+    const chatId = req.params.id
+
+    const existing = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!existing) return res.status(404).json({ error: 'Chat not found' })
+
+    // v0.1.21 — hanya pemilik/admin yang bisa release
+    if (existing.assignedToId !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only the assigned agent or admin can release this chat' })
+    }
+
+    // Release = masuk antrean: queuedAt=now, keluar dari binding
+    const releaseAt = new Date()
+    const chat = await prisma.chat.update({
+      where: { id: Number(chatId) },
+      data: { assignedToId: null, queuedAt: releaseAt },
+    })
+
+    await prisma.chatEvent.create({
+      data: { tenantId: req.tenantId, chatId: Number(chatId), userId: req.user.id, type: 'released' },
+    })
+
+    broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: Number(chatId), assignedTo: null, queuedAt: releaseAt })
+    queue.emitQueueUpdate(req.tenantId)
+
+    res.json({ chat })
+  } catch (e) {
+    console.error('Release error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/chats/:id/reply - send text reply
+router.post('/:id/reply', ...rt, replyValidation, async (req, res) => {
+  try {
+    const chatId = req.params.id
+    const { content } = req.body
+
+    // Check chat exists
+    const chat = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+
+    // v0.1.21 — Reply lock TOTAL: belum di-Take → 403 (admin juga)
+    if (!assertTaken(chat, res)) return
+
+    // Lock: only the assigned CS or admin can reply
+    if (chat.assignedToId && chat.assignedToId !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'This chat is assigned to another agent. Release it first before replying.' })
+    }
+
+    // Personalization: replace {name} with contact name or remove if null
+    let personalizedContent = content
+    if (content.includes('{name}')) {
+      const contactName = chat.contactName
+      if (contactName && contactName.trim()) {
+        personalizedContent = content.replace(/\{name\}/g, contactName)
+      } else {
+        // Remove {name} and clean up extra spaces
+        personalizedContent = content.replace(/\{name\}/g, '')
+        personalizedContent = personalizedContent.replace(/  +/g, ' ')
+        personalizedContent = personalizedContent.replace(/\s+,/g, ',').replace(/\s+\./g, '.')
+        personalizedContent = personalizedContent.trim()
+      }
+    }
+
+    // Send via pool per-tenant (v3 — WA_DISABLED → error jelas)
+    const waResult = await wa.sendMessageForTenant(req.tenantId, chat.waJid, personalizedContent).catch((err) => {
+      console.error('[Chats] WA send error (non-fatal, tetap simpan):', err.message)
+      return null
+    })
+
+    // Save message to DB — v0.11.0: content dienkripsi at-rest
+    const message = await prisma.message.create({
+      data: {
+        tenantId: req.tenantId,
+        chatId: chat.id,
+        direction: 'out',
+        content: encryptText(personalizedContent),
+        senderName: req.user.username,
+        senderId: req.user.id,
+        waMessageId: waResult?.key?.id || null,
+        status: waResult ? 'sent' : 'failed',
+      },
+    })
+
+    const now = message.timestamp
+    let reopenedFromResolved = false
+
+    // Auto-reopen: if chat is resolved and CS sends a reply, revert to open
+    if (chat.status === 'resolved') {
+      const newReopenedCount = (chat.reopenedCount || 0) + 1
+      await prisma.chat.update({
+        where: { id: chat.id },
+        data: { status: 'open', resolvedAt: null, reopenedCount: newReopenedCount },
+      })
+      await prisma.chatEvent.create({
+        data: { tenantId: req.tenantId, chatId: chat.id, userId: req.user.id, type: 'reopened', createdAt: now },
+      })
+      broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: chat.id, status: 'open', resolvedAt: null })
+      reopenedFromResolved = true
+    }
+
+    // Record first response and increment counter
+    // v0.11.0 — preview dienkripsi; broadcast/response membawa plaintext
+    const chatUpdateData = {
+      lastMessageAt: message.timestamp,
+      lastMessagePreview: encryptText(personalizedContent),
+      csMessagesSent: { increment: 1 },
+    }
+    if (!chat.firstResponseAt) {
+      chatUpdateData.firstResponseAt = now
+      chatUpdateData.firstResponseById = req.user.id
+    }
+    await prisma.chat.update({
+      where: { id: chat.id },
+      data: chatUpdateData,
+    })
+
+    if (!chat.firstResponseAt) {
+      await prisma.chatEvent.create({
+        data: { tenantId: req.tenantId, chatId: chat.id, userId: req.user.id, type: 'first_response', createdAt: now },
+      })
+    }
+
+    // Broadcast to all clients (frontend dedup handles sender)
+    // v0.11.0 — broadcast & response membawa PLAINTEXT (dekrip payload ciphertext)
+    // v0.12.1 — payload bawa assignedToId & status chat (toast gate frontend);
+    // sinkron dgn auto-reopen di atas (row `chat` bisa stale setelah update)
+    const messageOut = { ...message, content: decContent(message.content) }
+    broadcast.emitToTenant(req.tenantId, 'new_message', { chatId: chat.id, assignedToId: (reopenedFromResolved ? null : chat.assignedToId) ?? null, status: reopenedFromResolved ? 'open' : chat.status, message: messageOut })
+    broadcast.emitToTenant(req.tenantId, 'chat_update', {
+      chatId: chat.id,
+      lastMessage: personalizedContent,
+      lastMessageAt: message.timestamp,
+    })
+
+    // v0.12.9 — implied read: balasan agent = chat dibaca → receipt biru ke pelanggan
+    // (fire-and-forget; gate AppConfig di dalam service, default OFF)
+    receipts.markIncomingRead(req.tenantId, chat.id).catch(e => console.error('[Receipts] reply:', e.message))
+
+    res.json({ message: messageOut })
+  } catch (e) {
+    console.error('Reply error:', e)
+    res.status(500).json({ error: e.message || 'Internal server error' })
+  }
+})
+
+// POST /api/chats/:id/media - send media reply
+router.post('/:id/media', ...rt, upload.single('file'), async (req, res) => {
+  try {
+    const chatId = req.params.id
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' })
+    }
+
+    let caption = req.body.caption || null
+
+    // Check chat exists FIRST (v0.1.21 — fix: chat dipakai sebelum di-fetch)
+    const chat = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+
+    // v0.1.21 — Reply lock TOTAL: belum di-Take → 403 (admin juga)
+    if (!assertTaken(chat, res)) return
+
+    // v0.1.21 — Lock: media juga cuma pemilik/admin
+    if (chat.assignedToId && chat.assignedToId !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'This chat is assigned to another agent. Release it first before replying.' })
+    }
+
+    // Personalization: replace {name} in caption with contact name or remove if null
+    if (caption && caption.includes('{name}')) {
+      const contactName = chat.contactName
+      if (contactName && contactName.trim()) {
+        caption = caption.replace(/\{name\}/g, contactName)
+      } else {
+        caption = caption.replace(/\{name\}/g, '')
+        caption = caption.replace(/  +/g, ' ')
+        caption = caption.replace(/\s+,/g, ',').replace(/\s+\./g, '.')
+        caption = caption.trim() || null
+      }
+    }
+
+    // Determine media type from mimetype
+    const mimetype = req.file.mimetype
+    const mediaType = mimetype.split('/')[0] // image, video, audio, application
+    const ext = req.file.originalname.split('.').pop() || 'bin'
+
+    // Save encrypted media to disk
+    const mediaPath = await saveMedia(req.file.buffer, ext)
+
+    // Decrypt to buffer for Baileys sending
+    const buffer = loadMedia(mediaPath)
+
+    // Send via pool per-tenant (v3 — WA_DISABLED → error jelas, message tetap disimpan)
+    let waResult
+    try {
+      waResult = await wa.sendMediaForTenant(
+        req.tenantId,
+        chat.waJid,
+        buffer,
+        mediaType === 'application' ? 'document' : mediaType,
+        mimetype,
+        caption,
+        req.file.originalname
+      )
+    } catch (sendErr) {
+      console.error('[Chats] WA send media error:', sendErr.message)
+      // Still save the message to DB even if WA send fails
+      waResult = null
+    }
+
+    // Save message to DB — v0.11.0: caption (content) dienkripsi at-rest
+    const message = await prisma.message.create({
+      data: {
+        tenantId: req.tenantId,
+        chatId: chat.id,
+        direction: 'out',
+        content: encryptText(caption),
+        mediaPath,
+        mediaType: mediaType === 'application' ? 'document' : mediaType,
+        mediaMime: mimetype,
+        mediaSize: req.file.size,
+        senderName: req.user.username,
+        senderId: req.user.id,
+        waMessageId: waResult?.key?.id || null,
+        status: waResult ? 'sent' : 'failed',
+      },
+    })
+
+    const now = message.timestamp
+    let reopenedFromResolved = false
+
+    // Auto-reopen: if chat is resolved and CS sends media, revert to open
+    if (chat.status === 'resolved') {
+      const newReopenedCount = (chat.reopenedCount || 0) + 1
+      await prisma.chat.update({
+        where: { id: chat.id },
+        data: { status: 'open', resolvedAt: null, reopenedCount: newReopenedCount },
+      })
+      await prisma.chatEvent.create({
+        data: { tenantId: req.tenantId, chatId: chat.id, userId: req.user.id, type: 'reopened', createdAt: now },
+      })
+      broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: chat.id, status: 'open', resolvedAt: null })
+      reopenedFromResolved = true
+    }
+
+    // Record first response and increment counter
+    const preview = caption || `[${mediaType === 'application' ? 'Document' : mediaType.charAt(0).toUpperCase() + mediaType.slice(1)}]`
+    const chatUpdateData = {
+      lastMessageAt: message.timestamp,
+      lastMessagePreview: encryptText(preview),
+      csMessagesSent: { increment: 1 },
+    }
+    if (!chat.firstResponseAt) {
+      chatUpdateData.firstResponseAt = now
+      chatUpdateData.firstResponseById = req.user.id
+    }
+    await prisma.chat.update({
+      where: { id: chat.id },
+      data: chatUpdateData,
+    })
+
+    if (!chat.firstResponseAt) {
+      await prisma.chatEvent.create({
+        data: { tenantId: req.tenantId, chatId: chat.id, userId: req.user.id, type: 'first_response', createdAt: now },
+      })
+    }
+
+    // Broadcast to all clients
+    // v0.11.0 — broadcast & response membawa PLAINTEXT (dekrip payload ciphertext)
+    // v0.12.1 — payload bawa assignedToId & status chat (toast gate frontend);
+    // sinkron dgn auto-reopen di atas (row `chat` bisa stale setelah update)
+    const messageOut = { ...message, content: decContent(message.content) }
+    broadcast.emitToTenant(req.tenantId, 'new_message', { chatId: chat.id, assignedToId: (reopenedFromResolved ? null : chat.assignedToId) ?? null, status: reopenedFromResolved ? 'open' : chat.status, message: messageOut })
+    broadcast.emitToTenant(req.tenantId, 'chat_update', {
+      chatId: chat.id,
+      lastMessage: preview,
+      lastMessageAt: message.timestamp,
+    })
+
+    // v0.12.9 — implied read (media reply, sama dgn reply teks)
+    receipts.markIncomingRead(req.tenantId, chat.id).catch(e => console.error('[Receipts] media:', e.message))
+
+    res.json({ message: messageOut })
+  } catch (e) {
+    console.error('Media reply error:', e)
+    res.status(500).json({ error: e.message || 'Internal server error' })
+  }
+})
+
+// POST /api/chats/:id/read - mark as read
+router.post('/:id/read', ...rt, async (req, res) => {
+  try {
+    const chatId = req.params.id
+    const chat = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+
+    // v0.1.21 — isolasi: hanya yang bisa akses chat boleh mark read
+    if (!canAccessChat(req.user, chat)) {
+      return accessDenied(res)
+    }
+
+    const updatedChat = await prisma.chat.update({
+      where: { id: chat.id },
+      data: { unreadCount: 0 },
+    })
+
+    // v0.12.9 — Read receipt via receipts service: kirim receipt utk SEMUA pesan
+    // masuk chat ini yang belum di-receipt (idempoten, gate AppConfig admin).
+    // Replaces call lama sock.sendReadReceipt(chatId, undefined, []) — method itu
+    // gak exist di Baileys v6 + array kosong → error ditelan catch {} = no-op total.
+    try {
+      await receipts.markIncomingRead(req.tenantId, chat.id)
+    } catch (e) { console.error('[Receipts] /read error:', e.message) }
+
+    broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: chat.id, unreadCount: 0 })
+    res.json({ chat })
+  } catch (e) {
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/chats/:id/resolve - mark chat as resolved
+router.post('/:id/resolve', ...rt, async (req, res) => {
+  try {
+    const chatId = req.params.id
+
+    const chat = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+
+    // Only the assigned CS (owner) or admin can resolve
+    if (chat.assignedToId !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only the assigned agent or admin can resolve this chat' })
+    }
+
+    const updated = await prisma.chat.update({
+      where: { id: chat.id },
+      data: { status: 'resolved', resolvedAt: new Date(), resolvedById: req.user.id, messagesBeforeResolve: chat.csMessagesSent || 0 },
+      include: {
+        assignedTo: { select: { id: true, username: true } },
+        tags: { include: { tag: true } },
+      },
+    })
+
+    await prisma.chatEvent.create({
+      data: { tenantId: req.tenantId, chatId: chat.id, userId: req.user.id, type: 'resolved' },
+    })
+
+    // v0.10.0 — Fitur A: resolve chat yang sedang snooze → snooze ikut dibersihkan
+    if (chat.snoozedUntil) {
+      await prisma.chat.update({
+        where: { id: chat.id },
+        data: { snoozedUntil: null, snoozedBy: null },
+      })
+    }
+
+    // v0.10.0 — Fitur C (HOOK RESOLVE → CSAT): satu-satunya titik sentuh logika
+    // resolve yang spec izinkan (spec §3). Fire-and-forget: error CSAT TIDAK
+    // pernah menggagalkan resolve. Kalau config OFF → tidak kirim apa pun.
+    csat.createSurveyAfterResolve(updated, req.user.id).catch((e) =>
+      console.error('[Resolve] CSAT hook error (non-fatal):', e.message)
+    )
+
+    broadcast.emitToTenant(req.tenantId, 'chat_update', {
+      chatId: chat.id,
+      status: 'resolved',
+      resolvedAt: updated.resolvedAt,
+      resolvedById: req.user.id, // v0.1.21 — frontend reaksi resolved per-user
+      snoozedUntil: null, // v0.10.0 — informasikan snooze clear
+    })
+
+    res.json({ chat: updated })
+  } catch (e) {
+    console.error('Resolve error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/chats/:id/tags - list tags for a chat
+router.get('/:id/tags', ...rt, async (req, res) => {
+  try {
+    const chatId = req.params.id
+    const chatTags = await prisma.chatTag.findMany({
+      where: { chatId: Number(chatId), tag: { tenantId: req.tenantId } },
+      include: { tag: true },
+    })
+    res.json({ tags: chatTags.map(ct => ct.tag) })
+  } catch (e) {
+    console.error('List chat tags error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/chats/:id/tags - add tag to chat
+router.post('/:id/tags', ...rt, async (req, res) => {
+  try {
+    const chatId = req.params.id
+    const { tagId } = req.body
+    if (!tagId) {
+      return res.status(400).json({ error: 'tagId is required' })
+    }
+
+    const chat = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+
+    if (chat.assignedToId !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only the assigned agent or admin can tag this chat' })
+    }
+
+    const tag = await prisma.tag.findFirst({ where: { id: parseInt(tagId, 10), tenantId: req.tenantId } })
+    if (!tag) return res.status(404).json({ error: 'Tag not found' })
+
+    try {
+      await prisma.chatTag.create({
+        data: { chatId: chat.id, tagId: parseInt(tagId, 10) },
+      })
+    } catch (e) {
+      // Already exists - fine
+    }
+
+    // Broadcast tag change to all clients
+    broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: chat.id, tagAdded: tag })
+
+    res.status(201).json({ tag })
+  } catch (e) {
+    console.error('Add chat tag error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// DELETE /api/chats/:id/tags/:tagId - remove tag from chat
+router.delete('/:id/tags/:tagId', ...rt, async (req, res) => {
+  try {
+    const { id: chatId, tagId } = req.params
+
+    const chat = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+
+    if (chat.assignedToId !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only the assigned agent or admin can remove tags from this chat' })
+    }
+
+    await prisma.chatTag.delete({
+      where: { chatId_tagId: { chatId: chat.id, tagId: parseInt(tagId, 10) } },
+    })
+
+    // Broadcast tag removal to all clients
+    broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: chat.id, tagRemoved: parseInt(tagId, 10) })
+
+    res.json({ success: true })
+  } catch (e) {
+    console.error('Remove chat tag error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ─── Favorite endpoints ─────────────────────────────────────────
+
+// POST /api/chats/:chatId/messages/:msgId/favorite — toggle favorite
+router.post('/:chatId/messages/:msgId/favorite', ...rt, async (req, res) => {
+  try {
+    const { chatId, msgId } = req.params
+    const userId = req.user.id
+    const messageId = parseInt(msgId, 10)
+    if (isNaN(messageId)) return res.status(400).json({ error: 'Invalid message ID' })
+
+    // Check message exists and belongs to this chat (tenant-scoped)
+    const msg = await prisma.message.findFirst({
+      where: { id: messageId, tenantId: req.tenantId, chatId: Number(chatId) },
+    })
+    if (!msg) return res.status(404).json({ error: 'Message not found' })
+
+    // Check if already favorited by this user
+    const existing = await prisma.favoriteMessage.findUnique({
+      where: { messageId_userId: { messageId, userId } },
+    })
+
+    if (existing) {
+      // Toggle off — remove favorite
+      await prisma.favoriteMessage.delete({
+        where: { id: existing.id },
+      })
+      res.json({ favorited: false })
+    } else {
+      // Add favorite
+      await prisma.favoriteMessage.create({
+        data: { messageId, userId, chatId: Number(chatId) },
+      })
+      res.json({ favorited: true })
+    }
+  } catch (e) {
+    console.error('Toggle favorite error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/chats/:id/favorites — list favorited messages in a chat
+router.get('/:id/favorites', ...rt, async (req, res) => {
+  try {
+    const chatId = req.params.id
+    const chat = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+    if (!canAccessChat(req.user, chat)) {
+      return accessDenied(res)
+    }
+    const favorites = await prisma.favoriteMessage.findMany({
+      where: { chatId: chat.id, userId: req.user.id },
+      include: {
+        message: {
+          select: {
+            id: true, chatId: true, direction: true, content: true,
+            mediaType: true, mediaMime: true, senderName: true, senderId: true,
+            timestamp: true, status: true, purged: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+    // v0.11.0 — favorites panel: dekrip content on-the-fly
+    for (const f of favorites) {
+      if (f.message && f.message.content != null) f.message.content = decryptTextSafe(f.message.content)
+    }
+    res.json({ favorites })
+  } catch (e) {
+    console.error('List favorites error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+
+
+
+
+// GET /api/chats/:id/search?q=searchterm
+router.get('/:id/search', ...rt, async (req, res) => {
+  try {
+    const chatId = req.params.id
+    const q = req.query.q
+    if (!q || q.trim().length < 2) {
+      return res.json({ messages: [], total: 0 })
+    }
+
+    // v0.1.21 — isolasi: hanya yang bisa akses chat
+    const chat = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
+    if (!chat) return res.status(404).json({ error: 'Chat not found' })
+    if (!canAccessChat(req.user, chat)) {
+      return accessDenied(res)
+    }
+
+    // v0.11.0 — In-chat search: SQL LIKE gak bisa di ciphertext → fetch pesan
+    // chat ini (terbaru 5000), dekrip in-memory, filter di aplikasi.
+    const candidates = await prisma.message.findMany({
+      where: {
+        tenantId: req.tenantId,
+        chatId: chat.id,
+        purged: false,
+        content: { not: null },
+      },
+      orderBy: { timestamp: 'desc' },
+      take: 5000,
+    })
+    const qLower = q.trim().toLowerCase()
+    const messages = []
+    for (const msg of candidates) {
+      if (msg.content == null) continue
+      const plain = decryptTextSafe(msg.content)
+      if (typeof plain !== 'string' || !plain.toLowerCase().includes(qLower)) continue
+      msg.content = plain
+      messages.push(msg)
+      if (messages.length >= 50) break
+    }
+
+    res.json({ messages: messages.reverse(), total: messages.length })
+  } catch (e) {
+    console.error('Search messages error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+module.exports = router

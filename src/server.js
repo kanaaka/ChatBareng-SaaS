@@ -1,0 +1,215 @@
+const express = require('express')
+const http = require('http')
+const { Server } = require('socket.io')
+const helmet = require('helmet')
+const cors = require('cors')
+const rateLimit = require('express-rate-limit')
+const path = require('path')
+const fs = require('fs')
+
+const config = require('./config')
+const prisma = require('./prisma')
+// v0.11.0 — Boot check kunci enkripsi isi pesan: missing/invalid → THROW di sini
+// (process.exit(1) di catch start) — JANGAN silent fallback ke plaintext.
+const textCrypto = require('./services/textCrypto')
+console.log('[TEXT-CRYPTO] Kunci MSG_ENCRYPTION_KEY tervalidasi (AES-256-GCM ready)')
+void textCrypto
+const broadcast = require('./socket/broadcast')
+const { setupHandlers } = require('./socket/handler')
+const wa = require('./wa/baileys')
+
+// Routes
+const authRoutes = require('./routes/auth')
+const announcementRoutes = require('./routes/announcements')
+const chatRoutes = require('./routes/chats')
+const mediaRoutes = require('./routes/media')
+const waRoutes = require('./routes/wa')
+const userRoutes = require('./routes/users')
+const purgeRoutes = require('./routes/purge')
+const contactRoutes = require('./routes/contacts').router
+const tagRoutes = require('./routes/tags')
+const blastRoutes = require('./routes/blast')
+const templateRoutes = require('./routes/templates')
+const tanganKananRoutes = require('./routes/tanganKanan')
+const analyticsRoutes = require('./routes/analytics')
+const pushRoutes = require('./routes/push')
+const historyRoutes = require('./routes/history') // v0.6.0 — Backup & Restore history chat (admin)
+const cekatImportRoutes = require('./routes/cekatImport') // v0.15.0 — Import dari Cekat.AI (admin)
+const autoReplyRoutes = require('./routes/autoreply') // v0.7.0 — Auto Greeting config (admin)
+const gdriveRoutes = require('./routes/gdrive') // v0.8.0 — Auto Backup Google Drive (admin)
+const appearanceRoutes = require('./routes/appearance') // v0.9.0 — UI Revamp: accent config + /theme.css
+const csatRoutes = require('./routes/csat') // v0.10.0 — CSAT Survey (admin)
+const appConfigRoutes = require('./routes/appConfig') // v0.12.9 — AppConfig global (admin)
+const scheduledRoutes = require('./routes/scheduled') // v0.10.0 — Pesan Terjadwal
+const menuGatewayRoutes = require('./routes/menuGateway') // v0.13.0 — Menu Gateway (admin)
+const groupRoutes = require('./routes/groups') // v0.14.0 — Manajemen Grup (PIC Model)
+const superadminRoutes = require('./routes/superadmin') // v3.0 — Platform owner API
+
+const app = express()
+const server = http.createServer(app)
+const io = new Server(server, {
+  cors: { origin: config.corsOrigin },
+})
+
+// Initialize Socket.IO
+broadcast.init(io)
+setupHandlers(io)
+
+// Middleware
+app.use(helmet({ contentSecurityPolicy: false }))
+app.use(cors({ origin: config.corsOrigin }))
+app.use(express.json({ limit: '10mb' }))
+app.use(express.urlencoded({ extended: true }))
+
+// Rate limiting
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: config.rateLimitPerMin,
+  message: { error: 'Too many requests, slow down.' },
+})
+app.use('/api/', apiLimiter)
+
+// API routes
+app.use('/api/auth', authRoutes)
+app.use('/api/sa', superadminRoutes) // v3.0 — Platform owner (requireSuperAdmin di dalam)
+app.use('/api/announcements', announcementRoutes)
+app.use('/api/chats', chatRoutes)
+app.use('/api/media', mediaRoutes)
+app.use('/api/wa', waRoutes)
+app.use('/api/users', userRoutes)
+app.use('/api/purge', purgeRoutes)
+app.use('/api/contacts', contactRoutes)
+app.use('/api/tags', tagRoutes)
+app.use('/api/blast', blastRoutes)
+app.use('/api/templates', templateRoutes)
+app.use('/api/tk', tanganKananRoutes)
+app.use('/api/analytics', analyticsRoutes)
+app.use('/api/push', pushRoutes)
+app.use('/api/history', historyRoutes)
+app.use('/api/cekat-import', cekatImportRoutes) // v0.15.0 — Import dari Cekat.AI (admin)
+app.use('/api/autoreply', autoReplyRoutes) // v0.7.0 — Auto Greeting config (admin)
+app.use('/api/gdrive', gdriveRoutes) // v0.8.0 — Auto Backup Google Drive (admin)
+
+// v0.9.0 — UI Revamp: appearance config
+app.use('/api/appearance', appearanceRoutes.router)
+app.use('/api/csat', csatRoutes) // v0.10.0 — CSAT Survey (admin)
+app.use('/api/app-config', appConfigRoutes) // v0.12.9 — AppConfig global (admin)
+app.use('/api/scheduled', scheduledRoutes) // v0.10.0 — Pesan Terjadwal
+app.use('/api/menu-gateway', menuGatewayRoutes) // v0.13.0 — Menu Gateway (admin). Sweep di-init dari baileys connect — BUKAN di sini.
+app.use('/api/groups', groupRoutes) // v0.14.0 — Manajemen Grup (PIC Model)
+// Public, no-auth: dipakai index.html SEBELUM bundle app (fallback aman kalau DB error)
+app.get('/theme.css', appearanceRoutes.themeCssHandler)
+// v0.12.7 — PUBLIC, no-auth: manifest dinamis (theme_color = accentSeed aktif).
+// WAJIB terdaftar SEBELUM express.static di bawah — static akan menang duluan dan
+// menyajikan file statis hardcoded #6d28d9 selamanya.
+app.get('/manifest.webmanifest', appearanceRoutes.manifestHandler)
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() })
+})
+
+// Serve static frontend
+const publicDir = path.join(__dirname, '..', 'public')
+if (fs.existsSync(publicDir)) {
+  app.use(express.static(publicDir))
+  
+  // SPA fallback — serve index.html for non-API routes
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/') || req.path.startsWith('/socket.io/')) {
+      return next()
+    }
+    res.sendFile(path.join(publicDir, 'index.html'))
+  })
+}
+
+// Error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err)
+  res.status(500).json({ error: 'Internal server error' })
+})
+
+// ─── v3.0 Phase 1 — Boot seed super_admin dari env (TANPA default tenant/admin) ──
+// Platform mulai BENAR-BENAR kosong: tenant dibuat via superadmin, bukan seed.
+async function ensureSuperAdmin() {
+  const existing = await prisma.user.findFirst({ where: { role: 'super_admin' } })
+  if (existing) return existing
+  const username = config.superadminUsername
+  const password = config.superadminPassword
+  if (!username || !password) {
+    throw new Error('SUPERADMIN_USERNAME/SUPERADMIN_PASSWORD belum diset di .env — tidak ada akun awal yang bisa dibuat')
+  }
+  const { hashPassword } = require('./auth')
+  const passwordHash = await hashPassword(password)
+  const user = await prisma.user.create({
+    data: { username, passwordHash, role: 'super_admin', tenantId: null },
+  })
+  console.log(`[Boot] Super admin "${username}" di-seed dari env (id=${user.id})`)
+  return user
+}
+
+// Start server
+async function start() {
+  try {
+    // Test DB connection
+    await prisma.$connect()
+    console.log('[DB] Connected to SQLite')
+
+    // v3.0 — Seed super_admin dari env (TIDAK ada default tenant/admin).
+    // Seed config/folder lama dihapus dari boot — kini per-tenant via
+    // tenantSeed.seedTenantDefaults() saat superadmin membuat tenant.
+    await ensureSuperAdmin()
+    const [tenantCount, userCount] = await prisma.$transaction([
+      prisma.tenant.count(),
+      prisma.user.count(),
+    ])
+    console.log(`[DB] Platform state: ${tenantCount} tenant, ${userCount} user`)
+
+    // v0.8.0 — Scheduler Google Drive backup: config kini per-tenant (seed saat
+    // tenant dibuat); scheduler tetap global, tick membaca config per link user.
+    const gdriveBackup = require('./services/gdriveBackup')
+    gdriveBackup.initGDriveScheduler()
+    // v0.10.0 — Scheduler gabungan (snooze expiry + pesan terjadwal + CSAT pending)
+    const v0100 = require('./services/v0100Scheduler')
+    v0100.initV0100Scheduler()
+
+    // Start Express
+    server.listen(config.port, () => {
+      console.log(`[Server] WA CS Hub running on port ${config.port}`)
+    })
+
+    // Start WhatsApp connection — WA_DISABLED=1 → skip bootstrap Baileys total
+    if (config.waDisabled) {
+      console.log('[WA] WA disabled (WA_DISABLED=1) — skipping Baileys bootstrap entirely')
+    } else {
+      await wa.connectToWhatsApp()
+    }
+
+  } catch (e) {
+    console.error('Startup error:', e)
+    process.exit(1)
+  }
+}
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('Shutting down...')
+  try {
+    await prisma.$disconnect()
+    process.exit(0)
+  } catch (e) {
+    process.exit(1)
+  }
+})
+
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, shutting down...')
+  try {
+    await prisma.$disconnect()
+    process.exit(0)
+  } catch (e) {
+    process.exit(1)
+  }
+})
+
+start()

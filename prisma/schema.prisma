@@ -1,0 +1,604 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ═════════════════════════════════════════════════════════════════
+// v3.0 Phase 1 — MULTI-TENANT schema (wa-cs-hub-saas-v3)
+// Konvensi isolasi (default-deny):
+//  - Semua model milik tenant punya `tenantId` + @@index([tenantId]).
+//  - Chat direstrukturisasi: id Int autoincrement + tenantId + waJid,
+//    unik per [tenantId, waJid] — JID sama di 2 tenant = 2 chat terpisah.
+//  - FavoriteMessage / AnnouncementRead / PushSubscription TANPA tenantId:
+//    seluruhnya di-resolve lewat userId (join User) — di-scope via user tenant.
+//  - Model config singleton (AppConfig, AutoReplyConfig, MenuGatewayConfig(+Option),
+//    CsatConfig, AppearanceConfig, BackupConfig): @@unique([tenantId]) —
+//    seed per-tenant via tenantSeed.seedTenantDefaults(tenantId).
+// ═════════════════════════════════════════════════════════════════
+
+model Tenant {
+  id           Int      @id @default(autoincrement())
+  name         String   @unique
+  status       String   @default("active") // active | suspended
+  waPhone      String?  // fase 2
+  waSessionDir String?  // fase 2
+  createdAt    DateTime @default(now())
+  users        User[]
+  chats        Chat[]
+
+  @@index([status])
+}
+
+model User {
+  id                Int                @id @default(autoincrement())
+  username          String             @unique
+  passwordHash      String
+  // super_admin = owner platform (tanpa tenant); admin/cs/relay wajib punya tenantId
+  role              String             @default("cs") // super_admin | admin | cs | relay
+  tenantId          Int?
+  tenant            Tenant?            @relation(fields: [tenantId], references: [id])
+  createdAt         DateTime           @default(now())
+  lastLogin         DateTime?
+  status            String             @default("active")
+  lastSeenAt        DateTime? // v0.5.0 — presence: kapan user terakhir offline (additive)
+  messages          Message[]
+  assignments       Chat[]             @relation("assignments")
+  purges            PurgeLog[]
+  blasts            Blast[]
+  favorites         FavoriteMessage[]
+  sharedFiles       SharedFile[]
+  announcements     Announcement[]
+  announcementReads AnnouncementRead[]
+  chatEvents        ChatEvent[]
+  pushSubscriptions PushSubscription[]
+  // v0.8.0 — Auto Backup Google Drive (additive)
+  gdriveLink        GDriveLink?
+  backupLogs        BackupLog[]
+  // v0.10.0 — Catatan Internal + Pesan Terjadwal (additive)
+  chatNotes         ChatNote[]
+  scheduledMessages ScheduledMessage[]
+  csatSurveys       CsatSurvey[]
+  // v0.14.0 — Manajemen Grup (PIC Model): grup yang jadi tanggung jawab user ini
+  groupsAsPic       Chat[]             @relation("groupPics")
+
+  @@index([tenantId])
+}
+
+model Chat {
+  id                    Int       @id @default(autoincrement())
+  tenantId              Int
+  tenant                Tenant    @relation(fields: [tenantId], references: [id])
+  waJid                 String // JID WhatsApp pelanggan/grup, unik per tenant
+  contactName           String?
+  contactPhone          String
+  phoneJid              String?
+  unreadCount           Int       @default(0)
+  assignedToId          Int?
+  assignedTo            User?     @relation("assignments", fields: [assignedToId], references: [id])
+  lastMessageAt         DateTime?
+  lastMessagePreview    String?
+  status                String    @default("open")
+  resolvedAt            DateTime?
+  firstIncomingAt       DateTime?
+  firstAssignedAt       DateTime?
+  lastAssignedAt        DateTime?
+  firstResponseAt       DateTime?
+  firstResponseById     Int?
+  csMessagesSent        Int       @default(0)
+  messagesBeforeResolve Int?
+  reopenedCount         Int       @default(0)
+  resolvedById          Int?
+  transferUnseen        Boolean   @default(false) // v0.5.1: highlight "transfer belum dibaca" (additive)
+  queuedAt              DateTime? // v0.1.21: kapan chat masuk antrean (FIFO key); null = assigned/taken
+  lastAutoGreetDate     String? // v0.7.0: "YYYY-MM-DD" (WIB) terakhir kirim auto message (outside-hours/greeting)
+  // v0.10.0 — Snooze Chat (additive): null = tidak snooze
+  snoozedUntil          DateTime?
+  snoozedBy             Int?
+  // ═══ v0.13.0 — Menu Gateway (additive kolom) ═══
+  // menuState: null | "awaiting" | "done" — chat limbo (awaiting) TIDAK masuk queue/notif take (invariant spec §4.1)
+  // menuRequestedAt: utk sweep timeout; menuOptionId: opsi yg dipilih (audit/analytics; null = fallback/timeout)
+  menuState             String?
+  menuRequestedAt       DateTime?
+  menuOptionId          Int?
+  messages              Message[]
+  notes                 ChatNote[]
+  csatSurveys           CsatSurvey[]
+  scheduledMessages     ScheduledMessage[]
+  tags                  ChatTag[]
+  events                ChatEvent[]
+  contact               Contact?
+  // ═══ v0.14.0 — Manajemen Grup (PIC Model, additive kolom) ═══
+  // PIC = pemilik penuh grup (baca, balas, kelola). Grup = born-assigned:
+  // saat dibuat/di-adopt PIC di-set → BOTH picUserId AND assignedToId = picUserId.
+  // NULL + waJid @g.us = grup yatim (hanya admin yang melihat).
+  picUserId             Int?
+  pic                   User?      @relation("groupPics", fields: [picUserId], references: [id])
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+
+  @@unique([tenantId, waJid])
+  @@index([tenantId])
+  @@index([tenantId, status, assignedToId])
+  @@index([waJid])
+}
+
+// v0.12.9 — Pengaturan global (admin, universal) → PER-TENANT v3.
+model AppConfig {
+  id                  Int      @id @default(autoincrement())
+  tenantId            Int      @unique // satu config per tenant
+  readReceiptsEnabled Boolean  @default(false)
+  updatedAt           DateTime @updatedAt
+  updatedById         Int?
+}
+
+model Contact {
+  id        Int       @id @default(autoincrement())
+  tenantId  Int
+  name      String?
+  phone     String? // normalized 62xxx; null for LID-only contacts
+  chatId    Int?      @unique
+  chat      Chat?     @relation(fields: [chatId], references: [id])
+  birthDate DateTime?
+  gender    String? // 'male' | 'female'
+  city      String?
+  note      String?
+  source    String    @default("chat") // chat | import | manual
+  // v0.13.0 — marker terakhir kontak mendapat menu intro (D6, repeat frequency; WIB-aware di service)
+  lastMenuShownAt DateTime?
+  tags      ContactTag[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@index([phone])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// v0.13.0 — Menu Gateway (Auto Reply Triage) — PER-TENANT v3.
+// Spec: wa-cs-hub-v0.13.0-menu-gateway-spec.md (D1–D12 locked).
+// Default OFF (enabled=false) → zero behavior change pasca-deploy.
+// ═══════════════════════════════════════════════════════════════
+
+// Config per tenant — pola AutoReplyConfig v0.7.0.
+model MenuGatewayConfig {
+  id              Int      @id @default(autoincrement())
+  tenantId        Int      @unique // satu config per tenant
+  enabled         Boolean  @default(false)
+  introText       String   @default("Halo {name}! Silakan pilih topik yang ingin Anda sampaikan:\n1. Komplain\n2. Ambil hasil\n3. Tanya promo")
+  fallbackText    String   @default("Terima kasih! CS kami akan segera membalas pesan Anda. 🙏")
+  fallbackTagId   Int? // tag "Lainnya"; null = tanpa tag
+  timeoutValue    Int      @default(30) // 10..3600 (efektif detik)
+  timeoutUnit     String   @default("minutes") // "seconds" | "minutes" (UI dropdown)
+  repeatFrequency String   @default("daily") // "per_chat" | "daily" | "weekly"
+  updatedAt       DateTime @updatedAt
+  updatedById     Int?
+  options         MenuGatewayOption[]
+}
+
+// Opsi menu: position = urutan tampil = nomor menu (1..8), unik per config.
+// tenantId ikut kolom (real dari config); FK ke config (cascade delete).
+model MenuGatewayOption {
+  id        Int    @id @default(autoincrement())
+  tenantId  Int // v3 — real tenant (dari config)
+  configId  Int
+  position  Int // urutan tampil = nomor menu (1..8)
+  label     String // "Komplain" (≤50)
+  aliases   String  @default("")// csv keyword tambahan, ≤200 (mis. "komplain,keluhan")
+  replyText String // konfirmasi per opsi, ≤500, {name} diizinkan
+  tagId     Int? // tag kontak yg dilekatkan; null = tanpa tag
+  config    MenuGatewayConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+
+  @@unique([configId, position])
+  @@index([tenantId])
+}
+
+// v0.13.0 — tag level KONTAK (persistent antar chat, D4).
+// source: "manual" (UI kontak) | "menu" (auto dari pilihan/fallback gateway).
+// @@unique([contactId, tagId]) → upsert idempoten; tidak pernah menghapus tag lama.
+model ContactTag {
+  id         Int      @id @default(autoincrement())
+  tenantId   Int // v3 — real tenant (dari contact)
+  contactId  Int
+  contact    Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tagId      Int
+  tag        Tag      @relation(fields: [tagId], references: [id])
+  source     String   @default("manual") // "manual" | "menu"
+  addedById  Int?
+  createdAt  DateTime @default(now())
+
+  @@unique([contactId, tagId])
+  @@index([tenantId])
+}
+
+model Message {
+  id          Int               @id @default(autoincrement())
+  tenantId    Int
+  chatId      Int
+  chat        Chat              @relation(fields: [chatId], references: [id])
+  direction   String
+  content     String?
+  mediaPath   String?
+  mediaType   String?
+  mediaMime   String?
+  mediaSize   Int?
+  senderName  String
+  senderId    Int?
+  sender      User?             @relation(fields: [senderId], references: [id])
+  timestamp   DateTime          @default(now())
+  status      String            @default("sent")
+  waMessageId String?
+  purged      Boolean           @default(false)
+  isAuto      Boolean           @default(false) // v0.7.0: true = pesan auto greeting/outside-hours (bukan CS manusia)
+  // v0.14.0 — Manajemen Grup (additive kolom): pengirim asli di chat grup
+  // (full JID dari msg.participant). 1:1 tetap NULL.
+  participantJid String?
+  favorites   FavoriteMessage[]
+
+  @@index([tenantId])
+  @@index([chatId, timestamp])
+  @@index([waMessageId])
+}
+
+// ═══ v0.14.0 — Manajemen Grup (PIC Model) — audit trail aksi grup ═══
+// Tidak ada relasi ketat (chatId Int + tenantId) supaya purge/hapus row tidak
+// pernah memblokir aksi (chatId bisa dangling setelah chat dihapus — by design).
+model GroupActionLog {
+  id           Int      @id @default(autoincrement())
+  tenantId     Int
+  chatId       Int
+  actorUserId  Int
+  action       String   // create|add|remove|promote|demote|setting|invite_reset|rename|assign_pic|save_contact|pm|invite_link|leave
+  detail       String?
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId])
+}
+
+// v3 — milik tenant eksplisit (actor purge = admin tenant itu; inherit via userId
+// secara logika, tapi kolom tenantId ditulis langsung saat create utk query cepat).
+model PurgeLog {
+  id           Int      @id @default(autoincrement())
+  tenantId     Int
+  purgeDate    DateTime @default(now())
+  purgedById   Int
+  purgedBy     User     @relation(fields: [purgedById], references: [id])
+  chatCount    Int
+  messageCount Int
+  reason       String?
+
+  @@index([tenantId])
+}
+
+model ChatEvent {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int
+  chatId    Int
+  chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  userId    Int?
+  user      User?    @relation(fields: [userId], references: [id])
+  type      String
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([chatId])
+  @@index([type, createdAt])
+  @@index([userId])
+}
+
+model Tag {
+  id        Int       @id @default(autoincrement())
+  tenantId  Int
+  name      String
+  color     String    @default("blue")
+  createdBy Int?
+  createdAt DateTime  @default(now())
+  chats     ChatTag[]
+  contacts  ContactTag[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+model ChatTag {
+  chatId Int
+  tagId  Int
+  chat   Chat  @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  tag    Tag   @relation(fields: [tagId], references: [id])
+
+  @@id([chatId, tagId])
+  @@index([tagId])
+}
+
+model Blast {
+  id              Int        @id @default(autoincrement())
+  tenantId        Int
+  name            String?
+  message         String
+  mediaPath       String?
+  totalSent       Int        @default(0)
+  totalFailed     Int        @default(0)
+  totalRecipients Int        @default(0)
+  status          String     @default("pending")
+  delayPerMsg     Int        @default(5)
+  delayPerGroup   Int        @default(60)
+  groupSize       Int        @default(100)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdBy       Int
+  createdByUser   User       @relation(fields: [createdBy], references: [id])
+  createdAt       DateTime   @default(now())
+  logs            BlastLog[]
+
+  @@index([tenantId])
+}
+
+model BlastLog {
+  id          Int       @id @default(autoincrement())
+  blastId     Int
+  blast       Blast     @relation(fields: [blastId], references: [id], onDelete: Cascade)
+  chatId      Int? // v3 — Int FK Chat.id (null utk CSV cold numbers)
+  phoneNumber String?
+  contactName String?
+  status      String    @default("pending")
+  error       String?
+  sentAt      DateTime?
+
+  @@index([blastId])
+}
+
+model MessageTemplate {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int
+  name      String
+  keyword   String
+  content   String
+  category  String   @default("umum")
+  createdBy Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, name])
+  @@unique([tenantId, keyword])
+  @@index([tenantId])
+}
+
+model FavoriteMessage {
+  // v3 — tanpa tenantId: milik user, resolve tenant via userId (join User/Message).
+  id        Int      @id @default(autoincrement())
+  messageId Int
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id])
+  chatId    Int // denormalized ref chat (tanpa FK) — tenant via Message
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@index([userId])
+}
+
+model SharedFile {
+  id          Int           @id @default(autoincrement())
+  tenantId    Int
+  filename    String
+  title       String?
+  type        String // image | document | link
+  mimeType    String?
+  size        Int?
+  url         String?
+  caption     String? // v0.1.21: caption default untuk gambar Tangan Kanan
+  storagePath String?
+  folderId    Int?
+  folder      SharedFolder? @relation(fields: [folderId], references: [id])
+  isPinned    Boolean       @default(false)
+  uploadedBy  Int
+  uploader    User          @relation(fields: [uploadedBy], references: [id])
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([tenantId])
+}
+
+model SharedFolder {
+  id        Int          @id @default(autoincrement())
+  tenantId  Int
+  name      String
+  isSystem  Boolean      @default(false)
+  createdBy Int?
+  createdAt DateTime     @default(now())
+  files     SharedFile[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+model Announcement {
+  id          Int                @id @default(autoincrement())
+  tenantId    Int
+  title       String
+  content     String
+  pinned      Boolean            @default(false)
+  isActive    Boolean            @default(true)
+  expiresAt   DateTime?
+  createdById Int
+  createdBy   User               @relation(fields: [createdById], references: [id])
+  reads       AnnouncementRead[]
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([tenantId])
+}
+
+model AnnouncementRead {
+  // v3 — tanpa tenantId: milik user, resolve tenant via userId (join User).
+  id             Int          @id @default(autoincrement())
+  announcementId Int
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  userId         Int
+  user           User         @relation(fields: [userId], references: [id])
+  readAt         DateTime     @default(now())
+
+  @@unique([announcementId, userId])
+  @@index([userId])
+}
+
+// v0.4.0 — Web Push subscriptions (additive)
+// v3 — tanpa tenantId: milik user, resolve tenant via userId (join User).
+model PushSubscription {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id])
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// v0.7.0 — Auto Greeting config → PER-TENANT v3 (seed saat tenant dibuat).
+model AutoReplyConfig {
+  id                  Int      @id @default(autoincrement())
+  tenantId            Int      @unique // satu config per tenant
+  // Trigger 1: Outside Hours Reply
+  outsideHoursEnabled Boolean  @default(false)
+  outsideHoursText    String   @default("Halo! Mohon maaf, saat ini berada di luar jam operasional. Pesan Anda sudah kami terima dan akan dibalas saat jam kerja berikutnya. Terima kasih! 🙏")
+  // Trigger 2: First-of-Day Greeting
+  greetEnabled        Boolean  @default(false)
+  greetText           String   @default("Halo! Selamat datang 🙏 Ada yang bisa kami bantu?")
+  // v0.13.0 — mode greeting (D9): "text" = perilaku lama; "menu" = delegasi ke Menu Gateway
+  greetMode           String   @default("text") // "text" | "menu"
+  // Jam kerja per tipe hari, HH:mm WIB
+  monFriEnabled       Boolean  @default(true)
+  monFriStart         String   @default("08:00")
+  monFriEnd           String   @default("17:00")
+  satEnabled          Boolean  @default(true)
+  satStart            String   @default("08:00")
+  satEnd              String   @default("17:00")
+  sunEnabled          Boolean  @default(true)
+  sunStart            String   @default("08:00")
+  sunEnd              String   @default("17:00")
+  updatedAt           DateTime @updatedAt
+  updatedById         Int?
+}
+
+// v0.8.0 — Auto Backup Chat ke Google Drive (OAuth per-user, admin only).
+model GDriveLink {
+  id               Int       @id @default(autoincrement())
+  userId           Int       @unique
+  user             User      @relation(fields: [userId], references: [id])
+  email            String // akun Google yang terhubung (tampilan "Terhubung sebagai ...")
+  refreshTokenEnc  String // refresh token dienkripsi AES-256-GCM — JANGAN pernah plaintext / ke frontend
+  linkedAt         DateTime  @default(now())
+  lastBackupAt     DateTime?
+  lastBackupStatus String? // success | error
+  lastBackupError  String?
+}
+
+model BackupLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  user       User     @relation(fields: [userId], references: [id])
+  fileName   String // wa-cs-hub-backup-YYYY-MM-DD-HHmm.csv
+  sizeBytes  Int
+  status     String // success | error
+  error      String?
+  uploadedAt DateTime @default(now())
+}
+
+// v0.8.0 — Backup config → PER-TENANT v3 (pola AutoReplyConfig v0.7.0).
+model BackupConfig {
+  id             Int     @id @default(autoincrement())
+  tenantId       Int     @unique // satu config per tenant
+  frequency      String  @default("daily") // daily | weekly | monthly
+  hour           Int     @default(23) // 0–23 WIB
+  dayOfWeek      Int     @default(1) // 0=Minggu .. 6=Sabtu (untuk weekly)
+  dayOfMonth     Int     @default(1) // 1–28 (untuk monthly; aman utk bulan pendek)
+  retentionCount Int     @default(30) // simpan N backup terakhir di Drive
+  enabled        Boolean @default(false) // default OFF
+}
+
+// v0.9.0 — UI Revamp: konfigurasi tampilan → PER-TENANT v3.
+model AppearanceConfig {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int      @unique // satu config per tenant
+  accentSeed  String   @default("#6D28D9") // default ungu Parahita (samakan dgn tokens.css)
+  themeCss    String? // CSS variables hasil generate server (diserve via GET /theme.css)
+  updatedAt   DateTime @updatedAt
+  updatedById Int?
+}
+
+// ═══════════════════════════════════════════════════════════════
+// v0.10.0 — "Empat Fitur": Snooze · Catatan Internal · CSAT · Pesan Terjadwal
+// ═══════════════════════════════════════════════════════════════
+
+// Fitur B — Catatan Internal per chat (shared antar CS/admin).
+model ChatNote {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int
+  chatId    Int
+  chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id])
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([chatId, createdAt])
+}
+
+// Fitur C — CSAT survey (1 baris per event resolve; token unik utk parse balasan).
+model CsatSurvey {
+  id          Int       @id @default(autoincrement())
+  tenantId    Int
+  chatId      Int
+  chat        Chat      @relation(fields: [chatId], references: [id])
+  token       String    @unique
+  sentAt      DateTime?
+  rating      Int? // 1–5
+  respondedAt DateTime?
+  createdById Int // CS yang resolve
+  createdAt   DateTime  @default(now())
+  User        User?     @relation(fields: [userId], references: [id])
+  userId      Int?
+
+  @@index([tenantId])
+  @@index([chatId])
+}
+
+// Fitur C — Config → PER-TENANT v3. Default OFF.
+model CsatConfig {
+  id            Int      @id @default(autoincrement())
+  tenantId      Int      @unique // satu config per tenant
+  enabled       Boolean  @default(false)
+  message       String   @default("Halo {name}! Terima kasih sudah menghubungi kami 🙏 Bagaimana pengalaman Anda hari ini? Balas dengan angka 1–5 (1 = kurang, 5 = sangat puas).")
+  // v0.10.6 — cooldown configurable via admin
+  cooldownMode  String   @default("per_chat") // per_chat (A) | per_agent (B) | hybrid (C)
+  cooldownHours Int      @default(24)         // 0–168
+  updatedAt     DateTime @updatedAt
+  updatedById   Int?
+}
+
+// Fitur D — Pesan Terjadwal (sekali kirim; status pending|sent|cancelled|error).
+model ScheduledMessage {
+  id          Int       @id @default(autoincrement())
+  tenantId    Int
+  chatId      Int
+  chat        Chat      @relation(fields: [chatId], references: [id])
+  createdById Int
+  user        User      @relation(fields: [createdById], references: [id])
+  body        String
+  scheduledAt DateTime
+  status      String    @default("pending")
+  sentAt      DateTime?
+  error       String?
+  createdAt   DateTime  @default(now())
+
+  @@index([status, scheduledAt])
+  @@index([tenantId])
+  @@index([chatId])
+}

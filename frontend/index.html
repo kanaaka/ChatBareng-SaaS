@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+  <title>ChatBareng — Aplikasi Agent Hub untuk WhatsApp</title>
+  <link rel="icon" type="image/png" href="/icons/favicon.png" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <!-- v0.9.0 — theme-color di-set ulang oleh init script sesuai tema efektif -->
+  <meta name="theme-color" content="#6d28d9" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="ChatBareng" />
+  <!--
+    v0.9.0 — ANTI-FOUC: set data-theme SEBELUM paint pertama (sebelum CSS bundle & Vue mount).
+    Mode dari localStorage themeMode; default = system (ikut prefers-color-scheme).
+    v0.12.7 — BUGFIX status bar Android: theme-color dulu diambil dari hardcoded
+    #6d28d9/#141218 → accent admin (mis. hijau) tidak pernah ikut ke status bar.
+    Sekarang: seed live di-fetch dari /api/appearance/public (no-auth) lalu meta
+    theme-color di-set ulang (dark → surface #141218 biar nyambung dgn status bar
+    sistem; light → accentSeed). Pre-fetch tetap #6d28d9 (fallback aman).
+  -->
+  <script>
+    (function () {
+      var META_DARK = '#141218';
+      try {
+        var mode = localStorage.getItem('themeMode');
+        if (mode !== 'light' && mode !== 'dark' && mode !== 'system') mode = 'system';
+        var dark = mode === 'dark' || (mode === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        if (dark) document.documentElement.setAttribute('data-theme', 'dark');
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', dark ? META_DARK : '#6d28d9');
+        // v0.12.7 — seed aksen aktual dari server (PUBLIC) → status bar ikut accent admin
+        fetch('/api/appearance/public').then(function (r) {
+          return r.ok ? r.json() : null
+        }).then(function (j) {
+          if (j && j.accentSeed && meta) {
+            var m = document.querySelector('meta[name="theme-color"]');
+            if (m) m.setAttribute('content', dark ? META_DARK : j.accentSeed);
+          }
+        }).catch(function () { /* fallback: warna default di atas */ });
+      } catch (e) { /* aman: fallback = light */ }
+    })();
+  </script>
+  <!-- Token M3 default via bundle; override runtime accent admin dimuat SETELAHNYA
+       (spec §1a: "/theme.css dimuat setelahnya") → specificity sama, yang terakhir menang -->
+  <script>
+    // Sisipkan /theme.css SETELAH CSS bundle (yang di-inject Vite di head).
+    // Dipasang via JS agar urutan dijamin: bundle dulu → theme.css kemudian.
+    (function () {
+      var l = document.createElement('link');
+      l.rel = 'stylesheet';
+      l.href = '/theme.css';
+      document.addEventListener('DOMContentLoaded', function () { document.head.appendChild(l); });
+      // fallback: kalau DOMContentLoaded sudah lewat (edge case)
+      if (document.readyState !== 'loading') document.head.appendChild(l);
+    })();
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

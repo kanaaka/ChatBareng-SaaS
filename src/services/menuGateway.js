@@ -1,0 +1,529 @@
+/**
+ * v0.13.0 — Menu Gateway (Auto Reply Triage) service.
+ *
+ * Spec: wa-cs-hub-v0.13.0-menu-gateway-spec.md (D1–D12 locked).
+ *
+ * Aturan utama:
+ * - Chat "awaiting" = limbo: TIDAK masuk queue/count/take/notif (invariant §4.1).
+ * - TIDAK ada loop menu: max 1 intro per trigger; semua jalur berakhir "done".
+ * - SEMUA transisi state pakai updateMany berkondisi menuState:"awaiting" (race-safe;
+ *   count=0 = kalah race = skip) — pola claim greeting v0.7.0.
+ * - Pesan auto: senderId=null, isAuto=true, TIDAK mengisi firstResponse (pola v0.7.0).
+ * - Timeout efektif detik: unit=seconds ? v : v*60, clamp 10..3600.
+ * - Tag menempel di kontak (ContactTag source="menu", idempoten) + mirror ChatTag (D4).
+ * - Repeat frequency: per_chat / daily / weekly via Contact.lastMenuShownAt (D6).
+ * - Outside-hours SELALU menang (D5) — diperiksa di autoReply.js sebelum delegasi startFlow.
+ */
+
+const prisma = require('../prisma')
+const broadcast = require('../socket/broadcast')
+const { encryptText, decryptTextSafe } = require('./textCrypto')
+// v0.13.3 (F4) — repeatAllows SATU implementasi (di autoReply.js, marker BERSAMA
+// Contact.lastMenuShownAt utk menu & teks); di sini hanya re-export.
+const { wibDateString, personalizeText, stripUnknownPlaceholders, repeatAllows } = require('./autoReply')
+
+const SENDER_NAME = 'Auto Reply'
+const SWEEP_INTERVAL_MS = 30 * 1000 // sweep timeout tiap 30 detik (spec §4)
+
+// ─── Config cache PER-TENANT (in-memory, invalidate saat PUT — pola appConfig.js) ──
+// v3.0 — Map tenantId → { config, options } (MenuGatewayConfig @@unique([tenantId])).
+const configCache = new Map()
+
+/**
+ * Ambil config per tenant + options (seed idempotent via tenantSeed saat tenant
+ * dibuat; di sini tetap create-catch-race utk tenant lama tanpa seed).
+ * Hasil di-cache; menuGateway.invalidateConfig(tenantId) dipanggil route PUT.
+ */
+async function getConfig(tenantId) {
+  const tid = Number(tenantId)
+  if (!Number.isFinite(tid)) throw new Error('menuGateway.getConfig butuh tenantId')
+  if (configCache.has(tid)) return configCache.get(tid)
+  let cfg = await prisma.menuGatewayConfig.findUnique({
+    where: { tenantId: tid },
+    include: { options: { orderBy: { position: 'asc' } } },
+  })
+  if (!cfg) {
+    cfg = await prisma.menuGatewayConfig.create({
+      data: { tenantId: tid },
+      include: { options: { orderBy: { position: 'asc' } } },
+    }).catch(async (e) => {
+      // Race dengan proses lain — baca ulang
+      if (e.code === 'P2002') {
+        return prisma.menuGatewayConfig.findUnique({
+          where: { tenantId: tid },
+          include: { options: { orderBy: { position: 'asc' } } },
+        })
+      }
+      throw e
+    })
+  }
+  configCache.set(tid, cfg)
+  return cfg
+}
+
+function invalidateConfig(tenantId) {
+  if (tenantId === undefined) configCache.clear()
+  else configCache.delete(Number(tenantId))
+}
+
+/**
+ * Timeout efektif detik: unit=seconds ? v : v*60, clamp 10..3600 (invariant §4.6).
+ */
+function effectiveTimeoutSeconds(cfg) {
+  const v = Math.max(1, parseInt(cfg.timeoutValue, 10) || 0)
+  const eff = cfg.timeoutUnit === 'seconds' ? v : v * 60
+  return Math.min(3600, Math.max(10, eff))
+}
+
+// ─── Tagging D4 — upsert ContactTag + mirror ChatTag ────────────────────
+/**
+ * Lekatkan tag ke KONTAK (persistent) + mirror ke chat (filter ChatTag existing tetap jalan).
+ * Idempoten: ContactTag @@unique([contactId, tagId]) → upsert; ChatTag PK composite → create-catch.
+ * TIDAK menghapus tag lama (additive saja).
+ */
+async function tagContactAndMirror(tenantId, contactId, tagId, chatId, addedById = null) {
+  if (!tagId || !contactId) return
+  try {
+    // Cek tag masih ada (tag bisa sudah dihapus admin — jangan create row dangling)
+    const tag = await prisma.tag.findFirst({ where: { id: tagId, tenantId } })
+    if (!tag) return
+
+    // Upsert ContactTag — idempoten via @@unique([contactId, tagId])
+    await prisma.contactTag.upsert({
+      where: { contactId_tagId: { contactId, tagId } },
+      update: {}, // tidak menimpa source manual lama — additive saja
+      create: { tenantId, contactId, tagId, source: 'menu', addedById },
+    })
+
+    // Mirror ChatTag (idempoten: composite PK → P2002 di-skip)
+    if (chatId) {
+      try {
+        await prisma.chatTag.create({ data: { chatId, tagId } })
+      } catch (e) {
+        if (e.code !== 'P2002') throw e
+      }
+      broadcast.emitToTenant(tenantId, 'chat_update', { chatId, tagAdded: tag })
+    }
+  } catch (e) {
+    console.error('[MenuGateway] tagContactAndMirror error:', e.message)
+  }
+}
+
+// ─── Queue-kan chat (transisi "done" milik gateway) ─────────────────────
+/**
+ * Queue-kan chat milik gateway: queuedAt=now (FIFO key), status open, broadcast.
+ * Pemanggil WAJIB sudah meng-claim transisi menuState awaiting→done via updateMany
+ * (race-safe). Tidak mengisi firstResponse (invariant §4).
+ */
+async function queueChatAfterMenu(chat) {
+  const chatId = chat.id
+  const tenantId = chat.tenantId
+  await prisma.chat.updateMany({
+    where: { id: chatId, tenantId, assignedToId: null, status: 'open' },
+    data: { queuedAt: new Date() },
+  })
+  broadcast.emitToTenant(tenantId, 'chat_update', { chatId, queuedAt: new Date(), menuState: 'done' })
+  const queue = require('../socket/queue')
+  queue.emitQueueUpdate(tenantId)
+}
+
+// ─── Compose intro pesan (v0.12.13) — introText + list otomatis dari Opsi Menu ──
+/**
+ * introText = kalimat pembuka SAJA (tanpa list — list di textarea lama di-IGNORE).
+ * List bernomor di-generate dari opsi aktif → preview UI & pesan asli 1:1.
+ * Kompatibel: introText lama yang masih mengandung list di-RE (regex buang baris
+ * "N. ..." berurutan di akhir) supaya tidak dobel list.
+ */
+function composeMenuIntro(cfg) {
+  let intro = String(cfg.introText || '').trim()
+  // Strip list bernomor yang menempel di akhir intro (data lama v0.13.0)
+  intro = intro.replace(/(?:\s*\d+\.\s*[^\n]+)+\s*$/, '').trim()
+  const lines = cfg.options
+    .slice()
+    .sort((a, b) => a.position - b.position)
+    .map((o, i) => `${i + 1}. ${o.label || '…'}`)
+  return lines.length ? `${intro}\n\n${lines.join('\n')}` : intro
+}
+
+// ─── Kirim pesan auto menu (pola autoReply v0.7.0) ──────────────────────
+/**
+ * Kirim teks via WA + simpan Message (senderId=null, isAuto=true, TIDAK isi firstResponse).
+ * @returns {Promise<boolean>} true = terkirim & tersimpan
+ */
+async function sendAutoMessage(chat, text, contactName = null) {
+  const chatId = chat.id
+  const tenantId = chat.tenantId
+  const finalText = personalizeText(text, contactName)
+  try {
+    // Lazy require pool per-tenant (v3 — sendMessage legacy global dihapus)
+    const wa = require('../wa/pool')
+    await wa.sendMessageForTenant(tenantId, chat.waJid, finalText)
+  } catch (sendErr) {
+    console.error(`[MenuGateway] send gagal untuk chat=${chatId} (tenant ${tenantId}):`, sendErr.message)
+    return false
+  }
+  const dbMsg = await prisma.message.create({
+    data: {
+      tenantId,
+      chatId,
+      direction: 'out',
+      content: encryptText(finalText),
+      senderName: SENDER_NAME,
+      senderId: null,
+      isAuto: true,
+      timestamp: new Date(),
+      status: 'sent',
+    },
+  })
+  broadcast.emitToTenant(tenantId, 'new_message', { chatId, assignedToId: null, status: 'open', message: { ...dbMsg, content: decryptTextSafe(dbMsg.content) } })
+  broadcast.emitToTenant(tenantId, 'chat_update', { chatId, lastMessage: finalText, lastMessageAt: dbMsg.timestamp })
+
+  // v0.12.9 — implied read (fire-and-forget; gate AppConfig di dalam service)
+  try {
+    const receipts = require('./receipts')
+    receipts.markIncomingRead(tenantId, chatId).catch(re => console.error('[Receipts] menuGateway:', re.message))
+  } catch { /* fire-and-forget */ }
+
+  return true
+}
+
+// ─── Repeat frequency (D6/F4) — lihat autoReply.repeatAllows ─────────────
+// v0.13.3: implementasi dipindah ke autoReply.js (marker BERSAMA menu & teks);
+// fungsi di-import di atas dan di-re-export di module.exports bawah.
+
+// ─── [B] startFlow — trigger intro (dipanggil autoReply first-of-day, greetMode=menu) ──
+/**
+ * Mulai flow menu pada chat. DIPANGGIL dari autoReply.maybeAutoReply saat
+ * greetMode="menu" + gateway enabled + repeat mengizinkan (outside hours SUDAH
+ * dievaluasi pemanggil — D5: outside-hours selalu menang, tanpa menu).
+ *
+ * Return true = handled (intro terkirim / sudah pernah diflow) → autoReply berhenti.
+ * Return false = bukan jalanku (greetMode=text dsb.) → autoReply jalur lama.
+ *
+ * @param {object} chat - row Chat terbaru (dengan include contact bila tersedia)
+ */
+async function startFlow(chat) {
+  const chatId = chat.id
+  const tenantId = chat.tenantId
+  try {
+    const cfg = await getConfig(tenantId)
+
+    // Guard total: gateway OFF → bukan jalur menu (caller memutuskan jalur lama)
+    if (!cfg.enabled) return false
+    // greetMode menu-nya di-evaluasi caller; defense-in-depth: cek lagi di sini
+    const autoCfg = await prisma.autoReplyConfig.findUnique({ where: { tenantId } })
+    if (!autoCfg || !autoCfg.greetEnabled || autoCfg.greetMode !== 'menu') return false
+
+    // Repeat frequency (D6/F4) — CEK SEBELUM claim (anti-orphan v0.13.3): repeat
+    // blocked TIDAK boleh meninggalkan chat awaiting tanpa intro. Bila chat belum
+    // queued (bawaan E0) → queue-kan dulu (chat lanjut alur biasa, tidak limbo).
+    let contact = chat.contact || null
+    if (!contact) {
+      contact = await prisma.contact.findUnique({ where: { chatId } })
+    }
+    if (!repeatAllows(contact, cfg.repeatFrequency)) {
+      const { ensureChatQueued } = require('./autoReply')
+      await ensureChatQueued(chatId)
+      return false
+    }
+
+    // STATE GUARD (invariant §4.2 + §4.3): chat yang pernah diflow tidak dikirim
+    // menu lagi; chat assigned/open-lain TIDAK pernah dapat menu. Claim atomik:
+    // hanya chat menuState NULL + unassigned + open yang bisa di-claim (menutup
+    // race take-next vs startFlow — kalah claim = tanpa menu, alur biasa).
+    const claim = await prisma.chat.updateMany({
+      where: { id: chatId, tenantId, menuState: null, assignedToId: null, status: 'open' },
+      data: { menuState: 'awaiting', menuRequestedAt: new Date() },
+    })
+    if (claim.count === 0) {
+      // Sudah pernah diflow (awaiting/done) ATAU kalah race (di-take CS/di-sweep)
+      // → handled, jangan menu 2x; chat lanjut alurnya masing-masing.
+      return true
+    }
+
+    // Kirim intro — v0.12.13: introText = kalimat pembuka SAJA (tanpa list);
+    // list bernomor di-generate dari Opsi Menu (preview UI = pesan asli 1:1).
+    const sent = await sendAutoMessage(chat, composeMenuIntro(cfg), chat.contactName)
+    if (!sent) {
+      // Send gagal → revert state (pelanggan bisa dapat menu di pesan berikutnya)
+      await prisma.chat.updateMany({
+        where: { id: chatId, tenantId, menuState: 'awaiting' },
+        data: { menuState: null, menuRequestedAt: null },
+      })
+      // v0.13.3 — anti-orphan: bila chat belum queued (bawaan E0) → queue-kan agar
+      // tidak hilang dari radar CS (spec F1 matrix (b)).
+      const { ensureChatQueued } = require('./autoReply')
+      await ensureChatQueued(chatId)
+      return false
+    }
+
+    // Marker kontak (D6): setelah intro TERKIRIM
+    if (contact) {
+      await prisma.contact.updateMany({
+        where: { id: contact.id, tenantId },
+        data: { lastMenuShownAt: new Date() },
+      })
+    }
+
+    // v0.13.3 — broadcast chat_update wajib bawa queuedAt:null + menuState:'awaiting'
+    // agar UI admin sinkron (spec F1 catatan implementasi).
+    broadcast.emitToTenant(tenantId, 'chat_update', { chatId, queuedAt: null, menuState: 'awaiting' })
+    broadcast.emitToTenant(tenantId, 'menu_waiting_update', { count: await countWaiting(tenantId) })
+    console.log(`[MenuGateway] intro terkirim → awaiting: chat=${chatId} (tenant ${tenantId})`)
+    return true
+  } catch (e) {
+    console.error('[MenuGateway] startFlow error:', e)
+    // Safety: jangan biarkan chat terjebak awaiting tanpa intro
+    await prisma.chat.updateMany({
+      where: { id: chatId, tenantId, menuState: 'awaiting', menuRequestedAt: null },
+      data: { menuState: null },
+    }).catch(() => {})
+    // v0.13.3 — anti-orphan: jangan biarkan chat hilang dari radar CS
+    const { ensureChatQueued } = require('./autoReply')
+    await ensureChatQueued(chatId).catch(() => {})
+    return false
+  }
+}
+
+// ─── §5 — Pencocokan jawaban (deterministik, tanpa AI) ──────────────────
+/**
+ * Normalisasi input: trim, lowercase, buang prefix .,):\- pada token pertama.
+ * Return token pertama + full string ternormalisasi.
+ */
+function normalizeAnswer(raw) {
+  const trimmed = String(raw || '').trim().toLowerCase()
+  if (!trimmed) return { first: '', full: '' }
+  const tokens = trimmed.split(/\s+/)
+  const first = tokens[0].replace(/^[.,):\\\-]+/, '')
+  return { first, full: trimmed }
+}
+
+/**
+ * Tentukan opsi dari jawaban pelanggan (§5):
+ * 1. Exact number: token pertama /^(\d+)$/ → 1..N (posisi) → opsi tsb; 0/>N → null (fallback D2).
+ * 2. Alias: token pertama (atau input penuh) == alias opsi (case-insensitive) → opsi; tie → position terkecil.
+ * 3. Gagal keduanya → null → fallback.
+ */
+function matchOption(text, options) {
+  const { first, full } = normalizeAnswer(text)
+  if (!first) return null
+
+  // 1. Exact number (posisi opsi 1..N)
+  const numMatch = first.match(/^(\d+)$/)
+  if (numMatch) {
+    const num = parseInt(numMatch[1], 10)
+    if (num >= 1 && num <= options.length) {
+      const opt = options.find(o => o.position === num)
+      if (opt) return opt
+    }
+    return null // 0 atau >N → fallback (D2)
+  }
+
+  // 2. Alias: cek token pertama, lalu input penuh — tie → position terkecil
+  const candidates = [first, full].filter(Boolean)
+  for (const cand of candidates) {
+    const hit = options
+      .filter(o => String(o.aliases || '')
+        .split(',')
+        .map(a => a.trim().toLowerCase())
+        .filter(Boolean)
+        .includes(cand))
+      .sort((a, b) => a.position - b.position)
+    if (hit.length > 0) return hit[0]
+  }
+  return null
+}
+
+// ─── [A] handleChoice — jawaban pelanggan saat awaiting ─────────────────
+/**
+ * Evaluasi jawaban pelanggan terhadap config TERBARU (cache invalidated on save).
+ * Hasil SELALU transisi "done" (tidak pernah re-prompt, D2):
+ *   cocok → reply opsi → tag → queue
+ *   tak cocok → fallbackText → tag "Lainnya" (bila diset) → queue
+ * Race-safe: transisi awaiting→done pakai updateMany kondisional; count=0 = kalah
+ * race (sudah di-sweep/direlease) → pesan jadi pesan biasa, SKIP.
+ *
+ * @param {string} chatId
+ * @param {string} plaintextText - plaintext dari variabel `text` lokal baileys
+ *   (JANGAN dekrip dari DB — Message.content tersimpan ciphertext AES)
+ * @returns {Promise<boolean>} true = chat adalah milik gateway & transisi terjadi
+ */
+async function handleChoice(chatId, plaintextText) {
+  try {
+    const chat = await prisma.chat.findUnique({
+      where: { id: chatId },
+      include: { contact: true },
+    })
+    if (!chat || chat.menuState !== 'awaiting') return false // bukan limbo → bukan jalur gateway
+
+    const tenantId = chat.tenantId
+    const cfg = await getConfig(tenantId)
+
+    // ATOMIC CLAIM transisi awaiting→done (race-safe vs sweep/release/pesan kedua).
+    // Semua jalur di bawah berakhir "done" — claim lebih dulu = jaminan 1 transisi.
+    const claimed = await prisma.chat.updateMany({
+      where: { id: chatId, tenantId, menuState: 'awaiting' },
+      data: {
+        menuState: 'done',
+        menuOptionId: null, // di-set ulang bila cocok, di bawah
+      },
+    })
+    if (claimed.count === 0) return false // kalah race (timeout/release lebih dulu) → skip
+
+    const opt = matchOption(plaintextText, cfg.options)
+
+    if (opt) {
+      // ── Pilihan valid (D10): konfirmasi per opsi → tag → queue ──
+      if (chat.menuOptionId !== opt.id) {
+        await prisma.chat.updateMany({
+          where: { id: chatId, tenantId, menuState: 'done' },
+          data: { menuOptionId: opt.id },
+        })
+      }
+      // Spec §14 rekomendasi: catat ChatEvent menu_choice (analytics menyusul)
+      await prisma.chatEvent.create({
+        data: { tenantId, chatId, userId: null, type: 'menu_choice', createdAt: new Date() },
+      }).catch(e => console.error('[MenuGateway] chatEvent error (non-fatal):', e.message))
+
+      const sent = await sendAutoMessage(chat, opt.replyText || cfg.fallbackText, chat.contactName)
+      if (!sent) console.error(`[MenuGateway] reply opsi gagal terkirim (chat=${chatId}) — tag & queue tetap jalan`)
+
+      // Tag kontak (persistent) + mirror chat — bila opsi punya tag
+      if (opt.tagId && chat.contact) {
+        await tagContactAndMirror(tenantId, chat.contact.id, opt.tagId, chatId, null)
+      }
+    } else {
+      // ── Fallback (D2): TIDAK ada loop menu → tag "Lainnya" + queue ──
+      const sent = await sendAutoMessage(chat, cfg.fallbackText, chat.contactName)
+      if (!sent) console.error(`[MenuGateway] fallbackText gagal terkirim (chat=${chatId}) — tag & queue tetap jalan`)
+      if (cfg.fallbackTagId && chat.contact) {
+        await tagContactAndMirror(tenantId, chat.contact.id, cfg.fallbackTagId, chatId, null)
+      }
+    }
+
+    // Queue-kan (FIFO key baru) + broadcast
+    await queueChatAfterMenu(chat)
+    broadcast.emitToTenant(tenantId, 'menu_waiting_update', { count: await countWaiting(tenantId) })
+    console.log(`[MenuGateway] ${opt ? `opsi ${opt.position} (${opt.label})` : 'fallback'} → done & queued: chat=${chatId} (tenant ${tenantId})`)
+    return true
+  } catch (e) {
+    console.error('[MenuGateway] handleChoice error:', e)
+    return false
+  }
+}
+
+// ─── Chip admin: hitung chat awaiting (per tenant) ──────────────────────
+async function countWaiting(tenantId) {
+  return prisma.chat.count({ where: { tenantId, menuState: 'awaiting' } })
+}
+
+async function listWaiting(tenantId) {
+  const chats = await prisma.chat.findMany({
+    where: { tenantId, menuState: 'awaiting' },
+    select: { id: true, contactName: true, contactPhone: true, menuRequestedAt: true },
+    orderBy: { menuRequestedAt: 'asc' },
+    take: 200,
+  })
+  const now = Date.now()
+  return chats.map(c => ({
+    id: c.id,
+    contactName: c.contactName,
+    phone: c.contactPhone,
+    waitedSeconds: c.menuRequestedAt ? Math.max(0, Math.floor((now - new Date(c.menuRequestedAt).getTime()) / 1000)) : 0,
+  }))
+}
+
+// ─── Release semua awaiting → queue TANPA tag (idempoten) ───────────────
+/**
+ * Dipanggil: (1) sweep timeout, (2) admin PUT enabled=false (D12).
+ * Transisi SELALU updateMany berkondisi menuState:"awaiting" (race-safe, idempoten).
+ * Timeout → queue TANPA tag (D11). return { released, ids }
+ */
+async function releaseAwaiting(tenantId, timeoutOnly = false, timeoutSeconds = null) {
+  const where = { tenantId, menuState: 'awaiting' }
+  if (timeoutOnly && timeoutSeconds) {
+    where.menuRequestedAt = { lt: new Date(Date.now() - timeoutSeconds * 1000) }
+  }
+  // Atomic transition — semua chat yang kena di sini = milik sweep/release ini
+  const result = await prisma.chat.updateMany({
+    where,
+    data: { menuState: 'done', queuedAt: new Date() },
+  })
+  if (result.count === 0) return { released: 0, ids: [] }
+
+  const released = await prisma.chat.findMany({
+    where: { tenantId, menuState: 'done', menuOptionId: null, menuRequestedAt: { not: null } },
+    select: { id: true },
+    orderBy: { menuRequestedAt: 'desc' },
+    take: result.count,
+  })
+  const ids = released.map(c => c.id)
+  for (const id of ids) {
+    broadcast.emitToTenant(tenantId, 'chat_update', { chatId: id, queuedAt: new Date(), menuState: 'done' })
+  }
+  const queue = require('../socket/queue')
+  queue.emitQueueUpdate(tenantId)
+  broadcast.emitToTenant(tenantId, 'menu_waiting_update', { count: await countWaiting(tenantId) })
+  console.log(`[MenuGateway] releaseAwaiting(${timeoutOnly ? 'timeout' : 'disabled'}, tenant ${tenantId}): ${ids.length} chat → queue tanpa tag`)
+  return { released: result.count, ids }
+}
+
+// ─── Sweep timeout PER-TENANT (interval 30 dtk, mulai post-WA-connect) ────
+let sweepTimer = null
+
+async function sweepOnce() {
+  try {
+    // v3 — semua tenant aktif di-sweep (config per tenant). Tenant suspended
+    // tetap di-sweep bila chat awaiting-nya ada (aman: release ke queue tenant-nya).
+    const configs = await prisma.menuGatewayConfig.findMany({
+      where: { enabled: true },
+      select: { tenantId: true, timeoutValue: true, timeoutUnit: true },
+    })
+    for (const cfg of configs) {
+      const eff = effectiveTimeoutSeconds(cfg)
+      await releaseAwaiting(cfg.tenantId, true, eff)
+    }
+  } catch (e) {
+    console.error('[MenuGateway] sweep error:', e.message)
+  }
+}
+
+/**
+ * Boot sweep — dipanggil server.js SETELAH WA connect (spec §4: mulai post-connect).
+ * Chat awaiting + server restart → state di DB, sweep lanjut; intro TIDAK dikirim ulang.
+ */
+function initMenuGatewaySweep() {
+  if (sweepTimer) return
+  sweepTimer = setInterval(sweepOnce, SWEEP_INTERVAL_MS)
+  console.log(`[MenuGateway] Sweep timeout started (interval ${SWEEP_INTERVAL_MS / 1000}s)`)
+}
+
+function stopMenuGatewaySweep() {
+  if (sweepTimer) {
+    clearInterval(sweepTimer)
+    sweepTimer = null
+  }
+}
+
+module.exports = {
+  getConfig,
+  invalidateConfig,
+  effectiveTimeoutSeconds,
+  repeatAllows,
+  normalizeAnswer,
+  matchOption,
+  tagContactAndMirror,
+  composeMenuIntro,
+  startFlow,
+  handleChoice,
+  releaseAwaiting,
+  countWaiting,
+  listWaiting,
+  sweepOnce,
+  initMenuGatewaySweep,
+  stopMenuGatewaySweep,
+  personalizeText,
+  stripUnknownPlaceholders,
+  SWEEP_INTERVAL_MS,
+  SENDER_NAME,
+}

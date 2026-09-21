@@ -1,0 +1,190 @@
+/* ==========================================================================
+   v0.9.0 — tokens.css · Material 3 Expressive design tokens (ChatBareng)
+   Fondasi: M3 design tokens CSS + komponen manual (pola hybrid, TANPA MWC).
+   Default seed: ungu Parahita #6D28D9 — override runtime diserve via /theme.css
+   (dimuat SETELAH file ini di index.html → variable sama, otomatis menimpa).
+   Kontras pasangan warna teks terhadap latar dicek manual terhadap WCAG AA
+   di 2 tema (light & dark).
+
+   Catatan font: deklarasi font TIDAK didefinisikan di sini — di-import via
+   @fontsource/roboto di style.css (latin, 400–800, display: swap) — ganti font v0.12.5 (Roboto = M3 standard).
+   ========================================================================== */
+
+:root {
+  /* v0.12.3 — native form controls (input/textarea/date) ikut tema UA */
+  color-scheme: light;
+  /* ── Light scheme (seed: Parahita purple #6D28D9, M3 tonal palette) ── */
+  --md-sys-color-primary: #6d28d9;
+  --md-sys-color-on-primary: #ffffff;
+  --md-sys-color-primary-container: #f2e9ff;
+  --md-sys-color-on-primary-container: #260056;
+  --md-sys-color-secondary: #625b71;
+  --md-sys-color-on-secondary: #ffffff;
+  --md-sys-color-secondary-container: #e8def8;
+  --md-sys-color-on-secondary-container: #1e192b;
+  --md-sys-color-tertiary: #7e5260;
+  --md-sys-color-on-tertiary: #ffffff;
+  --md-sys-color-tertiary-container: #ffd9e2;
+  --md-sys-color-on-tertiary-container: #31101d;
+  --md-sys-color-error: #ba1a1a;
+  --md-sys-color-on-error: #ffffff;
+  --md-sys-color-error-container: #ffdad6;
+  --md-sys-color-on-error-container: #410002;
+  --md-sys-color-surface: #fef7ff;
+  --md-sys-color-on-surface: #1d1b20;
+  --md-sys-color-surface-variant: #e7e0eb;
+  --md-sys-color-on-surface-variant: #49454e;
+  --md-sys-color-surface-container: #f3edf7;
+  --md-sys-color-surface-container-low: #f7f2fa;
+  --md-sys-color-surface-container-lowest: #ffffff;
+  --md-sys-color-surface-container-high: #ece6f0;
+  --md-sys-color-surface-container-highest: #e6e0e9;
+  --md-sys-color-outline: #79747e;
+  --md-sys-color-outline-variant: #cac4d0;
+  --md-sys-color-inverse-surface: #322f35;
+  --md-sys-color-inverse-on-surface: #f5eff7;
+  /* Semantic extensions (spec §1) */
+  --md-sys-color-success: #1b7f4d;      /* on white = AA */
+  --md-sys-color-on-success: #ffffff;
+  --md-sys-color-success-container: #a6f2c5;
+  --md-sys-color-on-success-container: #00210f;
+  --md-sys-color-warning: #8a5a00;      /* on white = AA */
+  --md-sys-color-warning-container: #ffdeA6;
+  --md-sys-color-info: #0060a9;
+  --md-sys-color-info-container: #d1e4ff;
+  /* State layers */
+  --md-sys-color-primary-hover: #ece2ff;
+  --md-sys-color-primary-active: #4a0fa5;
+  /* M3 elevated surface tint (overlay warna primary saat elevation) */
+  --md-sys-surface-tint: var(--md-sys-color-primary);
+
+  /* ── Shape scale (4/8/12/16/28) ── */
+  --md-sys-shape-corner-none: 4px;
+  --md-sys-shape-corner-s: 8px;
+  --md-sys-shape-corner-m: 12px;
+  --md-sys-shape-corner-l: 16px;
+  --md-sys-shape-corner-xl: 28px;
+  --md-sys-shape-corner-full: 9999px;
+
+  /* ── Spacing 4pt grid ── */
+  --md-sys-space-1: 4px;
+  --md-sys-space-2: 8px;
+  --md-sys-space-3: 12px;
+  --md-sys-space-4: 16px;
+  --md-sys-space-5: 24px;
+  --md-sys-space-6: 32px;
+  --md-sys-space-7: 48px;
+
+  /* ── Elevation M3 level 0–5 (shadow + tint diaplikasikan via .elev-*) ── */
+  --md-sys-elevation-0: none;
+  --md-sys-elevation-1: 0 1px 2px rgba(0, 0, 0, 0.30), 0 1px 3px 1px rgba(0, 0, 0, 0.15);
+  --md-sys-elevation-2: 0 1px 2px rgba(0, 0, 0, 0.30), 0 2px 6px 2px rgba(0, 0, 0, 0.15);
+  --md-sys-elevation-3: 0 4px 8px 3px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.30);
+  --md-sys-elevation-4: 0 6px 10px 4px rgba(0, 0, 0, 0.15), 0 2px 3px rgba(0, 0, 0, 0.30);
+  --md-sys-elevation-5: 0 8px 12px 6px rgba(0, 0, 0, 0.15), 0 4px 4px rgba(0, 0, 0, 0.30);
+
+  /* ── Type scale (Roboto — M3 Expressive standard, v0.12.5) ── */
+  --md-sys-font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --md-sys-typescale-display-large: 800 2.5rem/1.15 var(--md-sys-font-family);
+  --md-sys-typescale-display-medium: 800 2rem/1.2 var(--md-sys-font-family);
+  --md-sys-typescale-headline-large: 700 1.75rem/1.25 var(--md-sys-font-family);
+  --md-sys-typescale-headline-medium: 700 1.5rem/1.3 var(--md-sys-font-family);
+  --md-sys-typescale-headline-small: 600 1.25rem/1.35 var(--md-sys-font-family);
+  --md-sys-typescale-title-large: 600 1.125rem/1.35 var(--md-sys-font-family);
+  --md-sys-typescale-title-medium: 600 0.875rem/1.4 var(--md-sys-font-family);
+  --md-sys-typescale-title-small: 600 0.8125rem/1.4 var(--md-sys-font-family);
+  --md-sys-typescale-body-large: 400 1rem/1.5 var(--md-sys-font-family);
+  --md-sys-typescale-body-medium: 400 0.875rem/1.5 var(--md-sys-font-family);
+  --md-sys-typescale-body-small: 400 0.75rem/1.5 var(--md-sys-font-family);
+  --md-sys-typescale-label-large: 600 0.875rem/1.4 var(--md-sys-font-family);
+  --md-sys-typescale-label-medium: 600 0.75rem/1.4 var(--md-sys-font-family);
+  --md-sys-typescale-label-small: 600 0.6875rem/1.4 var(--md-sys-font-family);
+
+  /* Motion (transisi halus 150–250ms, spec §5) */
+  --md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --md-sys-motion-duration-short: 150ms;
+  --md-sys-motion-duration-medium: 250ms;
+
+  /* Focus ring (aksesibilitas) */
+  --md-sys-focus-ring: 2px solid var(--md-sys-color-primary);
+}
+
+/* ── Dark scheme: pasangan nilai masing-masing (bukan invert sederhana) ── */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --md-sys-color-primary: #d3bbff;
+  --md-sys-color-on-primary: #3a0a8e;
+  --md-sys-color-primary-container: #560fc8;
+  --md-sys-color-on-primary-container: #ece5ff;
+  --md-sys-color-secondary: #cbc2db;
+  --md-sys-color-on-secondary: #332d41;
+  --md-sys-color-secondary-container: #4a4458;
+  --md-sys-color-on-secondary-container: #e8def8;
+  --md-sys-color-tertiary: #efb8c8;
+  --md-sys-color-on-tertiary: #482532;
+  --md-sys-color-tertiary-container: #623b49;
+  --md-sys-color-on-tertiary-container: #ffd9e2;
+  --md-sys-color-error: #ffb4ab;
+  --md-sys-color-on-error: #690005;
+  --md-sys-color-error-container: #93000a;
+  --md-sys-color-on-error-container: #ffdad6;
+  --md-sys-color-surface: #141218;
+  --md-sys-color-on-surface: #e6e0e9;
+  --md-sys-color-surface-variant: #49454e;
+  --md-sys-color-on-surface-variant: #cac4d0;
+  --md-sys-color-surface-container: #211f26;
+  --md-sys-color-surface-container-low: #1d1b20;
+  --md-sys-color-surface-container-lowest: #0f0d13;
+  --md-sys-color-surface-container-high: #2b292f;
+  --md-sys-color-surface-container-highest: #36343b;
+  --md-sys-color-outline: #948f99;
+  --md-sys-color-outline-variant: #49454e;
+  --md-sys-color-inverse-surface: #e6e0e9;
+  --md-sys-color-inverse-on-surface: #322f35;
+  /* Semantic extensions — dark */
+  --md-sys-color-success: #7ddba6;
+  --md-sys-color-on-success: #00391d;
+  --md-sys-color-success-container: #00522c;
+  --md-sys-color-on-success-container: #a6f2c5;
+  --md-sys-color-warning: #ffc46b;
+  --md-sys-color-warning-container: #6b3f00;
+  --md-sys-color-info: #9ccaff;
+  --md-sys-color-info-container: #00497f;
+  --md-sys-color-primary-hover: #3f2470;
+  --md-sys-color-primary-active: #e7dcff;
+  --md-sys-surface-tint: var(--md-sys-color-primary);
+
+  --md-sys-elevation-1: 0 1px 2px rgba(0, 0, 0, 0.55), 0 1px 3px 1px rgba(0, 0, 0, 0.35);
+  --md-sys-elevation-2: 0 1px 2px rgba(0, 0, 0, 0.55), 0 2px 6px 2px rgba(0, 0, 0, 0.35);
+  --md-sys-elevation-3: 0 4px 8px 3px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.55);
+  --md-sys-elevation-4: 0 6px 10px 4px rgba(0, 0, 0, 0.35), 0 2px 3px rgba(0, 0, 0, 0.55);
+  --md-sys-elevation-5: 0 8px 12px 6px rgba(0, 0, 0, 0.35), 0 4px 4px rgba(0, 0, 0, 0.55);
+}
+
+/* ==========================================================================
+   Legacy alias map (compat shim) — nama kelas Tailwind WA lama (bg-wa-dark,
+   bg-wa-green, text-wa-dark, bg-wa-light, ring-wa-green) diarahkan ke token M3.
+   Ini yang bikin "sisa" kelas lama di file yang belum di-reskin tetap ikut tema,
+   tanpa mengubah perilaku/logika.
+   ========================================================================== */
+:root {
+  --wa-legacy-dark: #0b1a24;      /* dulu #075E54-ish header; sekarang surface gelap token */
+  --wa-legacy-green: var(--md-sys-color-primary);
+  --wa-legacy-light: var(--md-sys-color-secondary-container);
+}
+
+/* ==========================================================================
+   Base layer — dipakai index.html setelah tokens (import dari style.css)
+   ========================================================================== */
+.md-base {
+  font-family: var(--md-sys-font-family);
+}
+/* ==========================================================================
+   v0.9.1 hotfix — h-vp dipakai Dashboard root (dari v0.2.1, terhapus saat
+   revamp karena pindah dari style.css): viewport dinamis — fallback 100vh,
+   lalu 100dvh (mengikuti toolbar Safari; composer tidak tertutup browser chrome)
+   ========================================================================== */
+.h-vp {
+  height: 100vh;
+  height: 100dvh;
+}
