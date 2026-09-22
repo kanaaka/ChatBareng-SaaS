@@ -238,6 +238,39 @@ async function ensureChatQueued(chatId) {
   }
 }
 
+// ─── v3.5 — Greeting skip: agent sudah menyapa duluan hari itu? ──────────
+/**
+ * Cek apakah ada pesan keluar NON-AUTO (CS manusia, senderId terisi) dari
+ * tenant ini di chat yang sama pada hari WIB yang sama.
+ * Dipakai sebelum greeting first-of-day DAN outside-hours auto-reply —
+ * kalau agen sudah balas/menyapa duluan hari itu, jangan dobel dengan auto.
+ * @param {number} tenantId
+ * @param {number} chatId
+ * @param {Date} ts - waktu acuan (timestamp pesan, bukan waktu proses)
+ */
+async function hasHumanOutMessageToday(tenantId, chatId, ts = new Date()) {
+  try {
+    // Start-of-day WIB = 00:00 WIB (= 17:00 UTC sebelumnya, UTC+7)
+    const day = wibDateString(ts)
+    const [y, mo, d] = day.split('-').map(Number)
+    const startOfDay = new Date(Date.UTC(y, mo - 1, d) - 7 * 60 * 60 * 1000) // 00:00 WIB
+    const count = await prisma.message.count({
+      where: {
+        tenantId: Number(tenantId),
+        chatId: Number(chatId),
+        direction: 'out',
+        isAuto: false,
+        senderId: { not: null }, // bukan pesan auto/relay/scheduler
+        timestamp: { gte: startOfDay },
+      },
+    })
+    return count > 0
+  } catch (e) {
+    console.error('[AutoReply] hasHumanOutMessageToday error (fail-open=false):', e.message)
+    return false
+  }
+}
+
 // ─── Kirim satu auto message + simpan Message + broadcast (refactor v0.13.0) ──
 /**
  * Refactor dari jalur tunggal maybeAutoReply dulu (behavior identik — teks,
@@ -358,6 +391,18 @@ async function maybeAutoReply(chat, msg) {
 
     const outside = isOutsideHours(cfg, dbTimestamp)
 
+    // v3.5 (§3) — Greeting/away SKIP bila agen sudah menyapa/balas duluan hari itu
+    // (pesan out non-auto dari CS manusia di chat yang sama, hari WIB sama).
+    // Berlaku utk SEMUA jalur auto (away text, menu, greet text).
+    if (await hasHumanOutMessageToday(tenantId, chatId, dbTimestamp)) {
+      await prisma.chat.updateMany({
+        where: { id: chatId, tenantId, lastAutoGreetDate: { not: today } },
+        data: { lastAutoGreetDate: today },
+      }).catch((e) => console.error('[AutoReply] set marker skip gagal:', e.message))
+      console.log(`[AutoReply] greeting skip — agent sudah menyapa duluan hari ini: chat=${chatId}`)
+      return { sent: false }
+    }
+
     // ── (a) Luar jam + away ON → away text (D5). Queue TIDAK disentuh. ──
     if (cfg.outsideHoursEnabled && outside) {
       const awaySent = await sendAutoText(chat, cfg.outsideHoursText, today)
@@ -446,6 +491,7 @@ module.exports = {
   setContactMenuShown,
   ensureChatQueued,
   maybeAutoReply,
+  hasHumanOutMessageToday, // v3.5
   wibDateString,
   TIME_RE,
   MAX_TEXT_LEN,

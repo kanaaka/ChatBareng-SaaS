@@ -105,6 +105,24 @@ const CHAT_FETCH_INCLUDE = {
   tags: { include: { tag: true } },
 }
 
+// ─── v3.5 — Helper lookup dua arah (spec §4) ─────────────────────────
+/**
+ * Cari chat existing by waJid → phoneJid → lidJid (urut id asc utk deterministik).
+ * Return row Chat pertama yang cocok, atau null. Semua tenant-scoped.
+ */
+async function findChatByAnyJid(tenantId, phoneJidOrLid) {
+  const jid = String(phoneJidOrLid || '')
+  if (!jid) return null
+  return (
+    (await prisma.chat.findUnique({
+      where: { tenantId_waJid: { tenantId, waJid: jid } },
+    })) ||
+    (await prisma.chat.findFirst({ where: { tenantId, phoneJid: jid }, orderBy: { id: 'asc' } })) ||
+    (await prisma.chat.findFirst({ where: { tenantId, lidJid: jid }, orderBy: { id: 'asc' } })) ||
+    null
+  )
+}
+
 function contactToJson(contact) {
   return {
     id: contact.id,
@@ -749,10 +767,12 @@ router.post('/:id/open', ...rt, async (req, res) => {
     }
 
     const jid = `${phoneNorm.normalized}@s.whatsapp.net`
-    let chat = await prisma.chat.findUnique({
-      where: { tenantId_waJid: { tenantId: req.tenantId, waJid: jid } },
-      include: CHAT_FETCH_INCLUDE,
-    })
+    // v3.5 §4 — cek dua arah sebelum create: waJid → phoneJid → lidJid
+    // (chat LID yang mapping-nya sudah ke nomor ini = chat yang sama, bukan duplikat).
+    let chat = await findChatByAnyJid(req.tenantId, jid)
+    if (chat) {
+      chat = await prisma.chat.findFirst({ where: { id: chat.id, tenantId: req.tenantId }, include: CHAT_FETCH_INCLUDE })
+    }
 
     if (!chat) {
       chat = await prisma.chat.create({

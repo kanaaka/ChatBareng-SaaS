@@ -2175,3 +2175,49 @@ All notable changes to this project will be documented in this file.
   (height di-lock, width auto — object-fit contain).
 - Frontend-only (SuperAdmin.vue), build ulang + restart. Server & data tidak
   tersentuh.
+
+## v3.5 — LID ↔ Phone Matching + greeting skip CS-initiated (2026-09-22)
+
+- **Bug report owner (19:58, tenant Parahita / kontak "Berliana"):** initiate chat
+  dari kontak (nomor hape) → balasan klien nyasar ke chat BARU (@lid) + kontak
+  dobel + greeting first-of-day nyasar. Root cause: WA modern pakai LID sebagai
+  identitas pengirim; app match chat by waJid mentah → balasan LID = orang baru.
+  LID handling (fitur hub v0.13-0.14) tidak ter-port saat migrasi v3.
+- **§1 Routing dua arah di `processIncomingMessage` (pool.js):** sebelum
+  find-or-create — exact `[tenantId, waJid]` → LID dgn `remoteJidAlt` (rc14) ke
+  chat phone-JID → lookup kolom `lidJid` → lookup `phoneJid` (chat LID resolved);
+  phone-JID masuk juga bisa route ke chat LID existing (phone-to-lid). Match →
+  mapping dua arah dipasang (`Chat.lidJid` BARU / `phoneJid` bila null). Semua
+  downstream (persist, unread, CSAT, auto-reply, push, queue) pakai chat hasil
+  routing — JID mentah tidak lagi dipakai.
+- **§2 Port LID resolver dari hub (tenant-scoped):** listener `chats.phoneNumberShare`
+  (normalisasi device suffix), `resolveLidToPhone` (onWhatsApp → USyncQuery),
+  inline resolve fire-and-forget utk chat LID yang phoneJid-nya null + merge guard
+  transaksional, `requestPhoneNumber` SEKALI per LID (Set per socket). Contact
+  LID-only dapat `phone` otomatis setelah resolve.
+- **§3 Greeting skip (KEPUTUSAN OWNER):** greeting first-of-day DAN outside-hours
+  away text di-skip bila ada pesan out non-auto dari agent (senderId terisi) di
+  chat yang sama pada hari WIB yang sama — `lastAutoGreetDate` tetap di-set.
+  Chat CS-initiated tidak lagi menyapa otomatis saat klien bales.
+- **§4 Open-chat dari kontak dua arah (contacts.js):** `findChatByAnyJid()`
+  (waJid → phoneJid → lidJid) — start-chat dari kontak pakai chat existing,
+  tidak create dobel.
+- **§5 Script repair `fix-lid-dup-chats.cjs`:** dry-run default, `--apply`
+  transaksi per pasangan. Deteksi 2 lapis (contactPhone langsung + fallback
+  join-by-Contact-name utk chat LID yang contactPhone-nya LID-digits) + guard
+  anti double-pairing. Merge: chat phone = canonical, pesan/tag/event/note/csat/
+  scheduled dipindah, `lidJid` dipasang, chat LID dihapus. **PATCH REVIEW ALITA
+  (20:35):** contact LID di-RELOCATE ke chat phone (bukan dihapus) bila chat phone
+  belum punya contact — tanpa patch ini, kontak "Kolonel Kanaka Prabhata" (t8)
+  hilang permanen karena contact-nya hanya ada di sisi LID.
+- **Eksekusi merge (Alita, app stopped): 6/6 pasangan sukses** — Berliana t4
+  (7607→7606, 9 pesan jadi satu), Kolonel Kanaka t8 (5074→5089, 32 pesan + nama
+  survive), Nai/Alita/MP Desta/Lili t8. Verify: msg t4=90 t8=2603 (utuh), chat
+  t4=21 t8=2527 (dobel kehapus), WA reconnect kedua tenant.
+- **Skema:** `Chat.lidJid String?` + `@@index([tenantId, lidJid])` — additive
+  murni (db push sukses tanpa destructive). Backup pra-merge:
+  `backup/pre-v3.5-20260922-2017/` (2 snapshot: pra-kerja + pre-merge).
+- **QA (Dory, smoke 4/4 PASS):** (a) LID→phone chat existing + lidJid set;
+  (b) chat LID baru + phoneJid mapping; (c) phone→chat LID existing, pesan
+  gabung; (d) greeting skip + marker. Tenant QA di-purge bersih. Counts
+  Parahita/Mazaya utuh sebelum/sesudah.
