@@ -1,9 +1,10 @@
 const express = require('express')
+const fs = require('fs')
 const router = express.Router()
 const multer = require('multer')
 const prisma = require('../prisma')
 const config = require('../config')
-const { requireAuth, requireTenant } = require('../auth')
+const { requireAuth, requireTenant, requireAdmin } = require('../auth')
 const { replyValidation } = require('../utils/validation')
 const wa = require('../wa/pool')
 const broadcast = require('../socket/broadcast')
@@ -1231,6 +1232,135 @@ router.delete('/:id/tags/:tagId', ...rt, async (req, res) => {
     res.json({ success: true })
   } catch (e) {
     console.error('Remove chat tag error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ═══ v3.6 — Hapus Chat Individual (permanen) dari kebab menu ═══
+
+// v3.6 — helper GroupPic (best-effort): model tidak ada di schema v3.x (PIC grup
+// disimpan sebagai kolom Chat.picUserId yang ikut kehapus saat chat.delete).
+// Spec §1 minta deleteMany dulu kalau ada — implement via introspection table
+// SQLite + dynamic model access (CACHING: cek sqlite_master SEKALI per proses,
+// bukan per request; schema tidak berubah saat runtime di SQLite).
+let _groupPicTableExists = null
+async function deleteGroupPicsForChat(chatId) {
+  try {
+    if (_groupPicTableExists === null) {
+      const rows = await prisma.$queryRawUnsafe(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('GroupPic','group_pics')"
+      )
+      _groupPicTableExists = Array.isArray(rows) && rows.length > 0 ? String(rows[0].name) : false
+    }
+    if (!_groupPicTableExists) return 0
+    const n = await prisma[_groupPicTableExists === 'GroupPic' ? 'groupPic' : 'group_pics'].deleteMany({ where: { chatId } })
+    return n?.count || 0
+  } catch (e) {
+    console.error('[Chats] deleteGroupPicsForChat (best-effort) gagal:', e.message)
+    return 0
+  }
+}
+
+// Spec: docs/spec-v3.6-delete-chat-individual.md — ADMIN ONLY (CS tidak boleh
+// hapus permanen; super_admin via impersonation ?tenant= boleh).
+// Logika = PORT dari one-off script teruji (chat #7635, 2026-09-23 02:52).
+// Urutan: groupPic (PIC ref) dulu → kumpulkan mediaPath → transaksi hapus
+// child rows (FavoriteMessage ikut cascade via onDelete: Cascade di schema,
+// diverifikasi prisma/schema.prisma model FavoriteMessage.message) → purgeLog
+// → file media di-disk SETELAH transaksi sukses → broadcast 'chat_deleted'.
+// TANPA perubahan skema (pure route) — schema v3.x frozen.
+router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid chat id' })
+
+    // 1) Isolasi tenant: chat harus milik tenant ini (super_admin impersonate
+    //    ?tenant= juga tervalidasi requireTenant via rt).
+    const chat = await prisma.chat.findUnique({ where: { id }, select: { id: true, tenantId: true } })
+    if (!chat || chat.tenantId !== req.tenantId) {
+      return res.status(404).json({ error: 'Chat not found' })
+    }
+
+    // 2) GroupPic rows yang nge-refer chat ini dihapus dulu supaya FK
+    //    "groupPics" (User.groupsAsPic → Chat.picUserId) tidak memblokir kalau
+    //    chat ini PIC grup. Cache table-existence (cold-start sekali/proses) —
+    //    schema v3.x tidak punya model GroupPic; kalau schema di masa depan
+    //    menambah model itu, route ini otomatis ikut membersihkannya tanpa
+    //    perubahan kode (route tetap jalan normal kalau tabel tidak ada).
+    const groupPicDeleted = await deleteGroupPicsForChat(chat.id)
+
+    // 3) Kumpulkan mediaPath SEBELUM hapus (path cuma ada di DB)
+    const mediaFiles = (
+      await prisma.message.findMany({
+        where: { tenantId: req.tenantId, chatId: chat.id, mediaPath: { not: null } },
+        select: { mediaPath: true },
+      })
+    ).map((m) => m.mediaPath).filter(Boolean)
+
+    // 4) Hitung counts utk response + purgeLog (sebelum row terhapus)
+    const [messageCount, chatEventCount, chatNoteCount, csatSurveyCount, scheduledMessageCount, chatTagCount] = await Promise.all([
+      prisma.message.count({ where: { chatId: chat.id } }),
+      prisma.chatEvent.count({ where: { chatId: chat.id } }),
+      prisma.chatNote.count({ where: { chatId: chat.id } }),
+      prisma.csatSurvey.count({ where: { chatId: chat.id } }),
+      prisma.scheduledMessage.count({ where: { chatId: chat.id } }),
+      prisma.chatTag.count({ where: { chatId: chat.id } }),
+    ])
+
+    // Transaksi: child rows by chatId → chat row. FavoriteMessage TIDAK dihapus
+    // eksplisit — onDelete: Cascade di relasi Message.favorites (schema v3.x)
+    // menghapusnya otomatis saat message.deleteMany (VERIFIKASI schema §1 spec).
+    const deleted = await prisma.$transaction(async (tx) => {
+      const ops = [
+        ['messages', () => tx.message.deleteMany({ where: { chatId: chat.id } })], // FavoriteMessage cascade
+        ['chatEvents', () => tx.chatEvent.deleteMany({ where: { chatId: chat.id } })],
+        ['chatTags', () => tx.chatTag.deleteMany({ where: { chatId: chat.id } })],
+        ['chatNotes', () => tx.chatNote.deleteMany({ where: { chatId: chat.id } })],
+        ['csatSurveys', () => tx.csatSurvey.deleteMany({ where: { chatId: chat.id } })],
+        ['scheduledMessages', () => tx.scheduledMessage.deleteMany({ where: { chatId: chat.id } })],
+        ['contacts', () => tx.contact.deleteMany({ where: { chatId: chat.id } })], // linked via chatId (unique FK)
+        ['chats', () => tx.chat.delete({ where: { id: chat.id } })],
+      ]
+      const result = {}
+      for (const [name, op] of ops) {
+        const r = await op()
+        result[name] = typeof r?.count === 'number' ? r.count : 1
+      }
+      return result
+    })
+
+    // 5) purgeLog — audit trail purge (chatCount 1 — satu chat)
+    await prisma.purgeLog.create({
+      data: {
+        tenantId: req.tenantId,
+        purgedById: req.user.id,
+        chatCount: 1,
+        messageCount,
+        reason: `chat_delete: kebab menu (v3.6)${req.body?.reason ? ` — ${String(req.body.reason).slice(0, 200)}` : ''}`,
+        purgeDate: new Date(),
+      },
+    })
+
+    // 6) File media di-disk SETELAH transaksi sukses (transaksi gagal → file utuh)
+    let filesRemoved = 0
+    for (const fp of mediaFiles) {
+      try {
+        if (fs.existsSync(fp)) {
+          fs.unlinkSync(fp)
+          filesRemoved++
+        }
+      } catch {}
+    }
+
+    // 7) Broadcast event BARU 'chat_deleted' (jangan recycle chats_purged)
+    broadcast.emitToTenant(req.tenantId, 'chat_deleted', { chatId: chat.id })
+
+    console.log(`[Chats] Chat #${chat.id} dihapus permanen (kebab menu v3.6) by @${req.user.username} (tenant ${req.tenantId}):`, JSON.stringify({ ...deleted, groupPicDeleted, filesRemoved }))
+
+    // 8) Response ringkas: counts hasil hapus
+    res.json({ ok: true, deleted: { ...deleted, groupPic: groupPicDeleted, filesRemoved } })
+  } catch (e) {
+    console.error('Delete chat error:', e)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

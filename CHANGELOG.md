@@ -2248,3 +2248,29 @@ All notable changes to this project will be documented in this file.
   PurgeLog tercatat (reason: owner request).
 - Catatan UX: fitur "hapus 1 chat total" belum ada di UI (purge per-chat hanya
   membersihkan pesan, chat row tetap) — kandidat fitur berikutnya.
+
+## v3.6 — Hapus Chat Individual (permanen) dari kebab menu (2026-09-23)
+
+- **Request owner (03:06):** fitur delete chat individual — "tempat paling
+  cocok di kebab menu tiap individual chat (bareng resolve dll), fokus delete
+  permanen cuma satu chat itu aja."
+- **Backend** `DELETE /api/chats/:id` (chats.js, admin-only `requireAdmin`):
+  port dari one-off script teruji (chat #7635) — isolasi tenant (404 lintas
+  tenant), GroupPic best-effort (introspeksi sqlite_master + cache — model
+  GroupPic tidak ada di schema v3.x, helper defensif utk masa depan),
+  mediaPath dikumpulkan sebelum transaksi, transaksi hapus: message
+  (FavoriteMessage cascade via onDelete: Cascade — diverifikasi schema),
+  chatEvent, chatTag, chatNote, csatSurvey, scheduledMessage, contact linked,
+  chat row → purgeLog (`chat_delete: kebab menu (v3.6)`) → file media disk
+  SETELAH transaksi sukses → broadcast event BARU `chat_deleted` → response
+  counts.
+- **Frontend:** KebabMenu item `🗑️ Hapus Chat` (merah, paling bawah setelah
+  separator, admin-only — desktop dropdown + mobile sheet), confirm dialog
+  danger ("Hapus permanen chat ini? … tidak bisa dikembalikan"), handler di
+  Dashboard (toast + clear selection + navigasi), socket listener
+  `chat_deleted` (hapus dari list tanpa refetch + clear selection kalau chat
+  yang kebuka itu yang dihapus oleh admin lain).
+- **QA (tenant dummy, purged):** DELETE admin 200 + verify all-zero + media
+  file hilang; role cs → 403; lintas tenant → 404 (isolasi); LIVE socket
+  event diterima; build OK (snapshot public-pre-build-20260923-0316);
+  restart 1x by PID; WA t4+t8 reconnect; data Parahita/Mazaya utuh.

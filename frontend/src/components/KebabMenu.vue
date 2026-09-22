@@ -80,6 +80,17 @@
       <button @click="chooseTanganKanan()" class="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
         📎 Tangan Kanan
       </button>
+      <!-- v3.6 — Hapus Chat (permanen): paling bawah setelah separator, ADMIN ONLY,
+           warna error — jauhkan dari aksi harian (resolve/release) biar gak kepencet. -->
+      <template v-if="auth.isAdmin">
+        <div class="border-t border-gray-100 my-1"></div>
+        <button
+          @click="chooseDeleteChat()"
+          class="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+        >
+          🗑️ Hapus Chat
+        </button>
+      </template>
     </div>
   </div>
 
@@ -175,6 +186,16 @@
           <button @click="chooseTanganKanan()" class="w-full px-4 py-3 text-left text-base text-gray-800 active:bg-gray-50">
             📎 Tangan Kanan
           </button>
+          <!-- v3.6 — Hapus Chat (permanen): paling bawah setelah separator, ADMIN ONLY -->
+          <template v-if="auth.isAdmin">
+            <div class="border-t border-gray-100 my-1"></div>
+            <button
+              @click="chooseDeleteChat()"
+              class="w-full px-4 py-3 text-left text-base text-red-600 active:bg-red-50"
+            >
+              🗑️ Hapus Chat
+            </button>
+          </template>
           <div class="h-2"></div>
         </div>
       </div>
@@ -195,7 +216,7 @@ const props = defineProps({
   // v0.10.0 — Fitur A: status snooze aktif (untuk toggle menu item)
   isSnoozed: { type: Boolean, default: false },
 })
-const emit = defineEmits(['transfer', 'release', 'resolve', 'tangan-kanan', 'snooze', 'cancel-snooze'])
+const emit = defineEmits(['transfer', 'release', 'resolve', 'tangan-kanan', 'snooze', 'cancel-snooze', 'delete-chat'])
 
 const auth = useAuthStore()
 const presence = usePresenceStore()
@@ -273,6 +294,11 @@ function chooseSnooze() {
 function chooseCancelSnooze() {
   open.value = false
   emit('cancel-snooze')
+}
+// v3.6 — Hapus Chat (permanen, admin only): pola sama dgn item lain — tutup menu lalu emit
+function chooseDeleteChat() {
+  open.value = false
+  emit('delete-chat')
 }
 
 function onResize() {

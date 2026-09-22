@@ -196,6 +196,7 @@
             @tangan-kanan="openTanganKanan"
             @snooze="showSnoozeDialog = true"
             @cancel-snooze="handleCancelSnooze"
+            @delete-chat="confirmDeleteChat"
             @schedule-message="openScheduledDialog"
             @cancel-scheduled="handleCancelScheduled"
             @add-note="addChatNote"
@@ -1422,6 +1423,61 @@ function onChatsPurged(data) {
   chats.removeChats(ids)
 }
 
+// ═══ v3.6 — Hapus Chat individual (permanen) dari kebab menu ═══
+// Confirm dialog (useConfirm, pola confirmRelease) → DELETE /api/chats/:id
+// (ADMIN ONLY di backend — role cs ditolak 403). Sukses → toast + clear
+// selection/navigasi; chat row hilang dari list via event 'chat_deleted'
+// (handler onChatDeleted — defense-in-depth kalau user lain yang ngehapus).
+async function confirmDeleteChat() {
+  if (!currentChat.value) return
+  const nama = currentChat.value.contactName || currentChat.value.contactPhone || 'chat ini'
+  const ok = await confirmAction({
+    title: 'Hapus permanen chat ini?',
+    message: `Semua pesan, media, catatan, dan riwayat chat ${nama} akan dihapus PERMANEN dan tidak bisa dikembalikan.`,
+    confirmText: 'Hapus Permanen',
+    danger: true,
+  })
+  if (!ok) return
+  const chatId = currentChat.value.id
+  try {
+    await axios.delete(`${API}/api/chats/${chatId}`)
+    toastStore.show({ icon: '🗑️', title: 'Chat dihapus permanen' })
+    // Clear selection + navigasi (pola onChatsPurged — close detail aktif)
+    if (currentChat.value && currentChat.value.id === chatId) {
+      const wasMobileDetail = isMobileDetail.value
+      currentChat.value = null
+      currentMessages.value = []
+      if (wasMobileDetail) router.replace('/')
+    }
+    // List lokal update via event 'chat_deleted' dari server; fallback refetch
+    chats.fetchChats(chats.filterParams)
+  } catch (e) {
+    console.error('Delete chat error:', e)
+    toastStore.show({ icon: '⚠️', title: 'Gagal menghapus chat', message: e.response?.data?.error || e.message })
+  }
+}
+
+// v3.6 — socket listener 'chat_deleted': buang chat dari list lokal TANPA full
+// refetch + clear selection kalau chat yang TERBUKA = chatId itu (defense-in-depth,
+// admin lain yang ngehapus). Pola onChatsPurged.
+function onChatDeleted(data) {
+  const chatId = data?.chatId
+  if (!Number.isFinite(chatId)) return
+  if (currentChat.value && currentChat.value.id === chatId) {
+    const wasMobileDetail = isMobileDetail.value
+    currentChat.value = null
+    currentMessages.value = []
+    if (wasMobileDetail) router.replace('/')
+    toastStore.show({
+      icon: '🗑️',
+      title: 'Chat dihapus permanen',
+      message: 'Chat ini dihapus oleh admin',
+    })
+  }
+  // Hapus dari list tanpa full refetch (pola chats.removeChats)
+  chats.removeChats([chatId])
+}
+
 // v0.6.0 — import history selesai di tempat lain: refetch list sekali
 // (backend emit 'history_imported' sekali di akhir import, bukan per-message)
 function onHistoryImported() {
@@ -1765,6 +1821,7 @@ onMounted(async () => {
   socketStore.on('new_message', onNewMessage)
   socketStore.on('chat_update', onChatUpdate)
   socketStore.on('chats_purged', onChatsPurged) // v0.1.22
+  socketStore.on('chat_deleted', onChatDeleted) // v3.6 — hapus chat individual
   socketStore.on('history_imported', onHistoryImported) // v0.6.0
   socketStore.on('queue_update', onQueueUpdate) // v0.1.21
   socketStore.on('typing', onTypingEvent)
@@ -1798,6 +1855,7 @@ onUnmounted(() => {
   socketStore.off('new_message', onNewMessage)
   socketStore.off('chat_update', onChatUpdate)
   socketStore.off('chats_purged', onChatsPurged)
+  socketStore.off('chat_deleted', onChatDeleted) // v3.6 — hapus chat individual
   socketStore.off('history_imported', onHistoryImported) // v0.6.0 // v0.1.22
   socketStore.off('queue_update', onQueueUpdate) // v0.1.21
   socketStore.off('typing', onTypingEvent)
