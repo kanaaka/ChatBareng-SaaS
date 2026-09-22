@@ -1,3 +1,33 @@
+## v3.3 — Tenant Mazaya: migrasi full dari hub non-SaaS (POC 2 tenant paralel) (2026-09-22)
+
+- Request owner (12:03): tenant kedua atas nama **Mazaya** — isinya seluruh
+  ChatBareng non-SaaS (users, chat, riwayat pesan, kontak, tag, template,
+  pengumuman, blast, file, config) sebagai proof of concept dua tenant
+  bekerja bersamaan.
+- Metode: skrip migrasi `scripts/migrate-mazaya-from-hub.cjs` (node, one-shot,
+  idempoten-guard) — mapping ID lama→baru semua entitas, **re-encrypt konten**
+  terenkripsi (key MSG/MEDIA hub → key SaaS; AES-256-GCM enc:v1), copy file
+  media (decrypt → re-encrypt), fallback user orphan → superadmin.
+- 3 iterasi (rollback via purge v3.1.2 tiap kali): (1) contactTag pakai ID hub
+  mentah → P2003, fix map contactMap; (2) audit log grup yatim (19 row GAL
+  sisa cleanup grup "hello" — chat asal sudah dihapus di hub, di hub memang
+  tanpa FK) → skip; (3) sukses penuh.
+- Hasil (verify MISMATCH_TOTAL=0, 23 tabel parity):
+  7 user (hash password tetap → login tetap jalan), 2532 chat, 2592 pesan
+  (re-encrypted, decrypt-verified), 2528 kontak, 19 tag, 6473 chatTag,
+  2510 contactTag, 44 template, 4 announcement, 5 blast + 10 log, 3 folder +
+  8 file (media file re-encrypted di disk), 1 scheduled msg, 4 csat, 7 note,
+  347 event, 30 purgeLog, + semua config singleton (app/autoReply/appearance
+  #FF69B4/csat/backup/menuGateway + 2 opsi).
+- Isolasi terverifikasi: token admin Mazaya (shieva) → 200, scope tenant 8;
+  Parahita (4) intact. 19 GAL yatim di-skip (audit lama grup yang sudah
+  tidak ada — tidak dipakai operasional).
+- PENTING: ini SALINAN, bukan move — hub non-SaaS tetap jalan utk nomor
+  Mazaya; WA tenant Mazaya di SaaS belum dipair (pesan baru tetap masuk hub).
+  Pairing WA = keputusan owner (nomor sama 2 sistem = double auto-reply).
+- Backup pra-migrasi: wa-cs-hub/backup/pre-mazaya-20260922-1251/ +
+  wa-cs-hub-saas-v3/backup/pre-mazaya-20260922-1251/ (md5 match).
+
 ## v3.2 — WhatsApp LIVE per tenant: QR + pairing code + reconnect/logout (2026-09-22)
 
 - Laporan owner (10:54): tenant "Parahita" baru dibikin, scan QR tapi QR GAK
