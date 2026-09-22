@@ -81,6 +81,12 @@
           <span aria-hidden="true">⚠️</span>
           <span>{{ error }}</span>
         </div>
+        <div v-if="purgeSuccess" class="flex items-start gap-2 text-sm rounded-[var(--md-sys-shape-corner-s)] p-3 mb-4"
+          style="background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container);"
+          role="status">
+          <span aria-hidden="true">✓</span>
+          <span>{{ purgeSuccess }}</span>
+        </div>
 
         <!-- Tenant list -->
         <div v-if="loading" class="sa-empty">Memuat…</div>
@@ -118,6 +124,11 @@
                   class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm"
                   @click="setStatus(t, 'active')"
                 >Activate</button>
+                <button
+                  class="m3-btn m3-btn--text !min-h-[36px] !text-sm"
+                  style="color: var(--md-sys-color-error);"
+                  @click="openPurgeForm(t)"
+                >Hapus</button>
               </div>
             </div>
 
@@ -129,6 +140,39 @@
                 <button class="m3-btn m3-btn--text !min-h-[40px]" @click="adminFormFor = null">Batal</button>
                 <button class="m3-btn m3-btn--filled !min-h-[40px]" :disabled="creatingAdmin" @click="createAdmin(t)">
                   {{ creatingAdmin ? 'Membuat…' : 'Buat Admin' }}
+                </button>
+              </div>
+            </div>
+
+            <!-- v3.1.2 — Hapus permanen: konfirmasi ketik nama tenant persis -->
+            <div v-if="purgeFormFor === t.id" class="sa-form mt-3" style="border-left: 3px solid var(--md-sys-color-error);">
+              <div class="text-sm font-semibold" :style="{ color: 'var(--md-sys-color-error)' }">
+                ⚠️ Hapus permanen "{{ t.name }}"
+              </div>
+              <div class="text-sm" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
+                Semua data tenant ini akan dihapus selamanya dan tidak bisa dikembalikan:
+                {{ t.userCount }} user, {{ t.chatCount }} chat, semua pesan &amp; file media, kontak, tag,
+                template, pengumuman, blast, config — semuanya.
+              </div>
+              <div class="text-sm" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
+                Ketik <strong :style="{ color: 'var(--md-sys-color-on-surface)' }">{{ t.name }}</strong> persis untuk konfirmasi:
+              </div>
+              <M3TextField v-model="purgeConfirmName" :label="'Ketik: ' + t.name" type="text" />
+              <div v-if="purgeError" class="flex items-start gap-2 text-sm rounded-[var(--md-sys-shape-corner-s)] p-3"
+                style="background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container);"
+                role="alert">
+                <span aria-hidden="true">⚠️</span>
+                <span>{{ purgeError }}</span>
+              </div>
+              <div class="flex gap-2 justify-end mt-2">
+                <button class="m3-btn m3-btn--text !min-h-[40px]" @click="closePurgeForm">Batal</button>
+                <button
+                  class="m3-btn m3-btn--filled !min-h-[40px]"
+                  style="background: var(--md-sys-color-error); color: var(--md-sys-color-on-error);"
+                  :disabled="purging || purgeConfirmName.trim() !== t.name"
+                  @click="purgeTenant(t)"
+                >
+                  {{ purging ? 'Menghapus…' : 'Hapus Permanen' }}
                 </button>
               </div>
             </div>
@@ -256,6 +300,49 @@ async function setStatus(t, status) {
     await load()
   } catch (e) {
     error.value = e.response?.data?.error || 'Gagal mengubah status tenant'
+  }
+}
+
+// v3.1.2 — Hapus permanen tenant (purge). Endpoint POST /api/sa/tenants/:id/purge
+// menyapu SEMUA row milik tenant dalam satu transaksi + file media dari disk.
+// Konfirmasi anti salah-klik: ketik nama tenant persis (dicek di backend juga).
+const purgeFormFor = ref(null)
+const purgeConfirmName = ref('')
+const purging = ref(false)
+const purgeError = ref('')
+const purgeSuccess = ref('')
+
+function openPurgeForm(t) {
+  purgeFormFor.value = purgeFormFor.value === t.id ? null : t.id
+  purgeConfirmName.value = ''
+  purgeError.value = ''
+  purgeSuccess.value = ''
+  if (purgeFormFor.value) adminFormFor.value = null // jangan dua form sekaligus
+}
+
+function closePurgeForm() {
+  purgeFormFor.value = null
+  purgeConfirmName.value = ''
+  purgeError.value = ''
+}
+
+async function purgeTenant(t) {
+  purging.value = true
+  purgeError.value = ''
+  try {
+    const { data } = await axios.post(`${API}/api/sa/tenants/${t.id}/purge`, {
+      confirmName: purgeConfirmName.value,
+    })
+    const d = data.deleted || {}
+    const parts = [`${d.users || 0} user`, `${d.chats || 0} chat`, `${d.messages || 0} pesan`]
+    if (data.filesRemoved) parts.push(`${data.filesRemoved} file media`)
+    purgeSuccess.value = `Tenant "${t.name}" dihapus permanen — ${parts.join(', ')}.`
+    closePurgeForm()
+    await load()
+  } catch (e) {
+    purgeError.value = e.response?.data?.error || 'Gagal menghapus tenant'
+  } finally {
+    purging.value = false
   }
 }
 

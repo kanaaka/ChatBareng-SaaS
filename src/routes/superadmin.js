@@ -6,12 +6,15 @@
 // - seed per-tenant via services/tenantSeed.seedTenantDefaults saat create
 const express = require('express')
 const router = express.Router()
+const fs = require('fs')
 const prisma = require('../prisma')
 const config = require('../config')
 const wa = require('../wa/pool')
 const { requireAuth, requireSuperAdmin, signShortToken, hashPassword } = require('../auth')
 const { body } = require('express-validator')
 const { validationResult } = require('express-validator')
+const broadcast = require('../socket/broadcast')
+const { invalidateThemeCssCache } = require('./appearance')
 
 // Middleware chain: auth + superadmin
 const sa = [requireAuth, requireSuperAdmin]
@@ -157,6 +160,134 @@ router.delete('/tenants/:id', ...sa, async (req, res) => {
     res.status(500).json({ error: 'Internal server error' })
   }
 })
+
+// POST /api/sa/tenants/:id/purge — v3.1.2 — HAPUS PERMANEN tenant + SELURUH datanya.
+// Beda dengan DELETE /tenants/:id (hanya tenant kosong): purge menyapu semua row
+// milik tenant TANPA migrasi schema, menghormati FK restrict via URUTAN DELETE
+// (child → parent). Konfirmasi WAJIB: body { confirmName } harus sama persis dengan
+// nama tenant (anti salah klik — ini operasi irreversibel).
+// Urutan (schema v3.0 frozen):
+//   messages → blasts (BlastLog cascade) → csatSurveys/scheduledMessages/chatNotes/
+//   chatEvents/groupActionLogs (semua FK Chat/User) → chatTags (join, via chat.tenant)
+//   → contactTags → contacts → chats → tags → sharedFiles → sharedFolders →
+//   announcements (AnnouncementRead cascade) → purgeLogs → messageTemplates →
+//   user-scoped tanpa tenantId (pushSubscriptions/gdriveLinks/backupLogs/
+//   favoriteMessages via user.tenantId) → users → configs (app/autoReply/backup/
+//   appearance/csat/menuGateway) → tenant.
+// File media (message.mediaPath / sharedFile.storagePath / blast.mediaPath)
+// dihapus dari disk SETELAH transaksi DB sukses — transaksi gagal → file tetap
+// utuh. Room socket tenant di-disconnect (JWT user terhapus masih berlaku sampai
+// exp; reconnect → /auth/me gagal → klien auto-logout).
+router.post(
+  '/tenants/:id/purge',
+  ...sa,
+  [body('confirmName').trim().notEmpty().withMessage('confirmName wajib diisi')],
+  async (req, res) => {
+    try {
+      if (!validate(req, res)) return
+      const id = parseInt(req.params.id, 10)
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid tenant id' })
+      const tenant = await prisma.tenant.findUnique({
+        where: { id },
+        include: { _count: { select: { chats: true, users: true } } },
+      })
+      if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
+
+      const confirmName = (req.body.confirmName || '').trim()
+      if (confirmName !== tenant.name) {
+        return res.status(400).json({
+          error: `Konfirmasi gagal — ketik nama tenant persis: "${tenant.name}"`,
+        })
+      }
+
+      const tid = tenant.id
+
+      // 1) Kumpulkan path file media SEBELUM row terhapus (path hanya ada di DB)
+      const [msgFiles, sharedFiles, blastFiles] = await Promise.all([
+        prisma.message.findMany({ where: { tenantId: tid }, select: { mediaPath: true } }),
+        prisma.sharedFile.findMany({ where: { tenantId: tid }, select: { storagePath: true } }),
+        prisma.blast.findMany({ where: { tenantId: tid }, select: { mediaPath: true } }),
+      ])
+      const filePaths = [
+        ...msgFiles.map((m) => m.mediaPath),
+        ...sharedFiles.map((f) => f.storagePath),
+        ...blastFiles.map((b) => b.mediaPath),
+      ].filter(Boolean)
+
+      // 2) Transaksi: hapus SEMUA row tenant, urut FK (lihat komentar header)
+      const deleted = await prisma.$transaction(async (tx) => {
+        const ops = [
+          ['messages', () => tx.message.deleteMany({ where: { tenantId: tid } })], // FavoriteMessage cascade
+          ['blasts', () => tx.blast.deleteMany({ where: { tenantId: tid } })], // BlastLog cascade
+          ['csatSurveys', () => tx.csatSurvey.deleteMany({ where: { tenantId: tid } })],
+          ['scheduledMessages', () => tx.scheduledMessage.deleteMany({ where: { tenantId: tid } })],
+          ['groupActionLogs', () => tx.groupActionLog.deleteMany({ where: { tenantId: tid } })],
+          ['chatNotes', () => tx.chatNote.deleteMany({ where: { tenantId: tid } })],
+          ['chatEvents', () => tx.chatEvent.deleteMany({ where: { tenantId: tid } })],
+          ['chatTags', () => tx.chatTag.deleteMany({ where: { chat: { tenantId: tid } } })],
+          ['contactTags', () => tx.contactTag.deleteMany({ where: { tenantId: tid } })],
+          ['contacts', () => tx.contact.deleteMany({ where: { tenantId: tid } })],
+          ['chats', () => tx.chat.deleteMany({ where: { tenantId: tid } })],
+          ['tags', () => tx.tag.deleteMany({ where: { tenantId: tid } })],
+          ['sharedFiles', () => tx.sharedFile.deleteMany({ where: { tenantId: tid } })],
+          ['sharedFolders', () => tx.sharedFolder.deleteMany({ where: { tenantId: tid } })],
+          ['announcements', () => tx.announcement.deleteMany({ where: { tenantId: tid } })], // AnnouncementRead cascade
+          ['purgeLogs', () => tx.purgeLog.deleteMany({ where: { tenantId: tid } })],
+          ['messageTemplates', () => tx.messageTemplate.deleteMany({ where: { tenantId: tid } })],
+          ['pushSubscriptions', () => tx.pushSubscription.deleteMany({ where: { user: { tenantId: tid } } })],
+          ['gdriveLinks', () => tx.gDriveLink.deleteMany({ where: { user: { tenantId: tid } } })],
+          ['backupLogs', () => tx.backupLog.deleteMany({ where: { user: { tenantId: tid } } })],
+          ['favoriteMessages', () => tx.favoriteMessage.deleteMany({ where: { user: { tenantId: tid } } })],
+          ['users', () => tx.user.deleteMany({ where: { tenantId: tid } })],
+          ['appConfigs', () => tx.appConfig.deleteMany({ where: { tenantId: tid } })],
+          ['autoReplyConfigs', () => tx.autoReplyConfig.deleteMany({ where: { tenantId: tid } })],
+          ['backupConfigs', () => tx.backupConfig.deleteMany({ where: { tenantId: tid } })],
+          ['appearanceConfigs', () => tx.appearanceConfig.deleteMany({ where: { tenantId: tid } })],
+          ['csatConfigs', () => tx.csatConfig.deleteMany({ where: { tenantId: tid } })],
+          ['menuGatewayOptions', () => tx.menuGatewayOption.deleteMany({ where: { tenantId: tid } })],
+          ['menuGatewayConfigs', () => tx.menuGatewayConfig.deleteMany({ where: { tenantId: tid } })],
+        ]
+        const result = {}
+        for (const [name, op] of ops) result[name] = (await op()).count
+        await tx.tenant.delete({ where: { id: tid } })
+        return result
+      })
+
+      // 3) File disk SETELAH transaksi sukses (transaksi gagal → file utuh)
+      let filesRemoved = 0
+      for (const fp of filePaths) {
+        try {
+          if (fs.existsSync(fp)) {
+            fs.unlinkSync(fp)
+            filesRemoved++
+          }
+        } catch {}
+      }
+
+      // 4) VACUUM best-effort — hapus byte plaintext dari slack space (pola purge.js)
+      try {
+        await prisma.$executeRawUnsafe('VACUUM')
+      } catch (e) {
+        console.error('[SA] VACUUM gagal (purge tetap sukses):', e.message)
+      }
+
+      // 5) Kick socket room tenant (klien auto-logout saat reconnect)
+      try {
+        const io = broadcast.getIO()
+        if (io) io.to(`tenant:${tid}`).disconnectSockets(true)
+      } catch {}
+
+      // 6) Invalidate cache tema tenant (kalau sempat ke-cache via ?tenant=)
+      try { invalidateThemeCssCache(tid) } catch {}
+
+      console.log(`[SA] Tenant #${tid} (${tenant.name}) PURGED permanen by @${req.user.username}:`, JSON.stringify({ ...deleted, filesRemoved }))
+      res.json({ ok: true, deleted, filesRemoved })
+    } catch (e) {
+      console.error('[SA] Purge tenant error:', e)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  }
+)
 
 // POST /api/sa/tenants/:id/admins { username, password } — akun admin tenant
 router.post(

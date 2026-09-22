@@ -1,3 +1,38 @@
+## v3.1.2 — Hapus Permanen Tenant (purge) (2026-09-22)
+
+- Laporan owner (09:11): "kenapa tenant cuma bisa di-suspend? ga bisa di-delete
+  permanen sekalian?" — Betul: tombol delete memang TIDAK PERNAH ada di UI.
+  Endpoint DELETE /tenants/:id (fase 1) sengaja dibatasi tenant KOSONG saja
+  (0 user, 0 chat) sebagai guardrail fase awal.
+- Fix: POST /api/sa/tenants/:id/purge (superadmin-only) — hapus permanen
+  tenant + SELURUH datanya dalam SATU transaksi, urutan child→parent
+  menghormati FK Restrict (29 langkah): messages → blasts → csat/scheduled/
+  notes/events/logs → join tags → contacts → chats → tags → files/folders →
+  announcements → templates → row user-scoped tanpa tenantId via FK
+  (pushSubscriptions, gDriveLinks, backupLogs, favoriteMessages) → users →
+  configs → tenant. TANPA migrasi schema (cascade DB yang sudah ada dipakai
+  untuk BlastLog/AnnouncementRead/FavoriteMessage/ChatTag).
+- Guardrail konfirmasi: body { confirmName } WAJIB sama persis dengan nama
+  tenant — dicek BACKEND (bukan cuma UI), anti salah-klik untuk operasi
+  irreversibel.
+- Cleanup pasca-transaksi: file media (message.mediaPath /
+  sharedFile.storagePath / blast.mediaPath) dihapus dari disk SETELAH
+  transaksi sukses (rollback → file utuh); VACUUM best-effort; socket room
+  tenant di-kick (auto-logout saat reconnect); cache themeCss di-invalidate.
+- UI SuperAdmin.vue: tombol "Hapus" (merah) per tenant → form konfirmasi
+  inline: peringatan dampak + jumlah user/chat, field ketik nama persis,
+  tombol "Hapus Permanen" disabled sampai nama cocok persis.
+- E2E nyata: tenant uji "Uji Purge" diseed 24 tabel + 3 file media dummy.
+  Wrong name → 400 "Konfirmasi gagal"; correct → 200 {users:1, chats:1,
+  messages:2, …, filesRemoved:3}. Post-check: SEMUA tabel tenant #3 = 0 row,
+  file dummy hilang dari disk, /theme.css?tenant=3 kosong; tenant uji accent
+  1 & 2 INTACT (login OK, accent #16A34A/#EA580C, regression 15/15 PASS).
+- Bug ditemukan E2E & fixed: nama Prisma model `gDriveLink` (camelCase,
+  bukan gdriveLink) → transaksi otomatis rollback, 0 data hilang salah.
+  Bukti lagi kenapa E2E nyata > "sudah kutulis jadi pasti jalan".
+- Backup DB sebelum implement:
+  state/saas-v3-db-backup-before-purge-20260922-0915.db
+
 ## v3.1.1 — Superadmin: panel Akun (ganti password mandiri) (2026-09-22)
 
 - Laporan owner (09:01): halaman superadmin "berasa barebones" — tidak bisa
