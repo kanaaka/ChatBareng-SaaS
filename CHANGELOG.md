@@ -1,3 +1,27 @@
+## v3.1.3 — Hotfix: delete user gagal (P2003) — 4 relasi User kelewat (2026-09-22)
+
+- Laporan owner (10:31): setelah oslo & magetan di wa-cs-hub non-SaaS terbukti
+  kena P2003 (v0.15.3), minta SaaS dipatch juga — "berarti yang di
+  ChatBareng-SaaS ada bug yang serupa". Betul: transaksi delete di
+  `DELETE /api/users/:id` SaaS identik (15 op) dan kelewat 4 relasi yang sama:
+  **ChatNote.userId**, **ScheduledMessage.createdById**, **GDriveLink.user**
+  (@unique, kredensial), **BackupLog.user** — semua non-nullable.
+- Metode fina (lesson #4): backup DB (md5 match,
+  backup/pre-delete-fix-20260922/) → repro di salinan /tmp: transaksi LAMA
+  gagal P2003 (bug ke-reproduce), transaksi BARU bersih (deleted, residual
+  0, chatNote & schedMsg kepindah ke admin) → baru patch live.
+- Patch `src/routes/users.js`: +4 op tenant-scoped di transaksi
+  (chatNote.updateMany + scheduledMessage.updateMany transfer ke admin;
+  gDriveLink.deleteMany + backupLog.deleteMany). Guard requireTenant tetap.
+- Deploy: restart 5047 (pid 38121), login 200, tema netral OK.
+- E2E live end-to-end: tenant uji "Uji Del" + admin + cs diseed lengkap
+  (chat assigned + pesan + chatNote + schedMsg + gDriveLink + backupLog) →
+  DELETE cs via API admin tenant → 200 ok; residual SEMUA relasi = 0;
+  chat/pesan/catatan terjaga (chat auto-unassigned, catatan & scheduled
+  transfer ke admin). Tenant uji lalu dipurge sendiri via fitur v3.1.2
+  (dogfood) — platform kembali bersih; tenant "Parahita" milik owner
+  (dibuat 10:19) GAK tersentuh.
+
 ## v3.1.2 — Hapus Permanen Tenant (purge) (2026-09-22)
 
 - Laporan owner (09:11): "kenapa tenant cuma bisa di-suspend? ga bisa di-delete

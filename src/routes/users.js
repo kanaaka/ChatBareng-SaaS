@@ -162,6 +162,17 @@ router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
       prisma.sharedFile.updateMany({ where: { tenantId: tid, uploadedBy: id }, data: { uploadedBy: req.user.id } }),
       prisma.purgeLog.updateMany({ where: { tenantId: tid, purgedById: id }, data: { purgedById: req.user.id } }),
       prisma.messageTemplate.updateMany({ where: { tenantId: tid, createdBy: id }, data: { createdBy: req.user.id } }),
+      // v3.1.3 hotfix: 4 relasi User WAJIB yang kelewat (pola P2003 — sama dgn wa-cs-hub
+      // v0.4.2 fina & v0.15.3 oslo/magetan): nambah fitur = nambah relasi, transaksi
+      // delete WAJIB di-update juga.
+      // - ChatNote.userId (non-nullable) → dipindah ke admin (riwayat tetap)
+      // - ScheduledMessage.createdById (non-nullable) → dipindah ke admin
+      // - GDriveLink.user @unique (non-nullable, kredensial terenkripsi) → hapus
+      // - BackupLog.user (non-nullable) → hapus
+      prisma.chatNote.updateMany({ where: { tenantId: tid, userId: id }, data: { userId: req.user.id } }),
+      prisma.scheduledMessage.updateMany({ where: { tenantId: tid, createdById: id }, data: { createdById: req.user.id } }),
+      prisma.gDriveLink.deleteMany({ where: { userId: id } }),
+      prisma.backupLog.deleteMany({ where: { userId: id } }),
       prisma.user.delete({ where: { id } }),
     ])
     
