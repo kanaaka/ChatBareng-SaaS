@@ -1,3 +1,34 @@
+## v3.2 — WhatsApp LIVE per tenant: QR + pairing code + reconnect/logout (2026-09-22)
+
+- Laporan owner (10:54): tenant "Parahita" baru dibikin, scan QR tapi QR GAK
+  muncul. Bukan bug runtime — ini fitur fase 2 yang belum diport: v3 masih
+  jalan dgn `WA_DISABLED=1` + pool stub fase 1 (endpoint /api/wa/qr memang
+  nolak: "koneksi nyata = fase 2").
+- Solusi: port real pool dari wa-cs-hub-saas v2 (`src/wa/pool.js`, 889 baris
+  produksi) ke v3 + upgrade dari lesson non-SaaS baileys.js v0.15.x:
+  - Socket Baileys PER TENANT + auth dir per tenant
+    (`data/wa-session/tenant-<id>/`, auto-assign ke Tenant.waSessionDir)
+  - QR per tenant: diterima → connectionState 'qr' → data URL on-demand →
+    broadcast `wa_status` ke room `tenant:<id>` (frontend AdminWhatsApp
+    sudah support sejak awal — tinggal backend-nya)
+  - Pairing code per tenant (POST /api/wa/pairing-code, browser kanonik
+    `Browsers.ubuntu('Chrome')` — lesson v0.13.8b IQ 400)
+  - Reconnect backoff 5s→10s→30s→60s→60s MAX 5x (anti infinite 408 loop);
+    loggedOut → hapus dir sesi tenant itu SAJA + clear waPhone
+  - Media nyata: downloadMediaMessage → encrypt → save (paritas v2)
+  - processIncomingMessage tetap versi v3 (lebih kaya: CSAT consume,
+    auto-reopen, menu gateway, auto-reply, push, queue, grup via
+    services/groups dgn ctx lengkap)
+  - `WA_DISABLED=1` tetap didukung penuh sbg kill-switch (sekarang 0)
+- routes/wa.js: stub fase 1 → endpoint nyata (status/qr/phone/reconnect/
+  logout w/ ?confirm=true/pairing-code), semua tenant-scoped (requireTenant).
+- Deploy: restart 5047 → boot bersih, pool langsung connect tenant "Parahita"
+  → QR diterima, menunggu scan.
+- E2E live (API, token admin tenant): /api/wa/status → {qrNeeded:true,
+  state:'qr', baileysVersion 2.3000.x}; /api/wa/qr → data URL PNG 7.4KB;
+  QR diverifikasi image model — clean, scannable, tanpa artefak.
+- Sesi existing non-SaaS (5030) TIDAK tersentuh.
+
 ## v3.1.3 — Hotfix: delete user gagal (P2003) — 4 relasi User kelewat (2026-09-22)
 
 - Laporan owner (10:31): setelah oslo & magetan di wa-cs-hub non-SaaS terbukti
