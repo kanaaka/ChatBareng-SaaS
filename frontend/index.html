@@ -32,19 +32,27 @@
         var meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute('content', dark ? META_DARK : '#6d28d9');
         // v0.12.7 — seed aksen aktual dari server (PUBLIC) → status bar ikut accent admin
-        fetch('/api/appearance/public').then(function (r) {
-          return r.ok ? r.json() : null
-        }).then(function (j) {
-          if (j && j.accentSeed && meta) {
-            var m = document.querySelector('meta[name="theme-color"]');
-            if (m) m.setAttribute('content', dark ? META_DARK : j.accentSeed);
-          }
-        }).catch(function () { /* fallback: warna default di atas */ });
+        // v3.1 — GUARD: kalau sudah login (token ada), SKIP — meta dipegang runtime
+        // tema tenant (utils/tenantTheme.js via GET /api/appearance auth); fetch public
+        // kini NETRAL platform, seed tenant tidak tersedia di sini.
+        if (!localStorage.getItem('token')) {
+          fetch('/api/appearance/public').then(function (r) {
+            return r.ok ? r.json() : null
+          }).then(function (j) {
+            if (j && j.accentSeed && meta) {
+              var m = document.querySelector('meta[name="theme-color"]');
+              if (m) m.setAttribute('content', dark ? META_DARK : j.accentSeed);
+            }
+          }).catch(function () { /* fallback: warna default di atas */ });
+        }
       } catch (e) { /* aman: fallback = light */ }
     })();
   </script>
   <!-- Token M3 default via bundle; override runtime accent admin dimuat SETELAHNYA
-       (spec §1a: "/theme.css dimuat setelahnya") → specificity sama, yang terakhir menang -->
+       (spec §1a: "/theme.css dimuat setelahnya") → specificity sama, yang terakhir menang.
+       v3.1 — /theme.css TANPA ?tenant= kini netral (kosong); tema tenant aktif
+       post-login via <style id="tenant-theme"> yang di-append BELAKANG oleh
+       utils/tenantTheme.js → cascade tetap menang. -->
   <script>
     // Sisipkan /theme.css SETELAH CSS bundle (yang di-inject Vite di head).
     // Dipasang via JS agar urutan dijamin: bundle dulu → theme.css kemudian.

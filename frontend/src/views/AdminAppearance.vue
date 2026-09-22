@@ -3,7 +3,8 @@
     v0.9.0 — Admin Appearance (spec §1a): kartu "🎨 Tampilan" sebagai halaman sendiri.
     Preset swatches (Ungu Parahita/Merah Kreatr/Hijau WA/Biru/Teal/Orange) + custom hex
     + preview mini light/dark. PUT /api/appearance (admin) → server generate skema →
-    GET /theme.css berubah global TANPA rebuild frontend.
+    v3.1: tema di-apply LIVE ke sesi ini (tenant-theme style tag) tanpa reload;
+    tenant lain & login page tidak terpengaruh (isolasi per-tenant).
   -->
   <PageShell title="Tampilan" back-to="/admin">
     <header class="hidden md:flex m3-topbar px-4 py-3 items-center justify-between">
@@ -96,6 +97,7 @@ import { useAuthStore } from '../stores/auth'
 import { useToastStore } from '../stores/toast'
 import { buildPreview } from '../utils/appearancePreview'
 import { syncThemeColorMeta } from '../utils/themeColor'
+import { applyTenantThemeCss } from '../utils/tenantTheme'
 
 const API = import.meta.env.VITE_API_URL || ''
 const auth = useAuthStore()
@@ -141,10 +143,13 @@ async function save() {
     const seed = current.value.trim().toUpperCase()
     const res = await axios.put(`${API}/api/appearance`, { accentSeed: seed })
     savedSeed.value = res.data.config.accentSeed
-    info.value = `Accent diterapkan: ${savedSeed.value} — reload halaman untuk melihat di seluruh app.`
+    // v3.1 — apply LIVE ke sesi ini (style tag tenant-theme), tanpa reload halaman.
+    // Tema hanya utk tenant admin yang login; tenant lain & login page netral.
+    applyTenantThemeCss(res.data.themeCss || '')
+    info.value = `Accent aktif di seluruh app: ${savedSeed.value}`
     // v0.12.7 — meta theme-color di-update live (status bar Android ikut tanpa reload);
     // manifest dinamis ikut berubah via server (invalidate cache /theme.css + max-age=60)
-    syncThemeColorMeta()
+    syncThemeColorMeta(savedSeed.value)
     toast.show({ icon: '🎨', title: 'Tersimpan', message: `Accent ${savedSeed.value} aktif` })
   } catch (e) {
     error.value = e.response?.data?.error || 'Gagal menyimpan accent'

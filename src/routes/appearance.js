@@ -1,13 +1,16 @@
 /**
  * v0.9.0 — Appearance config API (UI Revamp M3).
- * GET  /api/appearance      — baca config (auth; dipakai admin UI)
- * GET  /api/appearance/public — v0.12.7 PUBLIC no-auth: { accentSeed } saja — dipakai
+ * GET  /api/appearance      — baca config (auth; dipakai admin UI & runtime tema tenant)
+ * GET  /api/appearance/public — v0.12.7 PUBLIC no-auth: { accentSeed } — dipakai
  *                              init script index.html utk meta theme-color (status bar)
- *                              SEBELUM bundle app. DB error → 200 + DEFAULT_SEED (resilien,
- *                              pola sama dengan /theme.css fallback kosong).
+ *                              SEBELUM bundle app. v3.1: TANPA ?tenant= = netral
+ *                              platform (fallback "tenant pertama" DIHAPUS — login
+ *                              page umum tidak boleh ikut accent tenant mana pun).
+ *                              DB error → 200 + DEFAULT_SEED (resilien).
  * PUT  /api/appearance      — update accentSeed (ADMIN ONLY; validasi hex; server
  *                             generate skema light+dark via material-color-utilities
- *                             → simpan CSS di DB → invalidate cache /theme.css)
+ *                             → simpan CSS di DB → invalidate cache /theme.css
+ *                             PER-TENANT)
  */
 const express = require('express')
 const fs = require('fs')
@@ -17,18 +20,17 @@ const prisma = require('../prisma')
 const { requireAuth, requireAdmin, requireTenant } = require('../auth')
 
 // v3.0 — Isolasi tenant: AppearanceConfig = per-tenant. Endpoint auth = tenant dari
-// JWT (super_admin wajib ?tenant=). /theme.css & /manifest PUBLIC resolve via
-// ?tenant= (soft — tanpa tenant → config tenant pertama sebagai fallback fase 1).
+// JWT (super_admin wajib ?tenant=). Endpoint publik resolve HANYA via ?tenant= /
+// X-Tenant-Id eksplisit (v3.1) — tanpa itu = netral default platform.
 const rt = [requireAuth, requireTenant]
 const { normalizeHex, buildCssVars, DEFAULT_SEED } = require('../services/appearance')
 
-// In-memory cache untuk GET /theme.css (invalidate saat PUT) — dipasang dari server.js
-let themeCssCache = { css: null, updatedAt: 0 }
-function getCachedThemeCss() {
-  return themeCssCache.css
-}
-function invalidateThemeCssCache() {
-  themeCssCache = { css: null, updatedAt: Date.now() }
+// v3.1 — Cache GET /theme.css PER-TENANT (key = tenantId number | 'default').
+// Dulu: satu slot global → CSS tenant A bisa tersajikan ke tenant B (cross-leak).
+let themeCssCache = new Map()
+function invalidateThemeCssCache(tenantId) {
+  const key = Number.isFinite(Number(tenantId)) ? Number(tenantId) : 'default'
+  themeCssCache.delete(key)
 }
 
 // Per-tenant config — seed idempotent (pola AutoReplyConfig v0.7.0); seed utama
@@ -45,21 +47,28 @@ async function getConfig(tenantId) {
   })
 }
 
+// v3.1 — resolve tenant EKSPLISIT dari ?tenant= / X-Tenant-Id; null kalau tidak ada.
+// PENTING: tidak ada fallback tenant pertama — tanpa tenant = permukaan netral platform.
+function resolveExplicitTenantId(req) {
+  const raw = (req.query && (req.query.tenant ?? req.headers['x-tenant-id']))
+  const id = parseInt(raw, 10)
+  return Number.isFinite(id) ? id : null
+}
+
 // GET /api/appearance/public (PUBLIC, no-auth) — v0.12.7: { accentSeed } utk init script
-// index.html (meta theme-color) & App.vue. Payload sengaja minimal + tanpa auth karena
+// index.html (meta theme-color) & pre-login. Payload sengaja minimal + tanpa auth karena
 // diakses browser SEBELUM login (bukan data sensitif — warna aksen aplikasi).
+// v3.1: read-only (tidak seed config dari endpoint publik) + netral tanpa tenant.
 router.get('/public', async (req, res) => {
   try {
-    // v3 — resolve tenant opsional: ?tenant= / X-Tenant-Id; fallback = tenant pertama
-    let tenantId = parseInt(req.query.tenant ?? req.headers['x-tenant-id'], 10)
-    if (!Number.isFinite(tenantId)) {
-      const first = await prisma.tenant.findFirst({ orderBy: { id: 'asc' }, select: { id: true } })
-      tenantId = first?.id
-    }
-    if (!Number.isFinite(tenantId)) return res.json({ accentSeed: DEFAULT_SEED })
-    const cfg = await getConfig(tenantId)
     res.set('Cache-Control', 'no-cache')
-    res.json({ accentSeed: cfg.accentSeed })
+    const tenantId = resolveExplicitTenantId(req)
+    if (tenantId === null) {
+      // v3.1 — netral platform; login page tidak pernah ikut accent tenant mana pun
+      return res.json({ accentSeed: DEFAULT_SEED })
+    }
+    const cfg = await prisma.appearanceConfig.findUnique({ where: { tenantId } })
+    res.json({ accentSeed: (cfg && cfg.accentSeed) || DEFAULT_SEED })
   } catch (e) {
     // Resilien: init script butuh jawaban valid agar status bar tidak melenceng jauh
     console.error('[Appearance] GET public error:', e)
@@ -68,11 +77,16 @@ router.get('/public', async (req, res) => {
   }
 })
 
-// GET /api/appearance (auth) — config + seed (CSS tidak dikirim utk payload ringan)
+// GET /api/appearance (auth) — config + themeCss (v3.1: CSS ikut dikirim supaya
+// frontend bisa apply tema tenant RUNTIME post-login — /theme.css global kini netral).
+// Semua role tenant (admin/cs/relay) boleh membaca — tema tampil buat seluruh tenant.
 router.get('/', ...rt, async (req, res) => {
   try {
     const cfg = await getConfig(req.tenantId)
-    res.json({ config: { id: cfg.id, accentSeed: cfg.accentSeed, updatedAt: cfg.updatedAt, updatedById: cfg.updatedById } })
+    res.json({
+      config: { id: cfg.id, accentSeed: cfg.accentSeed, updatedAt: cfg.updatedAt, updatedById: cfg.updatedById },
+      themeCss: cfg.themeCss || '',
+    })
   } catch (e) {
     console.error('[Appearance] GET error:', e)
     res.status(500).json({ error: 'Internal server error' })
@@ -95,9 +109,9 @@ router.put('/', ...rt, requireAdmin, async (req, res) => {
       data: { accentSeed: seed, themeCss: css, updatedById: req.user.id },
     })
 
-    invalidateThemeCssCache() // cache /theme.css invalid → variabel baru aktif
+    invalidateThemeCssCache(req.tenantId) // cache /theme.css TENANT INI invalid → aktif
 
-    console.log(`[Appearance] Accent updated to ${seed} by @${req.user.username}`)
+    console.log(`[Appearance] Accent updated to ${seed} by @${req.user.username} (tenant ${req.tenantId})`)
     res.json({ config: { id: cfg.id, accentSeed: cfg.accentSeed, updatedAt: cfg.updatedAt, updatedById: cfg.updatedById }, themeCss: css })
   } catch (e) {
     console.error('[Appearance] PUT error:', e)
@@ -106,27 +120,25 @@ router.put('/', ...rt, requireAdmin, async (req, res) => {
 })
 
 // GET /theme.css — PUBLIC, no-auth (dipakai index.html SEBELUM bundle app).
+// v3.1: TANPA ?tenant= → CSS kosong (netral; tokens.css default berlaku).
+// DENGAN ?tenant=N → CSS config tenant itu. Cache PER-TENANT.
 // Resilience: DB error → serve CSS kosong (fallback ke tokens.css default), bukan crash.
 function themeCssHandler(req, res) {
-  const cached = getCachedThemeCss()
-  if (cached !== null) {
+  const explicit = resolveExplicitTenantId(req)
+  const cacheKey = explicit === null ? 'default' : explicit
+  const cached = themeCssCache.get(cacheKey)
+  if (cached !== undefined) {
     res.set('Content-Type', 'text/css; charset=utf-8')
     res.set('Cache-Control', 'no-cache')
     return res.send(cached)
   }
-  // v3 — tenant resolve (soft): ?tenant= / X-Tenant-Id; fallback tenant pertama
-  const resolveTid = prisma.tenant.findFirst({ orderBy: { id: 'asc' }, select: { id: true } })
-    .then((t) => {
-      const explicit = parseInt(req.query.tenant ?? req.headers['x-tenant-id'], 10)
-      return Number.isFinite(explicit) ? explicit : (t?.id ?? null)
-    })
-  resolveTid
-    .then((tenantId) => (Number.isFinite(tenantId)
-      ? prisma.appearanceConfig.findUnique({ where: { tenantId } })
-      : null))
+  const lookup = explicit === null
+    ? Promise.resolve(null) // v3.1 — netral; TIDAK fallback ke tenant pertama
+    : prisma.appearanceConfig.findUnique({ where: { tenantId: explicit } })
+  lookup
     .then((cfg) => {
-      const css = (cfg && cfg.themeCss) ? cfg.themeCss : ''
-      themeCssCache = { css, updatedAt: Date.now() }
+      const css = (cfg && cfg.themeCss) || '' // no-tenant / belum ada config → kosong = tokens default
+      themeCssCache.set(cacheKey, css)
       res.set('Content-Type', 'text/css; charset=utf-8')
       res.set('Cache-Control', 'no-cache')
       res.send(css)
@@ -141,11 +153,9 @@ function themeCssHandler(req, res) {
 }
 
 // GET /manifest.webmanifest — v0.12.7 PUBLIC no-auth: manifest DINAMIS dgn theme_color =
-// accentSeed aktif. Dulu: file statis manifest.webmanifest hardcoded #6d28d9 → ganti accent
-// di Admin Appearance tidak pernah sampai ke status bar Android (theme_color manifest).
-// Browser mengambil manifest TANPA auth → endpoint harus PUBLIC. File statis tetap ada
-// sbg fallback template (kalau handler ini gagal load file → 503, static file yang lama
-// tidak di-tulis ulang). Cache pendek max-age=60 (revisit cepat ikut accent baru).
+// accentSeed aktif. v3.1: TANPA tenant → theme_color = DEFAULT_SEED (netral platform);
+// ?tenant=N → accent tenant itu. Browser mengambil manifest TANPA auth → endpoint harus
+// PUBLIC. File statis tetap ada sbg fallback template. Cache pendek max-age=60.
 let manifestTemplate = null
 let manifestTemplateMtimeMs = 0
 function manifestHandler(_req, res) {
@@ -156,15 +166,11 @@ function manifestHandler(_req, res) {
       manifestTemplate = fs.readFileSync(manifestPath, 'utf8')
       manifestTemplateMtimeMs = st.mtimeMs
     }
-    const resolveTid = prisma.tenant.findFirst({ orderBy: { id: 'asc' }, select: { id: true } })
-      .then((t) => {
-        const explicit = parseInt(_req.query?.tenant ?? _req.headers?.['x-tenant-id'], 10)
-        return Number.isFinite(explicit) ? explicit : (t?.id ?? null)
-      })
-  resolveTid
-    .then((tenantId) => (Number.isFinite(tenantId)
-      ? prisma.appearanceConfig.findUnique({ where: { tenantId } })
-      : null))
+    const explicit = resolveExplicitTenantId(_req)
+    const lookup = explicit === null
+      ? Promise.resolve(null) // v3.1 — netral; TIDAK fallback ke tenant pertama
+      : prisma.appearanceConfig.findUnique({ where: { tenantId: explicit } })
+    lookup
       .then((cfg) => {
         const seed = (cfg && cfg.accentSeed) || DEFAULT_SEED
         let manifest

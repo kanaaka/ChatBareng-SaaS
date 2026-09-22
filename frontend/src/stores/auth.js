@@ -1,5 +1,7 @@
 import { defineStore } from 'pinia'
 import axios from 'axios'
+import { loadAndApplyTenantTheme, clearTenantTheme } from '../utils/tenantTheme'
+import { syncThemeColorMeta } from '../utils/themeColor'
 
 const API = import.meta.env.VITE_API_URL || ''
 
@@ -30,6 +32,9 @@ export const useAuthStore = defineStore('auth', {
       localStorage.setItem('user', JSON.stringify(this.user))
       localStorage.setItem('tenants', JSON.stringify(this.tenants))
       axios.defaults.headers.common['Authorization'] = `Bearer ${this.token}`
+      // v3.1 — tema aksen tenant aktif RUNTIME tanpa full reload (bootstrap App.vue
+      // tidak jalan lagi saat SPA navigasi). super_admin → dilewati di util (403 netral).
+      loadAndApplyTenantTheme()
     },
     // v3.0 — impersonasi view-as tenant (short-lived JWT role admin tenant)
     async impersonate(tenantId) {
@@ -39,6 +44,8 @@ export const useAuthStore = defineStore('auth', {
       localStorage.setItem('token', this.token)
       localStorage.setItem('user', JSON.stringify(this.user))
       axios.defaults.headers.common['Authorization'] = `Bearer ${this.token}`
+      // v3.1 — superadmin view-as tenant → tema tenant aktif runtime juga
+      loadAndApplyTenantTheme()
     },
     async fetchMe() {
       try {
@@ -57,6 +64,9 @@ export const useAuthStore = defineStore('auth', {
       localStorage.removeItem('user')
       localStorage.removeItem('tenants')
       delete axios.defaults.headers.common['Authorization']
+      // v3.1 — balik ke permukaan netral platform (login page tidak ikut accent tenant)
+      clearTenantTheme()
+      syncThemeColorMeta()
     },
   },
 })

@@ -1,3 +1,61 @@
+## v3.1 — Isolasi Accent Tema per-Tenant: Login Page Netral (2026-09-22)
+
+- Laporan owner (05:08): multi-tenant SaaS — ganti accent oleh admin tenant
+  seharusnya hanya mempengaruhi tenant-nya sendiri, bukan permukaan "umum".
+- Audit Alita (05:13): data sudah benar (`AppearanceConfig` per-tenant, PUT
+  di-scope dari JWT) TAPI semua endpoint tema PUBLIK masih fallback
+  "tenant pertama" (`?tenant=` tak pernah dikirim frontend; user tenant
+  memang tidak diberi tahu tenantId-nya). Akibat: (1) accent tenant #1
+  bocor ke login page semua orang; (2) accent tenant #2+ tersimpan tapi
+  tidak pernah tersajikan, bahkan ke user tenant itu sendiri; (3) cache
+  /theme.css satu slot global → risiko cross-tenant CSS.
+- Bukti visual SEBELUM fix (Chrome 18801, 2 tenant uji: #16A34A hijau /
+  #EA580C oranye): login page tombol "Masuk" HIJAU (bocoran tenant 1),
+  dashboard tenant 2 juga HIJAU (tema sendiri tidak tersajikan).
+- Backend `src/routes/appearance.js` (v3.1):
+  - Fallback `findFirst` ("tenant pertama") DIHAPUS dari 3 handler publik
+    (`/api/appearance/public`, `/theme.css`, `/manifest.webmanifest`).
+    Tanpa `?tenant=`/`X-Tenant-Id` → netral platform `#6D28D9`
+    (public endpoint selalu 200 valid; theme.css kosong = tokens default;
+    manifest theme_color = DEFAULT_SEED). `?tenant=N` valid tetap
+    didukung (forward-compat subdomain per-tenant); tenant invalid → netral.
+  - Cache `/theme.css` kini PER-TENANT (`Map` keyed tenantId | 'default');
+    `invalidateThemeCssCache(tenantId)` hapus key itu saja; PUT menghapus
+    key tenant yang diubah.
+  - `GET /api/appearance` (auth) kini mengikutkan `themeCss` — dipakai
+    frontend apply tema tenant runtime (tanpa reload). Semua role tenant
+    boleh membaca (tema tampil untuk seluruh tenant).
+- Frontend (v3.1):
+  - `utils/tenantTheme.js` BARU: `applyTenantThemeCss(css)` inject/replace
+    `<style id="tenant-theme">` (idempotent), `loadAndApplyTenantTheme()`
+    = GET /api/appearance via JWT + apply + sinkron meta theme-color,
+    `clearTenantTheme()` saat logout. tenantId tetap tidak pernah bocor.
+  - `App.vue`: bootstrap post-`fetchMe` → apply tema tenant; tanpa sesi →
+    clearTenantTheme (permukaan kembali netral).
+  - `stores/auth.js`: apply tema setelah `login()` (SPA tanpa reload) dan
+    setelah `impersonate()` (superadmin view-as tenant ikut tema tenant);
+    `logout()` → clear + meta kembali netral.
+  - `utils/themeColor.js`: `syncThemeColorMeta(seed?)` — seed tenant dari
+    caller (post-login), tanpa fetch publik; tanpa param = perilaku lama
+    (netral pre-login).
+  - `index.html` init script: fetch public kini di-guard `token` — sesi
+    login tidak menimpa meta dengan warna netral (runtime tenant yang
+    pegang). Anti-FOUC `data-theme` tetap selalu jalan.
+  - `AdminAppearance.vue`: setelah PUT sukses → apply LIVE tanpa reload;
+    pesan "Accent aktif di seluruh app."
+- Cascade: `/theme.css` (netral) tetap di-inject index.html; style
+  tenant-theme di-append belakang → specificity sama, terakhir menang.
+- E2E 15 assertion PASS (scripts/saas31-e2e.sh): endpoint publik tanpa
+  tenant netral #6D28D9; `?tenant=1/2` resolve benar; alternasi cache 2x
+  tanpa cross-leak; GET auth per-tenant terisolasi; manifest template utuh.
+- Bukti visual SETELAH fix: login page ungu netral; dashboard tenant 1
+  HIJAU; dashboard tenant 2 ORANYE — screenshot Chrome 18801.
+- Test data: tenant "Uji Accent Satu" (#16A34A) + "Uji Accent Dua"
+  (#EA580C) + admin `uji_admin1/2` — sengaja dibiarkan untuk regression
+  demo; silakan hapus via Superadmin bila tak dipakai.
+- Tanpa migrasi DB (schema v3.0 sudah sesuai). `wa-cs-hub-saas-v3` masuk
+  BACKUP_TARGETS backup-local.sh di hari yang sama (lesson 2026-08-31).
+
 ## v0.15.2 — Bugfix behavior: Admin klik "Chat" dari Kontak kini auto-claim (2026-09-21)
 
 - Laporan owner (12:58): akun Admin klik tombol Chat di halaman Kontak pada
