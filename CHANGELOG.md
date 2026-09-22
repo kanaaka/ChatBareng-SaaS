@@ -2221,3 +2221,30 @@ All notable changes to this project will be documented in this file.
   (b) chat LID baru + phoneJid mapping; (c) phone→chat LID existing, pesan
   gabung; (d) greeting skip + marker. Tenant QA di-purge bersih. Counts
   Parahita/Mazaya utuh sebelum/sesudah.
+
+## v3.5.1 — Hotfix routing: exact LID chat lama menang atas phone chat (regresi kasus owner) (2026-09-23)
+
+- **Regresi lapor owner (02:27, tenant Parahita):** setelah v3.5, balasan klien
+  STILL nyasar — tapi ke pola BEDA: masuk ke chat LID LAMA (chat #5, sisa test
+  auto-reply sehari sebelumnya), bukan chat phone yang baru di-initiate (#7635).
+- **Root cause:** routing v3.5 prioritas *exact match LID dulu* — chat LID lama
+  yang kebetulan exist menang sebelum `remoteJidAlt` (nomor hape) sempat dicek.
+  v3.5 cuma nutup kasus "LID chat belum ada" (Berliana), bukan "LID chat lama ada".
+- **Fix (pool.js):** pesan LID yang membawa altJid phone → chat PHONE diprioritaskan
+  atas exact LID chat; kalau DUA-DUANYA ada → chat LID lama di-merge inline ke
+  chat phone (`mergeLidIntoPhoneChat`) lalu route ke phone. Sisi phone-JID masuk
+  juga dapat alternatif altJid LID (sebelum lookup kolom). Merge guard
+  `mergeLidIntoPhoneChat` ikut dipatch: contact LID di-RELOCATE ke phone chat bila
+  phone chat belum punya contact (paritas patch review v3.5 — jangan buang
+  identitas kontak).
+- **Repair manual (Alita):** chat #5 (LID lama) → #7635: 7 pesan dipindah, contact
+  dobel dibersihkan, `lidJid` dipasang. Verify: 8 pesan nyatu, WA reconnect OK.
+- **Verifikasi fix oleh owner (02:44-an):** balasan masuk ke chat yang sama
+  (#7635), TIDAK ada chat baru nyasar — dibuktikan contact "kanaka" ke-auto-create
+  ulang nempel di chat 7635 (hanya terjadi saat pesan masuk nyamber ke chat itu).
+- **Permintaan owner (02:47):** hapus total chat test tsb (kontak sudah dihapus
+  owner sendiri) — dieksekusi via one-off script: 10 pesan, 9 chatEvent, 2 file
+  media di disk, contact auto-recreate (#7623), chat row — semua verified 0;
+  PurgeLog tercatat (reason: owner request).
+- Catatan UX: fitur "hapus 1 chat total" belum ada di UI (purge per-chat hanya
+  membersihkan pesan, chat row tetap) — kandidat fitur berikutnya.

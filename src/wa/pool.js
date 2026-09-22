@@ -662,8 +662,16 @@ async function mergeLidIntoPhoneChat(tid, lidChat, phoneJid) {
     const r = await prisma.$transaction(async (tx) => {
       // pesan → canonical phone chat
       const mv = await tx.message.updateMany({ where: { chatId: lidChat.id }, data: { chatId: phoneChat.id } })
-      // Contact row yang menempel ke chat LID → hapus (phone chat punya row-nya sendiri)
-      await tx.contact.deleteMany({ where: { chatId: lidChat.id } })
+      // Contact row yang menempel ke chat LID:
+      // - phone chat SUDAH punya contact → hapus dobel (phone chat punya row-nya sendiri)
+      // - phone chat BELUM punya → RELOCATE ke phone chat (v3.5.1 review Alita —
+      //   jangan buang identitas kontak; kasus Kolonel: contact hanya ada di LID side)
+      const phoneContact = await tx.contact.findFirst({ where: { chatId: phoneChat.id } })
+      if (phoneContact) {
+        await tx.contact.deleteMany({ where: { chatId: lidChat.id } })
+      } else {
+        await tx.contact.updateMany({ where: { chatId: lidChat.id }, data: { chatId: phoneChat.id } })
+      }
       // pasang mapping dua arah di canonical chat
       await tx.chat.update({
         where: { id: phoneChat.id },
@@ -760,6 +768,29 @@ async function processIncomingMessage(tenantId, msg) {
     routedChat = await prisma.chat.findUnique({
       where: { tenantId_waJid: { tenantId: tid, waJid: rawJid } },
     })
+    // v3.5.1 — PESAN LID yang membawa altJid phone (remoteJidAlt): chat PHONE
+    // menang atas exact LID chat. Kasus 02:27 (Kanaka): chat LID lama exist dari
+    // test sebelumnya → exact match menang → balasan nyasar + greeting. Kalau
+    // chat phone utk nomor yang sama ada → itu canonical; kalau chat LID lama
+    // JUGA ada (beda row) → merge inline LID → phone, route ke phone.
+    if (rawJid.endsWith('@lid')) {
+      const altPhonePref = altJid && String(altJid).endsWith('@s.whatsapp.net') ? altJid : null
+      if (altPhonePref) {
+        const altPhoneChat = await prisma.chat.findUnique({
+          where: { tenantId_waJid: { tenantId: tid, waJid: altPhonePref } },
+        })
+        if (altPhoneChat && (!routedChat || routedChat.id !== altPhoneChat.id)) {
+          if (routedChat) {
+            const merged = await mergeLidIntoPhoneChat(tid, routedChat, altPhonePref)
+            routedChat = merged && merged.waJid === altPhonePref ? merged : altPhoneChat
+            log(tid, `routing v3.5.1: pesan LID ${rawJid} diarahkan ke chat phone #${routedChat.id}${merged && merged.waJid === altPhonePref ? ' (chat LID lama di-merge)' : ''}`)
+          } else {
+            routedChat = altPhoneChat
+          }
+          routeMode = 'lid-to-phone'
+        }
+      }
+    }
     if (!routedChat && rawJid.endsWith('@lid')) {
       // (2) LID baru → chat phone-JID milik nomor yang sama
       const altPhone = altJid && altJid.endsWith('@s.whatsapp.net') ? altJid : null
@@ -799,7 +830,19 @@ async function processIncomingMessage(tenantId, msg) {
       }
     } else if (!routedChat && rawJid.endsWith('@s.whatsapp.net')) {
       // (3) phone JID → chat LID yang mapping-nya sudah tersimpan:
-      //     kolom lidJid ATAU kolom phoneJid (chat LID yang sudah belajar nomor ini).
+      //     altJid LID (v3.5.1) → kolom lidJid ATAU kolom phoneJid (chat LID yang
+      //     sudah belajar nomor ini).
+      const altLid = altJid && String(altJid).endsWith('@lid') ? String(altJid).split(':')[0] + '@lid' : null
+      if (altLid) {
+        const byAltLid = await prisma.chat.findUnique({
+          where: { tenantId_waJid: { tenantId: tid, waJid: altLid } },
+        })
+        if (byAltLid) {
+          routedChat = byAltLid
+          routeMode = 'phone-to-lid'
+        }
+      }
+      if (!routedChat) {
       const byLidField = await prisma.chat.findFirst({
         where: { tenantId: tid, lidJid: rawJid },
         orderBy: { id: 'asc' },
@@ -816,6 +859,7 @@ async function processIncomingMessage(tenantId, msg) {
           routedChat = byPhoneField
           routeMode = 'phone-to-lid'
         }
+      }
       }
     }
   }
