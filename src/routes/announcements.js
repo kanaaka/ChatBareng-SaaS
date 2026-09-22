@@ -4,6 +4,8 @@ const prisma = require('../prisma')
 const { requireAuth, requireAdmin, requireTenant } = require('../auth')
 
 // v3.0 — Isolasi tenant: announcement = tenant-scoped
+const plans = require('../services/plans') // v3.4 — feature gate Pengumuman (plan per-tenant, ikut featBlast)
+const featBlastGate = plans.requireFeature('featBlast') // 403 ramah + upsell bila fitur OFF
 const rt = [requireAuth, requireTenant]
 const broadcast = require('../socket/broadcast')
 const push = require('../push')
@@ -22,7 +24,7 @@ function statusForAdmin(a) {
 }
 
 // GET /api/announcements — active + not-expired for all users
-router.get('/', ...rt, async (req, res) => {
+router.get('/', ...rt, featBlastGate, async (req, res) => {
   try {
     const now = new Date()
     const rows = await prisma.announcement.findMany({
@@ -59,7 +61,7 @@ router.get('/', ...rt, async (req, res) => {
 })
 
 // GET /api/announcements/all — admin-only full list with read stats
-router.get('/all', ...rt, requireAdmin, async (req, res) => {
+router.get('/all', ...rt, featBlastGate, requireAdmin, async (req, res) => {
   try {
     const [announcements, totalUsers] = await Promise.all([
       prisma.announcement.findMany({
@@ -96,7 +98,7 @@ router.get('/all', ...rt, requireAdmin, async (req, res) => {
 })
 
 // POST /api/announcements — create (admin only)
-router.post('/', ...rt, requireAdmin, async (req, res) => {
+router.post('/', ...rt, featBlastGate, requireAdmin, async (req, res) => {
   try {
     const { title, content, pinned, expiresAt } = req.body
 
@@ -154,7 +156,7 @@ router.post('/', ...rt, requireAdmin, async (req, res) => {
 })
 
 // PUT /api/announcements/:id — edit (admin only)
-router.put('/:id', ...rt, requireAdmin, async (req, res) => {
+router.put('/:id', ...rt, featBlastGate, requireAdmin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) {
@@ -233,7 +235,7 @@ router.put('/:id', ...rt, requireAdmin, async (req, res) => {
 })
 
 // DELETE /api/announcements/:id — hard delete (admin only)
-router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
+router.delete('/:id', ...rt, featBlastGate, requireAdmin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) {
@@ -256,7 +258,7 @@ router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
 })
 
 // POST /api/announcements/:id/read — mark read by current user
-router.post('/:id/read', ...rt, async (req, res) => {
+router.post('/:id/read', ...rt, featBlastGate, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) {

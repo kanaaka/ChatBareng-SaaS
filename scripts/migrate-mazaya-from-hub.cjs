@@ -296,11 +296,15 @@ async function main() {
   console.log('NOTES=' + noteTotal + ' EVENTS=' + evTotal + ' GAL=' + galTotal)
 
   // 9) Templates
+  // v3.4 FIX (2026-09-22, bug 15:49): JANGAN re-encrypt content template — write/read path
+  // app (templates.js) menyimpan & membaca PLAINTEXT (paritas hub). Over-encrypt di sini
+  // membuat UI Mazaya menampilkan 'enc:v1:...' gibberish. Fixed in-place utk tenant 8;
+  // patch ini mencegah kambuh di migrasi tenant berikutnya.
   let tplTotal = 0
   if (!DRY) {
     for (const t of await hub.messageTemplate.findMany()) {
       const d = hubDecrypt(t.content)
-      await saas.messageTemplate.create({ data: { tenantId: tid, name: t.name, keyword: t.keyword, content: d == null ? t.content : saasEncrypt(d), createdBy: userMap.get(t.createdBy) || SUPER_ID } })
+      await saas.messageTemplate.create({ data: { tenantId: tid, name: t.name, keyword: t.keyword, content: d == null ? t.content : d, createdBy: userMap.get(t.createdBy) || SUPER_ID } })
       tplTotal++
     }
   } else tplTotal = await hub.messageTemplate.count()
@@ -310,8 +314,10 @@ async function main() {
   let annTotal = 0, annReadTotal = 0
   if (!DRY) {
     for (const a of await hub.announcement.findMany()) {
+      // v3.4 FIX: announcement.content juga plaintext di app (announcements.js baca
+      // raw) — JANGAN saasEncrypt (paritas fix template di atas).
       const d = hubDecrypt(a.content)
-      const na = await saas.announcement.create({ data: { tenantId: tid, title: a.title, content: d == null ? a.content : saasEncrypt(d), pinned: a.pinned, isActive: a.isActive, expiresAt: a.expiresAt, createdById: userMap.get(a.createdById) || SUPER_ID, createdAt: a.createdAt, updatedAt: a.updatedAt } })
+      const na = await saas.announcement.create({ data: { tenantId: tid, title: a.title, content: d == null ? a.content : d, pinned: a.pinned, isActive: a.isActive, expiresAt: a.expiresAt, createdById: userMap.get(a.createdById) || SUPER_ID, createdAt: a.createdAt, updatedAt: a.updatedAt } })
       annTotal++
       for (const r of await hub.announcementRead.findMany({ where: { announcementId: a.id } })) {
         const uid = userMap.get(r.userId)

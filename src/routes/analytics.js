@@ -4,6 +4,8 @@ const prisma = require('../prisma')
 const { requireAuth, requireAdmin, requireTenant } = require('../auth')
 
 // v3.0 — Isolasi tenant: analytics = tenant-scoped
+const plans = require('../services/plans') // v3.4 — feature gate Analytics (plan per-tenant)
+const featAnalyticsGate = plans.requireFeature('featAnalytics') // 403 ramah + upsell bila fitur OFF
 const rt = [requireAuth, requireTenant, requireAdmin]  // requireTenant dulu — super_admin wajib ?tenant= sebelum cek admin
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -86,7 +88,7 @@ function formatDuration(minutes) {
 }
 
 // GET /api/analytics/overview
-router.get('/overview', ...rt, async (req, res) => {
+router.get('/overview', ...rt, featAnalyticsGate, async (req, res) => {
   try {
     const window = resolveRangeParams(req)
     if (window.error) return res.status(400).json({ error: window.error })
@@ -144,7 +146,7 @@ router.get('/overview', ...rt, async (req, res) => {
 })
 
 // GET /api/analytics/agents
-router.get('/agents', ...rt, async (req, res) => {
+router.get('/agents', ...rt, featAnalyticsGate, async (req, res) => {
   try {
     const window = resolveRangeParams(req)
     if (window.error) return res.status(400).json({ error: window.error })
@@ -230,7 +232,7 @@ router.get('/agents', ...rt, async (req, res) => {
 })
 
 // GET /api/analytics/hourly
-router.get('/hourly', ...rt, async (req, res) => {
+router.get('/hourly', ...rt, featAnalyticsGate, async (req, res) => {
   try {
     const window = resolveRangeParams(req)
     if (window.error) return res.status(400).json({ error: window.error })
@@ -311,7 +313,7 @@ function buildRawWhere(window, column) {
 }
 
 // GET /api/analytics/chats
-router.get('/chats', ...rt, async (req, res) => {
+router.get('/chats', ...rt, featAnalyticsGate, async (req, res) => {
   try {
     const window = resolveRangeParams(req)
     if (window.error) return res.status(400).json({ error: window.error })

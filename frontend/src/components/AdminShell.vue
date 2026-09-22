@@ -72,7 +72,7 @@
         <!-- List modul (ikon + label + deskripsi pendek) — route-based -->
         <nav class="admin-sidebar__nav flex-1 overflow-y-auto px-2 pb-4" aria-label="Modul admin">
           <router-link
-            v-for="m in modules"
+            v-for="m in visibleModules"
             :key="m.to"
             :to="m.to"
             class="admin-sidebar__item"
@@ -102,6 +102,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { hasFeature } from '../utils/branding' // v3.4 — menu gating plan
 
 const route = useRoute()
 const router = useRouter()
@@ -116,21 +117,25 @@ watch(() => route.path, () => {
 
 // ── Modul sidebar — 13 modul (LENGKAP sesuai launcher — fix lapor Kanaka 11:08 #1:
 // spec v0.13.6 salah tulis "8 modul"; launcher sebenarnya 13 sejak v0.13.0) ──
+// v3.4 — modul ber-plan punya `feature` key → difilter hasFeature() (hide bila OFF).
 const modules = [
   { icon: '👥', title: 'Users', desc: 'Kelola akun CS & admin', to: '/admin/users' },
   { icon: '📱', title: 'WhatsApp', desc: 'Koneksi & QR session', to: '/admin/whatsapp' },
   { icon: '📝', title: 'Templates', desc: 'Pesan cepat + keyword', to: '/admin/templates' },
-  { icon: '📊', title: 'Analytics', desc: 'Performa CS & lifecycle', to: '/admin/analytics' },
-  { icon: '📢', title: 'Pengumuman', desc: 'Broadcast ke tim', to: '/announcements' },
+  { icon: '📊', title: 'Analytics', desc: 'Performa CS & lifecycle', to: '/admin/analytics', feature: 'analytics' },
+  { icon: '📢', title: 'Pengumuman', desc: 'Broadcast ke tim', to: '/announcements', feature: 'blast' },
   { icon: '🧹', title: 'Purge', desc: 'Bersihkan riwayat chat', to: '/admin/purge' },
-  { icon: '🗂️', title: 'Backup & Restore', desc: 'Export/import history', to: '/admin/history' },
+  { icon: '🗂️', title: 'Backup & Restore', desc: 'Export/import history', to: '/admin/history', feature: 'historyExport' },
   { icon: '🤖', title: 'Auto Reply', desc: 'Greeting & jam kerja', to: '/admin/autoreply' },
-  { icon: '🧭', title: 'Menu Gateway', desc: 'Triage otomatis', to: '/admin/menu-gateway' },
-  { icon: '⭐', title: 'CSAT', desc: 'Survey kepuasan', to: '/admin/csat' },
-  { icon: '☁️', title: 'Backup Drive', desc: 'Google Drive otomatis', to: '/admin/backup' },
+  { icon: '🧭', title: 'Menu Gateway', desc: 'Triage otomatis', to: '/admin/menu-gateway', feature: 'menuGateway' },
+  { icon: '⭐', title: 'CSAT', desc: 'Survey kepuasan', to: '/admin/csat', feature: 'csat' },
+  { icon: '☁️', title: 'Backup Drive', desc: 'Google Drive otomatis', to: '/admin/backup', feature: 'gdriveBackup' },
   { icon: '🎨', title: 'Tampilan', desc: 'Warna aksen aplikasi', to: '/admin/appearance' },
   { icon: '📖', title: 'Panduan', desc: 'Panduan semua peran', to: '/guidebook' },
 ]
+
+// v3.4 — modul terlihat = filter feature gate (modul tanpa feature key selalu tampil)
+const visibleModules = computed(() => modules.filter((m) => !m.feature || hasFeature(m.feature)))
 
 // ── B — Settings Search index statis (spec §2) ──
 const SEARCH_INDEX = [

@@ -59,6 +59,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useChatsStore } from '../stores/chats'
+import { hasFeature } from '../utils/branding' // v3.4 — menu gating plan
 
 const props = defineProps({
   // Parent menyembunyikan homerow saat chat detail mobile / halaman penuh lain
@@ -77,8 +78,11 @@ const items = computed(() => {
   const base = [
     { icon: 'chat', label: 'Obrolan', to: '/', badge: unreadBadge.value },
     { icon: 'contacts', label: 'Kontak', to: '/contacts' },
-    { icon: 'blast', label: 'Blast', to: '/blast' },
   ]
+  // v3.4 — Blast ikut menu gating plan (featBlast OFF → disembunyikan)
+  if (hasFeature('blast')) {
+    base.push({ icon: 'blast', label: 'Blast', to: '/blast' })
+  }
   if (auth.isAdmin) {
     base.push({ icon: 'admin', label: 'Admin', to: '/admin' })
   }

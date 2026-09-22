@@ -17,6 +17,8 @@ const prisma = require('../prisma')
 const { requireAuth, requireAdmin, requireTenant } = require('../auth')
 
 // v3.0 — Isolasi tenant: Menu Gateway = per-tenant
+const plans = require('../services/plans') // v3.4 — feature gate Menu Gateway (plan per-tenant)
+const featMenuGatewayGate = plans.requireFeature('featMenuGateway') // 403 ramah + upsell bila fitur OFF
 const rt = [requireAuth, requireTenant, requireAdmin]  // requireTenant dulu — super_admin wajib ?tenant= sebelum cek admin
 const menuGateway = require('../services/menuGateway')
 const { stripUnknownPlaceholders } = require('../services/autoReply')
@@ -238,7 +240,7 @@ async function validatePayload(body, errors) {
 }
 
 // ── GET /api/menu-gateway (admin) ───────────────────────────────────────
-router.get('/', ...rt, async (req, res) => {
+router.get('/', ...rt, featMenuGatewayGate, async (req, res) => {
   try {
     const cfg = await menuGateway.getConfig(req.tenantId)
     const waitingCount = await menuGateway.countWaiting(req.tenantId)
@@ -253,7 +255,7 @@ router.get('/', ...rt, async (req, res) => {
 })
 
 // ── GET /api/menu-gateway/waiting (admin) — chip + flyout dashboard ─────
-router.get('/waiting', ...rt, async (req, res) => {
+router.get('/waiting', ...rt, featMenuGatewayGate, async (req, res) => {
   try {
     const count = await menuGateway.countWaiting(req.tenantId)
     const chats = await menuGateway.listWaiting(req.tenantId)
@@ -265,7 +267,7 @@ router.get('/waiting', ...rt, async (req, res) => {
 })
 
 // ── PUT /api/menu-gateway (admin) — upsert transaksional §8 ─────────────
-router.put('/', ...rt, async (req, res) => {
+router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
   try {
     const body = req.body || {}
     const errors = []

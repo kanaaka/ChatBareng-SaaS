@@ -44,6 +44,7 @@ const scheduledRoutes = require('./routes/scheduled') // v0.10.0 — Pesan Terja
 const menuGatewayRoutes = require('./routes/menuGateway') // v0.13.0 — Menu Gateway (admin)
 const groupRoutes = require('./routes/groups') // v0.14.0 — Manajemen Grup (PIC Model)
 const superadminRoutes = require('./routes/superadmin') // v3.0 — Platform owner API
+const brandingRoutes = require('./routes/branding') // v3.4 — Branding per-tenant (logo)
 
 const app = express()
 const server = http.createServer(app)
@@ -97,6 +98,7 @@ app.use('/api/app-config', appConfigRoutes) // v0.12.9 — AppConfig global (adm
 app.use('/api/scheduled', scheduledRoutes) // v0.10.0 — Pesan Terjadwal
 app.use('/api/menu-gateway', menuGatewayRoutes) // v0.13.0 — Menu Gateway (admin). Sweep di-init dari baileys connect — BUKAN di sini.
 app.use('/api/groups', groupRoutes) // v0.14.0 — Manajemen Grup (PIC Model)
+app.use('/api/branding', brandingRoutes) // v3.4 — Branding per-tenant (logo, auth flexible)
 // Public, no-auth: dipakai index.html SEBELUM bundle app (fallback aman kalau DB error)
 app.get('/theme.css', appearanceRoutes.themeCssHandler)
 // v0.12.7 — PUBLIC, no-auth: manifest dinamis (theme_color = accentSeed aktif).
@@ -159,6 +161,11 @@ async function start() {
     // Seed config/folder lama dihapus dari boot — kini per-tenant via
     // tenantSeed.seedTenantDefaults() saat superadmin membuat tenant.
     await ensureSuperAdmin()
+    // v3.4 — Plan & kuota per-tenant: tenant yang SUDAH ADA (belum punya plan) di-seed
+    // plan=max otomatis di boot (safe: fitur yang sebelumnya kebuka tetap kebuka).
+    const plans = require('./services/plans')
+    const seededPlans = await plans.ensureAllTenantPlans()
+    if (seededPlans > 0) console.log(`[Plan] Boot: ${seededPlans} tenant existing di-seed plan=max`)
     const [tenantCount, userCount] = await prisma.$transaction([
       prisma.tenant.count(),
       prisma.user.count(),

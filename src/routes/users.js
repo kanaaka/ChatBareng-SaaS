@@ -2,6 +2,8 @@ const express = require('express')
 const router = express.Router()
 const prisma = require('../prisma')
 const { requireAuth, requireAdmin, requireTenant, hashPassword } = require('../auth')
+// v3.4 — kuota agen per-tenant
+const plans = require('../services/plans')
 
 // v3.0 — Isolasi tenant: manajemen user = per-tenant (super_admin tidak muncul;
 // create user selalu tenant admin; transfer lintas tenant → 403).
@@ -72,6 +74,12 @@ router.post('/', ...rt, requireAdmin, createUserValidation, async (req, res) => 
     const existing = await prisma.user.findUnique({ where: { username } })
     if (existing) {
       return res.status(409).json({ error: 'Username already exists' })
+    }
+
+    // v3.4 — kuota agen per-tenant (spec §4): semua role tenant dihitung (admin/cs/relay)
+    const quota = await plans.checkAgentQuota(req.tenantId)
+    if (!quota.ok) {
+      return res.status(403).json({ error: plans.agentQuotaMessage(quota.count, quota.max) })
     }
     
     const passwordHash = await hashPassword(password)

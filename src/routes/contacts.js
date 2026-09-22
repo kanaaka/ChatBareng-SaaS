@@ -5,6 +5,8 @@ const prisma = require('../prisma')
 const { requireAuth, requireAdmin, requireTenant } = require('../auth')
 const broadcast = require('../socket/broadcast')
 const queue = require('../socket/queue')
+// v3.4 — kuota kontak per-tenant (spec §4)
+const plans = require('../services/plans')
 
 // v3.0 — Isolasi tenant: kontak = tenant-scoped; chat find-or-create by [tenantId, waJid]
 const rt = [requireAuth, requireTenant]
@@ -261,6 +263,12 @@ router.post('/', ...rt, async (req, res) => {
       if (existing) {
         return res.status(409).json({ error: 'Kontak dengan nomor ini sudah ada' })
       }
+    }
+
+    // v3.4 — kuota kontak per-tenant (spec §4): cek SEBELUM create
+    const quota = await plans.checkContactQuota(req.tenantId)
+    if (!quota.ok) {
+      return res.status(403).json({ error: plans.contactQuotaMessage(quota.count, quota.max) })
     }
 
     const parsedBirth = parseDateInput(birthDate)
@@ -534,6 +542,35 @@ router.post('/import', ...rt, csvUpload.single('file'), async (req, res) => {
     let skipped = 0
     const total = lines.length - startIdx
     const seenPhones = new Set()
+
+    // v3.4 — kuota kontak: hitung NEW rows yang akan dibuat vs sisa kuota SEBELUM commit
+    // (dedup: baris baru = nama/phone valid, belum ada di DB, belum duplikat dalam CSV)
+    const quota = await plans.checkContactQuota(req.tenantId)
+    if (quota.max != null) {
+      const existingPhones = new Set(
+        (await prisma.contact.findMany({ where: { tenantId: req.tenantId }, select: { phone: true } }))
+          .map((c) => c.phone)
+          .filter(Boolean)
+      )
+      let newCount = 0
+      for (let i = startIdx; i < lines.length; i++) {
+        const cols = lines[i].split(delimiter).map((c) => c.trim().replace(/^"(.*)"$/, '$1'))
+        const name = nameCol >= 0 ? (cols[nameCol] || '') : ''
+        const phoneRaw = phoneCol >= 0 ? (cols[phoneCol] || '') : ''
+        const phoneNorm = normalizePhone(phoneRaw)
+        const phone = phoneNorm.valid ? phoneNorm.normalized : null
+        if (!name && !phone) continue
+        if (phone && (seenPhones.has(phone) || existingPhones.has(phone))) continue
+        if (phone) seenPhones.add(phone)
+        newCount++
+      }
+      if (quota.count + newCount > quota.max) {
+        const sisa = Math.max(0, quota.max - quota.count)
+        return res.status(403).json({
+          error: `Kuota kontak tidak cukup: import ini butuh ${Number(newCount).toLocaleString('id-ID')} kontak baru, sisa kuota ${Number(sisa).toLocaleString('id-ID')} (${Number(quota.count).toLocaleString('id-ID')}/${Number(quota.max).toLocaleString('id-ID')}). Hubungi admin platform untuk upgrade paket.`,
+        })
+      }
+    }
 
     for (let i = startIdx; i < lines.length; i++) {
       const lineNo = i + 1

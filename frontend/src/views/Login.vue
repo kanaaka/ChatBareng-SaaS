@@ -17,7 +17,7 @@
       <div class="absolute top-1/3 right-10 w-24 h-24 rounded-[var(--md-sys-shape-corner-xl)] opacity-10 bg-white -rotate-6" aria-hidden="true"></div>
 
       <div class="relative z-10 text-center px-8">
-        <BrandLogo size="xl" color="var(--md-sys-color-on-primary)" />
+        <BrandLogo text="ChatBareng" size="xl" color="var(--md-sys-color-on-primary)" />
         <p class="mt-4 text-lg font-medium" :style="{ color: 'var(--md-sys-color-on-primary)', opacity: 0.92 }">
           Aplikasi Agent Hub untuk WhatsApp
         </p>
@@ -31,7 +31,7 @@
     <div class="flex-1 flex flex-col items-center justify-center p-6 md:p-12">
       <!-- Mobile: brand header kecil di atas -->
       <div class="md:hidden mb-8 text-center">
-        <BrandLogo size="lg" class="!text-2xl" :style="{ color: 'var(--md-sys-color-primary)' }" />
+        <BrandLogo text="ChatBareng" size="lg" class="!text-2xl" :style="{ color: 'var(--md-sys-color-primary)' }" />
         <p class="text-sm text-gray-500 mt-1">Aplikasi Agent Hub untuk WhatsApp</p>
       </div>
 

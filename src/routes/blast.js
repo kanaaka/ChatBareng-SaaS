@@ -6,6 +6,8 @@ const { requireAuth, requireAdmin, requireTenant } = require('../auth')
 const broadcast = require('../socket/broadcast')
 
 // v3.0 — Isolasi tenant: blast = tenant-scoped
+const plans = require('../services/plans') // v3.4 — feature gate Blast (plan per-tenant)
+const featBlastGate = plans.requireFeature('featBlast') // 403 ramah + upsell bila fitur OFF
 const rt = [requireAuth, requireTenant]
 const { runBlast } = require('../services/blast')
 // v0.12.4 — enkripsi scope 2: message (template) tersimpan ciphertext, API/sender plaintext
@@ -124,7 +126,7 @@ function parseCsv(csvText) {
 // ─── Routes ───────────────────────────────────────────────────────────
 
 // POST /api/blast/upload-csv — upload CSV, parse, normalize, return numbers
-router.post('/upload-csv', ...rt, csvUpload.single('file'), async (req, res) => {
+router.post('/upload-csv', ...rt, featBlastGate, csvUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No CSV file uploaded' })
@@ -180,7 +182,7 @@ router.post('/upload-csv', ...rt, csvUpload.single('file'), async (req, res) => 
 })
 
 // POST /api/blast/preview — preview recipients (dedup + count + cold number detection)
-router.post('/preview', ...rt, async (req, res) => {
+router.post('/preview', ...rt, featBlastGate, async (req, res) => {
   try {
     const { recipientChatIds = [], tagIds = [], csvNumbers = [] } = req.body
 
@@ -270,7 +272,7 @@ router.post('/preview', ...rt, async (req, res) => {
 })
 
 // POST /api/blast — create + start blast (any authenticated user)
-router.post('/', ...rt, async (req, res) => {
+router.post('/', ...rt, featBlastGate, async (req, res) => {
   try {
     const {
       message,
@@ -392,7 +394,7 @@ router.post('/', ...rt, async (req, res) => {
 })
 
 // GET /api/blast — list blasts (paginated)
-router.get('/', ...rt, async (req, res) => {
+router.get('/', ...rt, featBlastGate, async (req, res) => {
   try {
     const page = parseInt(req.query.page || '1', 10)
     const limit = parseInt(req.query.limit || '20', 10)
@@ -431,7 +433,7 @@ router.get('/', ...rt, async (req, res) => {
 })
 
 // GET /api/blast/:id — blast detail + logs (paginated)
-router.get('/:id', ...rt, async (req, res) => {
+router.get('/:id', ...rt, featBlastGate, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10)
     const page = parseInt(req.query.page || '1', 10)
@@ -474,7 +476,7 @@ router.get('/:id', ...rt, async (req, res) => {
 })
 
 // GET /api/blast/:id/export — export blast results as CSV (owner or admin)
-router.get('/:id/export', ...rt, async (req, res) => {
+router.get('/:id/export', ...rt, featBlastGate, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10)
     const blast = await prisma.blast.findFirst({ where: { id, tenantId: req.tenantId } })
@@ -514,7 +516,7 @@ router.get('/:id/export', ...rt, async (req, res) => {
 })
 
 // POST /api/blast/:id/pause — pause (owner or admin)
-router.post('/:id/pause', ...rt, async (req, res) => {
+router.post('/:id/pause', ...rt, featBlastGate, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10)
     const blast = await prisma.blast.findFirst({ where: { id, tenantId: req.tenantId } })
@@ -536,7 +538,7 @@ router.post('/:id/pause', ...rt, async (req, res) => {
 })
 
 // POST /api/blast/:id/resume — resume (owner or admin)
-router.post('/:id/resume', ...rt, async (req, res) => {
+router.post('/:id/resume', ...rt, featBlastGate, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10)
     const blast = await prisma.blast.findFirst({ where: { id, tenantId: req.tenantId } })
@@ -558,7 +560,7 @@ router.post('/:id/resume', ...rt, async (req, res) => {
 })
 
 // POST /api/blast/:id/cancel — cancel (owner or admin)
-router.post('/:id/cancel', ...rt, async (req, res) => {
+router.post('/:id/cancel', ...rt, featBlastGate, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10)
     const blast = await prisma.blast.findFirst({ where: { id, tenantId: req.tenantId } })
@@ -580,7 +582,7 @@ router.post('/:id/cancel', ...rt, async (req, res) => {
 })
 
 // DELETE /api/blast/:id — delete blast (admin only)
-router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
+router.delete('/:id', ...rt, featBlastGate, requireAdmin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10)
     const blast = await prisma.blast.findFirst({ where: { id, tenantId: req.tenantId } })

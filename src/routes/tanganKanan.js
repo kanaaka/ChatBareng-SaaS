@@ -6,6 +6,8 @@ const fs = require('fs')
 const config = require('../config')
 const prisma = require('../prisma')
 const { requireAuth, requireAdmin, requireTenant, verifyToken, resolveTenant } = require('../auth')
+// v3.4 — kuota Tangan Kanan per-tenant (spec §4: hanya TK; media chat/blast tidak ikut)
+const plans = require('../services/plans')
 const { saveMedia, loadMedia } = require('../wa/media')
 const broadcast = require('../socket/broadcast')
 
@@ -205,6 +207,12 @@ router.post('/files/upload', ...rt, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' })
+    }
+
+    // v3.4 — kuota TK: SUM SharedFile.size tenant + incoming vs tkQuotaBytes → 403 ramah
+    const tkQuota = await plans.checkTkQuota(req.tenantId, req.file.size)
+    if (!tkQuota.ok) {
+      return res.status(403).json({ error: plans.tkQuotaMessage(tkQuota.current + tkQuota.incoming, tkQuota.quota) })
     }
 
     const type = getFileType(req.file.mimetype)

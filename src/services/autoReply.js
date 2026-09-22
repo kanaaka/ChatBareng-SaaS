@@ -193,6 +193,12 @@ async function setContactMenuShown(contact, chat) {
       await prisma.contact.updateMany({ where: { id: contact.id, tenantId }, data: { lastMenuShownAt: new Date() } })
       return
     }
+    // v3.4 — kuota kontak: skip diam bila penuh (chat tetap jalan, spec §4)
+    try {
+      const plans = require('../services/plans')
+      const quota = await plans.checkContactQuota(tenantId)
+      if (!quota.ok) return
+    } catch {}
     const created = await prisma.contact.create({ data: { tenantId, chatId, source: 'chat' } }).catch(() => null)
     if (created) {
       await prisma.contact.updateMany({ where: { id: created.id }, data: { lastMenuShownAt: new Date() } })

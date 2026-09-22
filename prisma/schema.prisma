@@ -2,6 +2,11 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// CATATAN v3.4: spec §2 menulis tkQuotaBytes Int?, tapi preset Max = 10 GB
+// (10.737.418.240) > max i32 (2.147.483.647) — konflik matematis internal spec.
+// Kolom dijadikan BigInt (SQLite BIGINT) agar preset LOCKED §1 bisa tersimpan;
+// nilai dinormalisasi ke Number di getPlan()/serializer (10 GB < 2^53, aman).
+
 datasource db {
   provider = "sqlite"
   url      = env("DATABASE_URL")
@@ -28,7 +33,12 @@ model Tenant {
   waSessionDir String?  // fase 2
   createdAt    DateTime @default(now())
   users        User[]
-  chats        Chat[]
+  chats       Chat[]
+  plan         TenantPlan? // v3.4 — plan & kuota per-tenant (1:1)
+
+  // v3.4 — branding per-tenant (header "<brandName> by ChatBareng")
+  brandName    String? // kosong/null = tampil "ChatBareng" polos
+  logoPath     String? // path file logo di disk (data/branding/tenant-<id>/)
 
   @@index([status])
 }
@@ -601,4 +611,45 @@ model ScheduledMessage {
   @@index([status, scheduledAt])
   @@index([tenantId])
   @@index([chatId])
+}
+
+// ═════════════════════════════════════════════════════════════════
+// v3.4 — Plan & kuota per-tenant (1:1 dengan Tenant, onDelete: Cascade →
+// ikut terhapus saat purge). preset = informational ("lite"|"pro"|"max"|"custom").
+// null = unlimited. Field eksplisit boleh override kapan pun via PUT plan.
+// ═════════════════════════════════════════════════════════════════
+model TenantPlan {
+  id                Int      @id @default(autoincrement())
+  tenantId          Int      @unique
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  preset            String   @default("custom") // lite | pro | max | custom (informational)
+  maxAgents         Int? // null = unlimited
+  maxContacts       Int?
+  tkQuotaBytes      BigInt? // spec Int? mustahil utk 10 GB (> i32); BigInt = BIGINT SQLite
+  featAnalytics     Boolean  @default(false)
+  featBlast         Boolean  @default(false)
+  featMenuGateway   Boolean  @default(false)
+  featHistoryExport Boolean  @default(false)
+  featCsat          Boolean  @default(false)
+  featGdriveBackup  Boolean  @default(false)
+  updatedAt         DateTime @updatedAt
+  updatedBy         Int? // plain Int, TANPA FK (hindari urutan purge)
+
+  @@index([tenantId])
+}
+
+// v3.4 — Audit log superadmin: trail PERMANEN (TIDAK ikut purge tenant —
+// tenantId plain tanpa FK, row tetap hidup walau tenant di-purge).
+model SaAuditLog {
+  id            Int      @id @default(autoincrement())
+  actorId       Int? // plain, tanpa FK
+  actorUsername String
+  action        String // tenant_create | tenant_update | tenant_delete | tenant_purge | plan_update | branding_update | backup_download | impersonate | admin_create
+  tenantId      Int? // plain, tanpa FK
+  tenantName    String? // snapshot nama saat aksi
+  detailJson    String? // JSON ringkas (payload/hasil)
+  createdAt     DateTime @default(now())
+
+  @@index([tenantId], map: "SaAuditLog_tenantId_idx")
+  @@index([createdAt])
 }

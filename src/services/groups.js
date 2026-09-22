@@ -1101,6 +1101,15 @@ async function upsertContactFromGroup(tenantId, chatId, participantJid, pushName
     }
 
     // Contact baru: TANPA chatId (chatId unique untuk 1:1; chatId grup jangan dipakai).
+    // v3.4 — kuota kontak: skip diam bila penuh (spec §4, non-fatal)
+    try {
+      const plans = require('../services/plans')
+      const quota = await plans.checkContactQuota(tenantId)
+      if (!quota.ok) {
+        console.warn(`[Groups] Kuota kontak penuh tenant #${tenantId} — contact dari grup di-skip`)
+        return
+      }
+    } catch {}
     await prisma.contact.create({ data: { tenantId, phone, name, source: 'chat' } })
     console.log(`[Groups] Contact baru dari grup: +${phone} "${name}" (chatId=${chatId})`)
   } catch (e) {

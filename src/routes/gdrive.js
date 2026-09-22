@@ -22,6 +22,8 @@ const prisma = require('../prisma')
 const { requireAuth, requireAdmin, requireTenant } = require('../auth')
 
 // v3.0 — Isolasi tenant: BackupConfig per-tenant; GDriveLink per-user (tenant via user)
+const plans = require('../services/plans') // v3.4 — feature gate Backup Google Drive (plan per-tenant)
+const featGdriveBackupGate = plans.requireFeature('featGdriveBackup') // 403 ramah + upsell bila fitur OFF
 const rt = [requireAuth, requireTenant, requireAdmin]  // requireTenant dulu — super_admin wajib ?tenant= sebelum cek admin
 const {
   REDIRECT_URI_RELAY,
@@ -78,7 +80,7 @@ function base64urlJson(obj) {
 // ─── Routes ──────────────────────────────────────────────────────────────
 
 // GET /api/gdrive/status (admin only)
-router.get('/status', ...rt, async (req, res) => {
+router.get('/status', ...rt, featGdriveBackupGate, async (req, res) => {
   try {
     const cfg = await getConfig(req.tenantId)
     const link = await prisma.gDriveLink.findUnique({
@@ -110,7 +112,7 @@ router.get('/status', ...rt, async (req, res) => {
 })
 
 // GET /api/gdrive/oauth/start (admin only) — balikin URL consent Google
-router.get('/oauth/start', ...rt, async (req, res) => {
+router.get('/oauth/start', ...rt, featGdriveBackupGate, async (req, res) => {
   try {
     const cred = getOAuthCredentials()
     if (!cred) {
@@ -235,7 +237,7 @@ router.get('/oauth/callback', async (req, res) => {
 })
 
 // DELETE /api/gdrive/disconnect (admin only) — revoke token + hapus row
-router.delete('/disconnect', ...rt, async (req, res) => {
+router.delete('/disconnect', ...rt, featGdriveBackupGate, async (req, res) => {
   try {
     const link = await prisma.gDriveLink.findUnique({ where: { userId: req.user.id } })
     if (!link) {
@@ -262,7 +264,7 @@ router.delete('/disconnect', ...rt, async (req, res) => {
 })
 
 // PUT /api/gdrive/config (admin only) — validasi ketat sesuai spec
-router.put('/config', ...rt, async (req, res) => {
+router.put('/config', ...rt, featGdriveBackupGate, async (req, res) => {
   try {
     const body = req.body || {}
     const errors = []
@@ -330,7 +332,7 @@ router.put('/config', ...rt, async (req, res) => {
 })
 
 // POST /api/gdrive/backup-now (admin only) — async job, langsung 202
-router.post('/backup-now', ...rt, async (req, res) => {
+router.post('/backup-now', ...rt, featGdriveBackupGate, async (req, res) => {
   try {
     const link = await prisma.gDriveLink.findUnique({ where: { userId: req.user.id } })
     if (!link) {

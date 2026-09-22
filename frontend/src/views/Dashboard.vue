@@ -8,7 +8,7 @@
     <!-- Desktop top bar (>=768px) — layout tetap, reskin M3 (m3-topbar) -->
     <header class="hidden md:flex m3-topbar px-4 py-3 items-center justify-between flex-shrink-0">
       <div class="flex items-center gap-3">
-        <BrandLogo size="lg" class="md-topbar-brand" />
+        <BrandLogo size="lg" class="md-topbar-brand" suffix />
         <!-- v0.9.0-r2 (audit fix #4): chip status koneksi pakai token M3 —
              connected = success-container, menunggu QR/connecting = tertiary-container,
              disconnected = error-container. Merah hardcoded dihapus. -->

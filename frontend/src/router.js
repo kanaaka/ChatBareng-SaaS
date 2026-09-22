@@ -18,21 +18,21 @@ const routes = [
       { path: '/admin/whatsapp', name: 'AdminWhatsApp', component: () => import('./views/AdminWhatsApp.vue'), meta: { auth: true, admin: true } },
       { path: '/admin/purge', name: 'AdminPurge', component: () => import('./views/AdminPurge.vue'), meta: { auth: true, admin: true } },
       // v0.6.0 — Backup & Restore history chat (admin)
-      { path: '/admin/history', name: 'AdminHistory', component: () => import('./views/AdminHistory.vue'), meta: { auth: true, admin: true } },
+      { path: '/admin/history', name: 'AdminHistory', component: () => import('./views/AdminHistory.vue'), meta: { auth: true, admin: true, feature: 'historyExport' } },
       // v0.7.0 — Auto Reply (Outside Hours + First-of-Day Greeting, admin)
       { path: '/admin/autoreply', name: 'AdminAutoReply', component: () => import('./views/AdminAutoReply.vue'), meta: { auth: true, admin: true } },
       // v0.8.0 — Auto Backup Google Drive (OAuth per-user, admin)
-      { path: '/admin/backup', name: 'AdminBackup', component: () => import('./views/AdminBackup.vue'), meta: { auth: true, admin: true } },
+      { path: '/admin/backup', name: 'AdminBackup', component: () => import('./views/AdminBackup.vue'), meta: { auth: true, admin: true, feature: 'gdriveBackup' } },
       // v0.13.0 — Menu Gateway (Auto Reply Triage, admin)
-      { path: '/admin/menu-gateway', name: 'AdminMenuGateway', component: () => import('./views/AdminMenuGateway.vue'), meta: { auth: true, admin: true } },
+      { path: '/admin/menu-gateway', name: 'AdminMenuGateway', component: () => import('./views/AdminMenuGateway.vue'), meta: { auth: true, admin: true, feature: 'menuGateway' } },
       // v0.10.0 — CSAT Survey (Fitur C, admin)
-      { path: '/admin/csat', name: 'AdminCsat', component: () => import('./views/AdminCsat.vue'), meta: { auth: true, admin: true } },
+      { path: '/admin/csat', name: 'AdminCsat', component: () => import('./views/AdminCsat.vue'), meta: { auth: true, admin: true, feature: 'csat' } },
       // v0.9.0 — Tampilan (accent color admin, M3 theme)
       { path: '/admin/appearance', name: 'AdminAppearance', component: () => import('./views/AdminAppearance.vue'), meta: { auth: true, admin: true } },
       // v0.3.0 — halaman asli (bukan redirect ke tab yg gak ada)
-      { path: '/admin/analytics', name: 'AdminAnalytics', component: () => import('./views/Analytics.vue'), meta: { auth: true, admin: true } },
+      { path: '/admin/analytics', name: 'AdminAnalytics', component: () => import('./views/Analytics.vue'), meta: { auth: true, admin: true, feature: 'analytics' } },
       { path: '/admin/templates', name: 'AdminTemplates', component: () => import('./views/Templates.vue'), meta: { auth: true, admin: true } },
-      { path: '/announcements', name: 'Announcements', component: () => import('./views/Announcements.vue'), meta: { auth: true, admin: true } },
+      { path: '/announcements', name: 'Announcements', component: () => import('./views/Announcements.vue'), meta: { auth: true, admin: true, feature: 'blast' } },
       // v0.12.0 — Guidebook PUBLIC (tanpa meta.auth): panduan statis; sidebar hanya
       // render utk admin (v-if auth.isAdmin di shell) — CS lihat halaman penuh tanpa sidebar.
       { path: '/guidebook', name: 'Guidebook', component: () => import('./views/Guidebook.vue') },
@@ -48,9 +48,9 @@ const routes = [
   // (ChatDetail existing + panel member/settings). Pola route /contacts.
   { path: '/groups', name: 'Groups', component: () => import('./views/Groups.vue'), meta: { auth: true } },
   // v0.2.0 — Blast jadi satu halaman 2 tab (Kirim/Riwayat); deep-link lama tetap jalan
-  { path: '/blast', name: 'Blast', component: () => import('./views/Blast.vue'), meta: { auth: true } },
+  { path: '/blast', name: 'Blast', component: () => import('./views/Blast.vue'), meta: { auth: true, feature: 'blast' } },
   { path: '/blast/history', redirect: to => ({ path: '/blast', query: { tab: 'riwayat' } }) },
-  { path: '/blast/progress/:id', name: 'BlastProgress', component: () => import('./views/BlastProgress.vue'), meta: { auth: true } },
+  { path: '/blast/progress/:id', name: 'BlastProgress', component: () => import('./views/BlastProgress.vue'), meta: { auth: true, feature: 'blast' } },
   // v3.0 — Superadmin platform (owner): daftar tenant + buat tenant/admin + suspend
   { path: '/superadmin', name: 'SuperAdmin', component: () => import('./views/SuperAdmin.vue'), meta: { auth: true, superadmin: true } },
 ]
@@ -82,6 +82,24 @@ router.beforeEach((to, from, next) => {
   } else if (auth.isSuperAdmin && to.path === '/') {
     // v3.0 — super_admin dilarang dashboard CS tanpa impersonasi eksplisit
     next('/superadmin')
+  } else if (to.meta.feature) {
+    // v3.4 — route guard plan: halaman fitur diakses langsung (deep-link) padahal
+    // fitur OFF → redirect + toast pesan 403 backend (spec §8).
+    // Guard hanya berlaku utk user tenant (super_admin tanpa plan → bebas; halaman
+    // admin fitur memang milik tenant).
+    import('./utils/branding').then(({ hasFeature }) => {
+      if (!hasFeature(to.meta.feature)) {
+        import('./stores/toast').then(({ useToastStore }) => {
+          try {
+            const toast = useToastStore()
+            toast.show({ icon: '🔒', title: 'Fitur terkunci', message: 'Fitur ini tidak tersedia di paket Anda. Hubungi admin platform untuk upgrade.', timeout: 6000 })
+          } catch {}
+        })
+        next('/')
+      } else {
+        next()
+      }
+    })
   } else {
     next()
   }

@@ -21,6 +21,8 @@ const prisma = require('../prisma')
 const { requireAuth, requireAdmin, requireTenant } = require('../auth')
 
 // v3.0 — Isolasi tenant: import ke tenant req.user (super_admin wajib ?tenant=)
+const plans = require('../services/plans') // v3.4 — feature gate Import Cekat (plan per-tenant, ikut featHistoryExport)
+const featHistoryExportGate = plans.requireFeature('featHistoryExport') // 403 ramah + upsell bila fitur OFF
 const rt = [requireAuth, requireTenant, requireAdmin]  // requireTenant dulu — super_admin wajib ?tenant= sebelum cek admin
 const broadcast = require('../socket/broadcast')
 const queue = require('../socket/queue')
@@ -105,6 +107,7 @@ router.post(
   requireAuth,
   requireTenant,
   requireAdmin,
+  featHistoryExportGate,
   (req, res, next) => {
     cekatUpload.single('file')(req, res, (err) => {
       if (err) {
@@ -147,6 +150,31 @@ router.post(
 
       // ── Engine import yang sama dengan POST /api/history/import ──
       const payload = buildCekatPayload(chats)
+
+      // v3.4 — kuota kontak (spec §4): chat NEW vs sisa kuota SEBELUM commit (non-dryRun)
+      const plans = require('../services/plans')
+      const cekatQuota = await plans.checkContactQuota(req.tenantId)
+      if (cekatQuota.max != null && !dryRun) {
+        const existingWaJids = new Set(
+          (await prisma.chat.findMany({ where: { tenantId: req.tenantId }, select: { waJid: true } })).map((c) => c.waJid)
+        )
+        let newChats = 0
+        // Cekat convert: chatId = `<phone>@s.whatsapp.net` (cekatConverter.js:94)
+        const jidsSeen = new Set()
+        for (const c of chats) {
+          const waJid = c.chatId || (c.contactPhone ? `${c.contactPhone}@s.whatsapp.net` : null)
+          if (!waJid || jidsSeen.has(waJid)) continue
+          jidsSeen.add(waJid)
+          if (!existingWaJids.has(waJid)) newChats++
+        }
+        if (cekatQuota.count + newChats > cekatQuota.max) {
+          const sisa = Math.max(0, cekatQuota.max - cekatQuota.count)
+          return res.status(403).json({
+            error: `Kuota kontak tidak cukup: import ini akan membuat ${Number(newChats).toLocaleString('id-ID')} kontak baru, sisa kuota ${Number(sisa).toLocaleString('id-ID')} (${Number(cekatQuota.count).toLocaleString('id-ID')}/${Number(cekatQuota.max).toLocaleString('id-ID')}). Hubungi admin platform untuk upgrade paket.`,
+          })
+        }
+      }
+
       const result = await runHistoryImport(prisma, payload, userMap, dryRun, req.tenantId)
 
       // ── Post-pass ContactTag (hanya import beneran) ──

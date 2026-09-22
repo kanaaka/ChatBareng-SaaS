@@ -855,9 +855,31 @@ async function syncContactFromChat(tenantId, chatIdInt) {
       }
       return
     }
+    // v3.4 — kuota kontak (spec §4): WA masuk TIDAK PERNAH diblokir. Kuota penuh →
+    // SKIP pembuatan Contact secara diam; chat & pesan tetap diproses normal.
+    // Log sekali per tenant per jam biar tidak spam.
+    try {
+      const plans = require('../services/plans')
+      const quota = await plans.checkContactQuota(tid)
+      if (!quota.ok) {
+        const key = `contact_quota_${tid}`
+        const now = Date.now()
+        const last = contactQuotaLogAt.get(key) || 0
+        if (now - last > 60 * 60 * 1000) {
+          contactQuotaLogAt.set(key, now)
+          console.warn(`[Plan] Tenant #${tid} kuota kontak penuh (${quota.count}/${quota.max}) — auto-create kontak dari WA masuk di-skip (chat tetap diproses)`)
+        }
+        return
+      }
+    } catch (e) {
+      console.error('[Plan] checkContactQuota error (fail-open):', e.message)
+    }
     await prisma.contact.create({ data: createData })
   }
 }
+
+// v3.4 — log throttling: key=contact_quota_<tid> → timestamp log terakhir (jam-an)
+const contactQuotaLogAt = new Map()
 
 function normalizePhoneForContact(raw) {
   if (!raw) return null

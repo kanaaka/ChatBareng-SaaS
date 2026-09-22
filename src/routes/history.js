@@ -10,6 +10,8 @@ const { requireAuth, requireAdmin, requireTenant } = require('../auth')
 
 // v3.0 — Isolasi tenant: export scope tenant req.user (super_admin WAJIB ?tenant=);
 // import masuk ke tenant req.user (super_admin wajib ?tenant=).
+const plans = require('../services/plans') // v3.4 — feature gate Export/Import Riwayat (plan per-tenant)
+const featHistoryExportGate = plans.requireFeature('featHistoryExport') // 403 ramah + upsell bila fitur OFF
 const rt = [requireAuth, requireTenant, requireAdmin]  // requireTenant dulu — super_admin wajib ?tenant= sebelum cek admin
 const broadcast = require('../socket/broadcast')
 const queue = require('../socket/queue')
@@ -115,7 +117,7 @@ function chatInRange(chat, range) {
 // ─── Routes ──────────────────────────────────────────────────────────────
 
 // GET /api/history/export — file JSON backup lengkap (admin)
-router.get('/export', ...rt, async (req, res) => {
+router.get('/export', ...rt, featHistoryExportGate, async (req, res) => {
   try {
     // v0.6.1 — rentang waktu (all default; custom butuh minimal salah satu from/to)
     const range = parseRange(req.query)
@@ -209,6 +211,7 @@ router.post(
   requireAuth,
   requireTenant,
   requireAdmin,
+  featHistoryExportGate,
   (req, res, next) => {
     importUpload.single('file')(req, res, (err) => {
       if (err) {
@@ -234,6 +237,27 @@ router.post(
 
       // Mapping username → id berdasarkan user TENANT INI (jangan bikin user baru)
       const { userMap } = await buildUserMap(prisma, req.tenantId)
+
+      // v3.4 — kuota kontak (spec §4): hitung chat NEW (kontak baru akan dibuat) vs sisa
+      // kuota SEBELUM commit. Chat merged/restore-state tidak bikin kontak baru.
+      const plans = require('../services/plans')
+      const cekatQuota = await plans.checkContactQuota(req.tenantId)
+      if (cekatQuota.max != null && !dryRun) {
+        const existingWaJids = new Set(
+          (await prisma.chat.findMany({ where: { tenantId: req.tenantId }, select: { waJid: true } })).map((c) => c.waJid)
+        )
+        let newChats = 0
+        for (const chatEntry of data.chats || []) {
+          const waJid = chatEntry.waJid ? String(chatEntry.waJid) : null
+          if (waJid && !existingWaJids.has(waJid)) newChats++
+        }
+        if (cekatQuota.count + newChats > cekatQuota.max) {
+          const sisa = Math.max(0, cekatQuota.max - cekatQuota.count)
+          return res.status(403).json({
+            error: `Kuota kontak tidak cukup: import ini akan membuat ${Number(newChats).toLocaleString('id-ID')} kontak baru, sisa kuota ${Number(sisa).toLocaleString('id-ID')} (${Number(cekatQuota.count).toLocaleString('id-ID')}/${Number(cekatQuota.max).toLocaleString('id-ID')}). Hubungi admin platform untuk upgrade paket.`,
+          })
+        }
+      }
 
       const result = await runHistoryImport(prisma, data, userMap, dryRun, req.tenantId)
 

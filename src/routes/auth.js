@@ -140,6 +140,41 @@ router.get('/me', requireAuth, async (req, res) => {
       lastLogin: user.lastLogin,
     }
     if (user.role === 'super_admin') payload.tenantId = null
+    // v3.4 — branding + plan utk user tenant (spec §6). super_admin tanpa tenant →
+    // tidak ada branding/plan (frontend superadmin tetap ChatBareng polos).
+    if (user.tenantId != null) {
+      try {
+        const plans = require('../services/plans')
+        const [tenant, plan, usage] = await Promise.all([
+          prisma.tenant.findUnique({
+            where: { id: user.tenantId },
+            select: { brandName: true, logoPath: true },
+          }),
+          plans.getPlan(user.tenantId),
+          plans.getUsage(user.tenantId),
+        ])
+        payload.branding = {
+          brandName: tenant?.brandName || '',
+          logoUrl: tenant?.logoPath ? '/api/branding/logo' : null,
+        }
+        payload.plan = {
+          features: {
+            analytics: plan?.featAnalytics ?? false,
+            blast: plan?.featBlast ?? false,
+            menuGateway: plan?.featMenuGateway ?? false,
+            historyExport: plan?.featHistoryExport ?? false,
+            csat: plan?.featCsat ?? false,
+            gdriveBackup: plan?.featGdriveBackup ?? false,
+          },
+          maxAgents: plan?.maxAgents ?? null,
+          maxContacts: plan?.maxContacts ?? null,
+          tkQuotaBytes: plan?.tkQuotaBytes == null ? null : Number(plan.tkQuotaBytes),
+          usage: usage,
+        }
+      } catch (planErr) {
+        console.error('[Auth/me] branding/plan error (non-fatal):', planErr.message)
+      }
+    }
     res.json({ user: payload })
   } catch (e) {
     res.status(500).json({ error: 'Internal server error' })

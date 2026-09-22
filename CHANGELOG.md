@@ -1,3 +1,62 @@
+## v3.4 — Plan & Kuota per-Tenant + Fitur Toggle + Branding + Superadmin penuh (2026-09-22)
+
+- **Request owner (15:07/15:25, approved):** paket Lite/Pro/Max + kontrol individual,
+  branding per tenant ("X by ChatBareng"), superadmin bisa backup full tenant,
+  audit + impersonasi UI. Custom URL per tenant = defer.
+- **Plan & preset (LOCKED):** Lite 3 agen / 2 GB TK / 5.000 kontak; Pro 10 / 5 GB /
+  10.000; Max 50 / 10 GB / 50.000. Toggle fitur: Analytics, Blast+Pengumuman,
+  Menu Gateway, Export/Import Riwayat (+Cekat), CSAT (Lite ✗, Pro/Max ✓),
+  Backup GDrive (Lite/Pro ✗, Max ✓). `null` = unlimited. Field `preset`
+  informational (nama preset bila persis definisi, "custom" bila menyimpang).
+- **Skema:** `TenantPlan` (1:1 tenant, onDelete Cascade — ikut purge; `tkQuotaBytes`
+  **BigInt** — Int max 2,1 GB, mustahil simpan 10 GB; catatan deviasi spec, benar
+  secara teknis), `SaAuditLog` (actorId/tenantId plain Int tanpa FK — audit
+  PERMANEN, tetap hidup setelah tenant di-purge), kolom Tenant: `brandName`,
+  `logoPath`.
+- **Enforcement:** API-level 403 (bukan cuma hide menu): `users.js` (agent quota),
+  `contacts.js` + history/cekat import (contact quota — dicek SEBELUM commit),
+  `tanganKanan.js` upload (TK quota = SUM SharedFile.size, scope sengaja hanya TK
+  — media chat/blast tidak ikut), `requireFeature()` middleware di analytics/
+  blast/announcements/menuGateway/history/cekatImport/csat/gdrive. Pesan error
+  ramah + upsell ("Hubungi admin platform untuk upgrade").
+- **Kuota kontak di jalur WA masuk:** auto-create kontak di-skip DIAM bila kuota
+  penuh (pool.js syncContactFromChat, autoReply, groups) — chat & pesan TETAP
+  diproses, tidak pernah memblokir pesan masuk. Log throttle 1x/jam/tenant.
+- **Tenant lama (Parahita #4, Mazaya #8) di-seed plan `max` otomatis di boot** —
+  fitur yang sebelumnya terbuka tetap terbuka, tidak ada perubahan perilaku.
+- **SuperAdmin API & UI:** create tenant dengan dropdown preset (default Lite);
+  GET/PUT plan (apply preset + override individual, null = unlimited); usage
+  meter per tenant (agen/kontak/TK); branding (brandName 2-50 char + logo
+  PNG/JPEG/WEBP max 1 MB, disimpan data/branding/tenant-<id>/, NO svg, purge ikut
+  bersihin file logo); **backup full tenant** → tar.gz on-demand (db/*.json per
+  tabel + files/ media terenkripsi byte-for-byte + manifest.json dengan key
+  fingerprint, TIDAK decrypt, TIDAK menyimpan arsip permanen); audit log viewer
+  (filter action/tenant, cursor pagination); tombol impersonate (token 30m,
+  backend v3.0) — semua aksi SA tercatat di SaAuditLog.
+- **Branding user tenant:** /auth/me diperluas (branding + plan + usage);
+  GET /api/branding/logo auth flexible (Bearer ATAU ?token=) utk <img>;
+  header/logo/suffix "by ChatBareng" hardcoded frontend (muted); document.title
+  ikut; **halaman Login TETAP ChatBareng** (belum ada context tenant pre-login).
+  Frontend menu gating via plan.features + route guard + axios 403 toast.
+- **Bug fix pasca-review (Alita):** POST /api/sa/tenants 500 "Do not know how to
+  serialize a BigInt" — plan raw di-res.json langsung; fix: serialisasi lewat
+  planToJson (BigInt → Number). Tenant #9 sempat ter-create sebelum error
+  (non-fatal, di-purge saat QA cleanup).
+- **Fix migrasi (bug laporan owner 15:49):** template & pengumuman Mazaya
+  gibberish setelah migrasi v3.3 — migrasi over-encrypt content yang di app
+  disimpan PLAINTEXT. Decrypt in-place 44 template + 4 pengumuman tenant 8
+  (0 sisa terenkripsi, verified). `migrate-mazaya-from-hub.cjs` di-patch agar
+  tenant berikutnya tidak kena (content tetap plaintext, paritas write path).
+- **QA (Alita, smoke penuh):** tenant create 201 (BigInt fix live); feature gate
+  Lite 403 vs Pro 200; agent quota 403 di user ke-4 (3/3); contact quota
+  403 di kontak ke-3 (override maxContacts=2, preset label → custom);
+  TK quota 403 (18 B/1 B) + restore; branding brandName + logo upload +
+  /auth/me + serve logo ?token= 200 PNG; backup Mazaya 21,4 MB / 45 entri /
+  manifest tables match / filesCopied 12; audit 12 aksi tercatat; purge
+  QA Lite & QA Beta — TenantPlan cascade ✓, SaAuditLog survive ✓, data
+  Parahita & Mazaya utuh ✓ (chat 2532/2603, msg t4 80 / t8 2603), WA
+  reconnect ✓ kedua tenant.
+
 ## v3.3 — Tenant Mazaya: migrasi full dari hub non-SaaS (POC 2 tenant paralel) (2026-09-22)
 
 - Request owner (12:03): tenant kedua atas nama **Mazaya** — isinya seluruh

@@ -11,11 +11,13 @@ const prisma = require('../prisma')
 const { requireAuth, requireAdmin, requireTenant } = require('../auth')
 
 // v3.0 — Isolasi tenant: CSAT = tenant-scoped
+const plans = require('../services/plans') // v3.4 — feature gate CSAT (plan per-tenant)
+const featCsatGate = plans.requireFeature('featCsat') // 403 ramah + upsell bila fitur OFF
 const rt = [requireAuth, requireTenant, requireAdmin]  // requireTenant dulu — super_admin wajib ?tenant= sebelum cek admin
 const csat = require('../services/csat')
 
 // GET /api/csat/config (admin only)
-router.get('/config', ...rt, async (req, res) => {
+router.get('/config', ...rt, featCsatGate, async (req, res) => {
   try {
     const cfg = await csat.getConfig(req.tenantId)
     res.json({ config: cfg })
@@ -26,7 +28,7 @@ router.get('/config', ...rt, async (req, res) => {
 })
 
 // PUT /api/csat/config (admin only)
-router.put('/config', ...rt, async (req, res) => {
+router.put('/config', ...rt, featCsatGate, async (req, res) => {
   try {
     const body = req.body || {}
     const errors = []
@@ -90,7 +92,7 @@ router.put('/config', ...rt, async (req, res) => {
 })
 
 // GET /api/csat/stats?from=&to= (admin only)
-router.get('/stats', ...rt, async (req, res) => {
+router.get('/stats', ...rt, featCsatGate, async (req, res) => {
   try {
     const where = { tenantId: req.tenantId, respondedAt: { not: null } }
     if (req.query.from || req.query.to) {
@@ -167,7 +169,7 @@ router.get('/stats', ...rt, async (req, res) => {
 })
 
 // GET /api/csat/list (admin only) — riwayat survey terbaru
-router.get('/list', ...rt, async (req, res) => {
+router.get('/list', ...rt, featCsatGate, async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit || '100', 10) || 100, 500)
     const surveys = await prisma.csatSurvey.findMany({
