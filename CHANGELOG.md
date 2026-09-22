@@ -1,3 +1,21 @@
+## v3.1.1 — Superadmin: panel Akun (ganti password mandiri) (2026-09-22)
+
+- Laporan owner (09:01): halaman superadmin "berasa barebones" — tidak bisa
+  ganti password sendiri. Betul: superadmin TIDAK punya akses /settings
+  (hanya tenant users; router guard v3.0), jadi fitur self-service
+  change-password (v0.12.2) tidak pernah tersedia bagi mereka.
+- Fix: panel "Akun" baru di SuperAdmin.vue — 3 field (Password saat ini /
+  Password baru min 6 / Konfirmasi) + tombol Ganti Password. Reuse endpoint
+  `POST /api/auth/change-password` yang sudah ada (requireAuth,
+  role-agnostic, verifikasi current password, rate limit ketat 10x/15m) —
+  TANPA perubahan backend.
+- E2E: superadmin endpoint merespons benar (wrong current → 401
+  "Current password incorrect"); round-trip nyata di akun uji (ganti →
+  login password baru OK → restore → login password asli OK). Password
+  superadmin produksi tidak tersentuh.
+- Visual: screenshot Chrome 18801 — panel render bersih, tombol terlihat
+  penuh (dicek model image, PASS).
+
 ## v3.1 — Isolasi Accent Tema per-Tenant: Login Page Netral (2026-09-22)
 
 - Laporan owner (05:08): multi-tenant SaaS — ganti accent oleh admin tenant

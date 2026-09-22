@@ -3,6 +3,8 @@
     v3.0 Phase 1 — Superadmin platform (minimal):
     daftar tenant (nama, status, #user, #chat) + buat Tenant + buat Admin per tenant +
     suspend/activate. Style konsisten (max-w-4xl, card, hijau WA). super_admin saja.
+    v3.1.1 — panel Akun: ganti password mandiri (superadmin sengaja tidak punya
+    akses /settings → self-service change-password v0.12.2 dipasang di sini).
   -->
   <div class="min-h-screen bg-surface">
     <div class="max-w-4xl mx-auto px-4 py-8">
@@ -133,6 +135,36 @@
           </div>
         </div>
       </div>
+
+      <!-- v3.1.1 — Akun: ganti password mandiri -->
+      <div class="sa-panel mt-6">
+        <h2 class="text-lg font-semibold mb-1" :style="{ color: 'var(--md-sys-color-on-surface)' }">Akun</h2>
+        <p class="text-sm mb-4" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
+          Ganti password superadmin kamu sendiri — minimal 6 karakter.
+        </p>
+        <form @submit.prevent="changePassword" class="grid gap-3 max-w-md">
+          <M3TextField v-model="pwCurrent" label="Password saat ini" type="password" autocomplete="current-password" required />
+          <M3TextField v-model="pwNew" label="Password baru (min 6)" type="password" autocomplete="new-password" minlength="6" required />
+          <M3TextField v-model="pwConfirm" label="Konfirmasi password baru" type="password" autocomplete="new-password" minlength="6" required />
+          <div v-if="pwError" class="flex items-start gap-2 text-sm rounded-[var(--md-sys-shape-corner-s)] p-3"
+            style="background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container);"
+            role="alert">
+            <span aria-hidden="true">⚠️</span>
+            <span>{{ pwError }}</span>
+          </div>
+          <div v-if="pwSuccess" class="flex items-start gap-2 text-sm rounded-[var(--md-sys-shape-corner-s)] p-3"
+            style="background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container);"
+            role="status">
+            <span aria-hidden="true">✓</span>
+            <span>{{ pwSuccess }}</span>
+          </div>
+          <div class="flex justify-end">
+            <button type="submit" class="m3-btn m3-btn--filled !min-h-[40px]" :disabled="pwSaving">
+              {{ pwSaving ? 'Menyimpan…' : 'Ganti Password' }}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   </div>
 </template>
@@ -224,6 +256,44 @@ async function setStatus(t, status) {
     await load()
   } catch (e) {
     error.value = e.response?.data?.error || 'Gagal mengubah status tenant'
+  }
+}
+
+// v3.1.1 — self-service ganti password. Endpoint /api/auth/change-password (v0.12.2)
+// sudah role-agnostic (requireAuth; verifikasi current password; rate limit ketat) —
+// superadmin tidak punya akses /settings (router guard khusus), jadi panelnya di sini.
+const pwCurrent = ref('')
+const pwNew = ref('')
+const pwConfirm = ref('')
+const pwSaving = ref(false)
+const pwError = ref('')
+const pwSuccess = ref('')
+
+async function changePassword() {
+  pwError.value = ''
+  pwSuccess.value = ''
+  if (pwNew.value !== pwConfirm.value) {
+    pwError.value = 'Password baru tidak sama dengan konfirmasinya'
+    return
+  }
+  if ((pwNew.value || '').length < 6) {
+    pwError.value = 'Password baru minimal 6 karakter'
+    return
+  }
+  pwSaving.value = true
+  try {
+    await axios.post(`${API}/api/auth/change-password`, {
+      currentPassword: pwCurrent.value,
+      newPassword: pwNew.value,
+    })
+    pwSuccess.value = 'Password berhasil diganti'
+    pwCurrent.value = ''
+    pwNew.value = ''
+    pwConfirm.value = ''
+  } catch (e) {
+    pwError.value = e.response?.data?.error || 'Gagal mengganti password'
+  } finally {
+    pwSaving.value = false
   }
 }
 
