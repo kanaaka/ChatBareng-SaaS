@@ -277,6 +277,11 @@
           <M3TextField v-model="brandingForm.brandName" label="Brand name (2-50 char, kosong = ChatBareng)" type="text" />
           <div class="mt-3">
             <label class="text-sm" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">Logo (PNG/JPEG/WEBP, maks 1 MB)</label>
+            <!-- v3.4.2 — panduan dimensi biar pas di slot header (tinggi render ±26px, lebar auto) -->
+            <div class="text-xs mt-1 leading-snug" style="opacity: .75;">
+              Disarankan: rasio 1:1 (kotak) s/d 4:1 (memanjang), tinggi gambar 64–256px biar tajam.
+              Logo dirender ±26px di header; PNG transparan paling rapi. Kotak besar (mis. 512×512) aman — otomatis dikecilkan.
+            </div>
             <input
               ref="logoInputRef"
               type="file"

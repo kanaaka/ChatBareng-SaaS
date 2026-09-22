@@ -2163,3 +2163,15 @@ All notable changes to this project will be documented in this file.
 **Build:** Dory (26m, 39/39 smoke) • **Verifikasi:** Alita (struktur + runtime + visual PASS)
 **Deploy:** rebuild frontend saja (chunk Guidebook-Cb3gXtGq.js ter-serve 200), tanpa restart. Catatan build: `setTab()` eksplisit (plugin-vue 5.2.4 bisa tree-shake fungsi inline-template).
 
+
+## v3.4.2 — Panduan dimensi logo di modal Branding superadmin (2026-09-22)
+
+- **Request owner (19:45):** label upload logo cuma bilang "maks 1 MB" (ukuran file),
+  padahal yang bikin logo pas di slot header adalah DIMENSI gambar — perlu info
+  eksplisit biar tenant tahu upload apa.
+- Modal Branding sekarang menampilkan panduan: rasio disarankan 1:1 (kotak) s/d
+  4:1 (memanjang), tinggi gambar 64–256px (render tajam di slot ±26px), PNG
+  transparan paling rapi, dan catatan bahwa gambar besar otomatis dikecilkan
+  (height di-lock, width auto — object-fit contain).
+- Frontend-only (SuperAdmin.vue), build ulang + restart. Server & data tidak
+  tersentuh.
