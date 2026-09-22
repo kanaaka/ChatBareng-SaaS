@@ -6,8 +6,11 @@ const loginValidation = [
 ]
 
 // v0.5.0 — role 'relay' (label UI "Cabang") ditambahkan; internal value tetap 'relay'
+// v3.4.1 — username hanya ASCII alfanumerik/._- : ruang nama login platform-wide,
+// CI-uniqueness butuh collation lower() yang bisa diandalkan (homoglyph/unicode = out)
 const createUserValidation = [
   body('username').trim().isLength({ min: 3, max: 30 }).withMessage('Username must be 3-30 chars'),
+  body('username').matches(/^[A-Za-z0-9._-]+$/).withMessage('Username hanya boleh huruf, angka, titik, underscore, dan strip'),
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 chars'),
   body('role').isIn(['admin', 'cs', 'relay']).withMessage('Role must be admin, cs, or relay'),
 ]

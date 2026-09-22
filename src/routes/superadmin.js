@@ -20,6 +20,7 @@ const { invalidateThemeCssCache } = require('./appearance')
 const plans = require('../services/plans')
 const saAudit = require('../services/saAudit')
 const tenantBackup = require('../services/tenantBackup')
+const usernameGuard = require('../utils/usernameGuard') // v3.4.1 — username unik global lintas tenant
 const multer = require('multer')
 
 // Middleware chain: auth + superadmin
@@ -366,6 +367,7 @@ router.post(
   ...sa,
   [
     body('username').trim().isLength({ min: 3, max: 30 }).withMessage('Username 3-30 karakter'),
+    body('username').matches(/^[A-Za-z0-9._-]+$/).withMessage('Username hanya boleh huruf, angka, titik, underscore, dan strip'),
     body('password').isLength({ min: 6 }).withMessage('Password minimal 6 karakter'),
   ],
   async (req, res) => {
@@ -377,8 +379,12 @@ router.post(
       if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
 
       const username = req.body.username.trim()
-      const existing = await prisma.user.findUnique({ where: { username } })
-      if (existing) return res.status(409).json({ error: 'Username sudah dipakai' })
+      // v3.4.1 — unik GLOBAL + case-insensitive lintas tenant (paritas users.js POST)
+      const conflict = await usernameGuard.findConflict(username)
+      if (conflict) {
+        const suggestions = await usernameGuard.suggestUsernames(username, tenant.name)
+        return res.status(409).json({ error: usernameGuard.conflictMessage(username, suggestions), suggestions })
+      }
 
       const passwordHash = await hashPassword(req.body.password)
       const user = await prisma.user.create({

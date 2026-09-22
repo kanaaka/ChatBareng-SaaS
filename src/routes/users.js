@@ -9,6 +9,7 @@ const plans = require('../services/plans')
 // create user selalu tenant admin; transfer lintas tenant → 403).
 const rt = [requireAuth, requireTenant]
 const { createUserValidation, updateUserValidation } = require('../utils/validation')
+const usernameGuard = require('../utils/usernameGuard')
 const { validationResult } = require('express-validator')
 const presence = require('../socket/presence')
 
@@ -70,10 +71,16 @@ router.post('/', ...rt, requireAdmin, createUserValidation, async (req, res) => 
     }
 
     const { username, password, role } = req.body
-    
-    const existing = await prisma.user.findUnique({ where: { username } })
-    if (existing) {
-      return res.status(409).json({ error: 'Username already exists' })
+
+    // v3.4.1 — username unik GLOBAL lintas tenant + case-insensitive (request owner
+    // 2026-09-22 18:50): username = kunci login satu ruang nama untuk SEMUA tenant.
+    // DB @unique hanya case-sensitive → guard menambah CI-check + saran username.
+    // TIDAK bocor tenant mana yang memakai (privasi lintas tenant).
+    const conflict = await usernameGuard.findConflict(username)
+    if (conflict) {
+      const tenant = await prisma.tenant.findUnique({ where: { id: req.tenantId }, select: { name: true } })
+      const suggestions = await usernameGuard.suggestUsernames(username, tenant?.name)
+      return res.status(409).json({ error: usernameGuard.conflictMessage(username, suggestions), suggestions })
     }
 
     // v3.4 — kuota agen per-tenant (spec §4): semua role tenant dihitung (admin/cs/relay)

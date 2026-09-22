@@ -1,3 +1,29 @@
+## v3.4.1 — Username unik GLOBAL lintas tenant + case-insensitive (2026-09-22)
+
+- **Request owner (18:50):** tiap tenant bisa bikin user sendiri, tapi login pakai
+  username satu ruang nama platform-wide — duplikat lintas tenant = bahaya
+  (salah masuk / kebingungan identitas). Pastikan unik + peringatan minta ganti.
+- **Guard baru `src/utils/usernameGuard.js`** — dipakai di DUA titik create user:
+  `POST /api/users` (admin tenant) dan `POST /api/sa/tenants/:id/admins`
+  (superadmin):
+  - **Case-insensitive** (`lower()` SQL raw): "KANAKA" vs "kanaka" = bentrok
+    (DB @unique SQLite hanya case-sensitive — guard menutup celahnya).
+  - **409 ramah + saran konkret**: "Username "X" sudah dipakai. Username bersifat
+    unik di seluruh platform (semua perusahaan), jadi ganti ke yang lebih spesifik
+    — misalnya: mazaya-andi, andi-mazaya, andi733." Saran diverifikasi tersedia
+    (prefix/suffix nama tenant + variasi angka), max 3, dikirim juga sbg array
+    `suggestions` (API-friendly).
+  - **Privasi lintas tenant**: tidak pernah bocor username itu milik tenant mana.
+- **Validation diperkuat** (createUserValidation + superadmin admins): username
+  hanya `[A-Za-z0-9._-]` — ruang nama ASCII konsisten agar CI-check lower()
+  bisa diandalkan (unicode/homoglyph ditolak 400 sebelum sampai DB).
+- **Login path tidak berubah** (findUnique exact) — data existing aman: audit
+  9 user, 0 case-collision; username yang sudah dipakai tetap kebaca persis.
+- **QA (Alita):** dup CI lintas tenant 409 + saran ('KANAKA' vs 'kanaka' Mazaya,
+  'Shieva'/'shieva' via admin tenant), dup milik tenant lain ('parahitaadmin') 409,
+  unicode 400, username unik 201, tenant QA Gamma di-purge setelahnya (audit
+  survive), WA reconnect kedua tenant, data utuh.
+
 ## v3.4 — Plan & Kuota per-Tenant + Fitur Toggle + Branding + Superadmin penuh (2026-09-22)
 
 - **Request owner (15:07/15:25, approved):** paket Lite/Pro/Max + kontrol individual,
