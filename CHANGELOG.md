@@ -2274,3 +2274,21 @@ All notable changes to this project will be documented in this file.
   file hilang; role cs → 403; lintas tenant → 404 (isolasi); LIVE socket
   event diterima; build OK (snapshot public-pre-build-20260923-0316);
   restart 1x by PID; WA t4+t8 reconnect; data Parahita/Mazaya utuh.
+
+## v3.6.1 — Fix: dialog konfirmasi gak nutup setelah tap Hapus (double-mount ConfirmDialog) (2026-09-23)
+
+- **Lapor owner (03:30):** setelah tap "Hapus" di confirmation dialog, toast
+  sukses muncul tapi dialognya TIDAK langsung hilang — harus tap Batal dulu.
+- **Root cause (bukan bug fitur baru — laten warisan clone hub):**
+  `ConfirmDialog` ke-mount DUA kali — global di `App.vue` (sesuai desain
+  "dialog tunggal" utils/confirm.js) + mount kedua nyasar di `Dashboard.vue`
+  (ikut kebawa dari hub sejak phase 1 — hub juga punya pola yang sama!).
+  Event bus window → DUA dialog identik sama-sama ber-respon satu event
+  konfirmasi → tap "Hapus" cuma nutup dialog paling atas (yang paling akhir
+  ke-mount = App.vue), kembaran di bawah masih nongol.
+- **Fix:** hapus mount + import ConfirmDialog dari Dashboard.vue (App.vue
+  tetap jadi satu-satunya wadah). Build ulang + restart. Semua confirmAction
+  caller (resolve, release, delete chat, snooze, dll) tetap jalan — resolve
+  dialog yang dulu dipasang di Dashboard kini lewat dialog global.
+- Catatan: hub non-SaaS punya bug yang sama (Dashboard L298 double-mount) —
+  arsip, retired, tidak di-fix (biarkan sebagai catatan historis).

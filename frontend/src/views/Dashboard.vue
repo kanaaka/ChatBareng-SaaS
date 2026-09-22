@@ -293,10 +293,10 @@
       @open-chat="handleContactOpenChat"
     />
 
-    <!-- Release confirm dialog — v0.9.0: M3 ConfirmDialog (logika v0.1.21 TIDAK diubah:
-         dialog ini hanya wadah; tombol konfirmasi tetap memanggil handleRelease persis
-         seperti tombol dialog lama, tombol batal menutup dialog) -->
-    <ConfirmDialog />
+    <!-- v3.6.1 — mount dobel DIHAPUS: ConfirmDialog global sudah ada di App.vue
+         (dialog tunggal per desain utils/confirm.js). Mount kedua di sini bikin dua
+         dialog identik ber-respond satu event — tap "Hapus" cuma menutup dialog
+         paling atas, kembarannya di bawah masih nongol (lapor owner 03:30). -->
 
     <!-- v0.10.0 — Fitur A: dialog Snooze (preset + custom) -->
     <SnoozeDialog
@@ -338,7 +338,6 @@ import TanganKanan from '../components/TanganKanan.vue'
 import AnnouncementBell from '../components/AnnouncementBell.vue'
 import ContactEditModal from '../components/ContactEditModal.vue'
 import BrandLogo from '../components/BrandLogo.vue'
-import ConfirmDialog from '../components/ConfirmDialog.vue'
 // v0.10.0 — Empat Fitur
 import SnoozeDialog from '../components/SnoozeDialog.vue'
 import ScheduledDialog from '../components/ScheduledDialog.vue'
