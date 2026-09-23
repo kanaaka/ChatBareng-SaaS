@@ -21,6 +21,7 @@ const plans = require('../services/plans')
 const saAudit = require('../services/saAudit')
 const tenantBackup = require('../services/tenantBackup')
 const usernameGuard = require('../utils/usernameGuard') // v3.4.1 — username unik global lintas tenant
+const validity = require('../services/validity') // v3.8 — masa aktif tenant
 const multer = require('multer')
 
 // Middleware chain: auth + superadmin
@@ -103,6 +104,8 @@ router.get('/tenants', ...sa, async (req, res) => {
         chatCount: t._count.chats,
         waStatus: waStatusFor(t.id),
         createdAt: t.createdAt,
+        // v3.8 — masa aktif tenant (+ computed validityState; null/null = lifetime)
+        ...validity.validityToJson(t),
         plan: t.plan
           ? {
               ...planToJson(t.plan),
@@ -196,6 +199,50 @@ router.put(
       res.json({ tenant: updated })
     } catch (e) {
       console.error('[SA] Update tenant error:', e)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  }
+)
+
+// PUT /api/sa/tenants/:id/validity — v3.8 — set masa aktif tenant (super_admin only).
+// body: { preset: '30d'|'1y'|'lifetime'|'custom', startDate?: ISO, endDate?: ISO }
+// - lifetime → validUntil = null (validFrom boleh diset utk catatan)
+// - 30d/1y   → validFrom = startDate || now; validUntil = validFrom + durasi
+// - custom   → wajib endDate > startDate (400 kalau tidak)
+// Response: nilai final + computed state. Audit action: validity_update.
+router.put(
+  '/tenants/:id/validity',
+  ...sa,
+  [body('preset').trim().notEmpty().withMessage('preset wajib diisi')],
+  async (req, res) => {
+    try {
+      if (!validate(req, res)) return
+      const id = parseInt(req.params.id, 10)
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid tenant id' })
+      const tenant = await prisma.tenant.findUnique({ where: { id } })
+      if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
+
+      const applied = validity.applyValidityPreset(tenant, req.body || {})
+      if (applied.error) return res.status(400).json({ error: applied.error })
+
+      const updated = await prisma.tenant.update({ where: { id }, data: applied.data })
+      const state = validity.validityState(updated)
+      console.log(`[SA] Tenant #${id} (${updated.name}) validity: preset=${req.body.preset} → validFrom=${updated.validFrom?.toISOString() || null} validUntil=${updated.validUntil?.toISOString() || null} state=${state}`)
+      await saAudit.audit(req.user, 'validity_update', id, updated.name, {
+        preset: String(req.body.preset || ''),
+        startDate: req.body.startDate || null,
+        endDate: req.body.endDate || null,
+        validFrom: updated.validFrom ? updated.validFrom.toISOString() : null,
+        validUntil: updated.validUntil ? updated.validUntil.toISOString() : null,
+        state,
+      })
+      res.json({
+        validFrom: updated.validFrom ? updated.validFrom.toISOString() : null,
+        validUntil: updated.validUntil ? updated.validUntil.toISOString() : null,
+        validityState: state,
+      })
+    } catch (e) {
+      console.error('[SA] Set validity error:', e)
       res.status(500).json({ error: 'Internal server error' })
     }
   }

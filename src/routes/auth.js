@@ -143,6 +143,15 @@ router.get('/me', requireAuth, async (req, res) => {
     // v3.4 — branding + plan utk user tenant (spec §6). super_admin tanpa tenant →
     // tidak ada branding/plan (frontend superadmin tetap ChatBareng polos).
     if (user.tenantId != null) {
+      // v3.8 — masa aktif tenant: state + tanggal utk banner & route guard frontend.
+      // super_admin (tenantId null) → tanpa subscription (guard tidak berlaku).
+      try {
+        const validity = require('../services/validity')
+        const sub = await validity.getSubscription(user.tenantId)
+        if (sub) payload.subscription = sub
+      } catch (subErr) {
+        console.error('[Auth/me] subscription error (non-fatal):', subErr.message)
+      }
       try {
         const plans = require('../services/plans')
         const [tenant, plan, usage] = await Promise.all([

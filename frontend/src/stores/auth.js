@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import axios from 'axios'
 import { loadAndApplyTenantTheme, clearTenantTheme } from '../utils/tenantTheme'
 import { syncThemeColorMeta } from '../utils/themeColor'
+import { setSubscription, clearSubscription } from '../utils/subscription' // v3.8
 
 const API = import.meta.env.VITE_API_URL || ''
 
@@ -35,6 +36,16 @@ export const useAuthStore = defineStore('auth', {
       // v3.1 — tema aksen tenant aktif RUNTIME tanpa full reload (bootstrap App.vue
       // tidak jalan lagi saat SPA navigasi). super_admin → dilewati di util (403 netral).
       loadAndApplyTenantTheme()
+      // v3.8 — login response tidak membawa subscription (payload login ringkas) →
+      // fetch /auth/me segera supaya banner/guard siap di navigasi pertama.
+      if (!this.user.impersonated && this.user.role !== 'super_admin') {
+        try {
+          const me = await axios.get(`${API}/api/auth/me`)
+          this.user = me.data.user
+          localStorage.setItem('user', JSON.stringify(this.user))
+          setSubscription(this.user?.subscription)
+        } catch {}
+      }
     },
     // v3.0 — impersonasi view-as tenant (short-lived JWT role admin tenant)
     async impersonate(tenantId) {
@@ -46,12 +57,20 @@ export const useAuthStore = defineStore('auth', {
       axios.defaults.headers.common['Authorization'] = `Bearer ${this.token}`
       // v3.1 — superadmin view-as tenant → tema tenant aktif runtime juga
       loadAndApplyTenantTheme()
+      // v3.8 — impersonate token view-as → subscription tenant ikut dimuat
+      // (super_admin impersonate TIDAK kena guard — isTenantLocked() cek role/flag).
+      try {
+        const res2 = await axios.get(`${API}/api/auth/me`)
+        setSubscription(res2.data?.user?.subscription)
+      } catch {}
     },
     async fetchMe() {
       try {
         const res = await axios.get(`${API}/api/auth/me`)
         this.user = res.data.user
         localStorage.setItem('user', JSON.stringify(this.user))
+        // v3.8 — subscription state selalu sinkron dengan /auth/me
+        setSubscription(this.user?.subscription)
       } catch {
         this.logout()
       }
@@ -67,6 +86,7 @@ export const useAuthStore = defineStore('auth', {
       // v3.1 — balik ke permukaan netral platform (login page tidak ikut accent tenant)
       clearTenantTheme()
       syncThemeColorMeta()
+      clearSubscription() // v3.8 — reset state masa aktif
     },
   },
 })

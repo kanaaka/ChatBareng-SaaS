@@ -519,7 +519,39 @@ function notConnectedError(msg) {
   return err
 }
 
+// ═══ v3.8 — Low-level send guard (READ-ONLY enforcement) ═══
+// Block SEMUA pengiriman outgoing tenant expired / not_started — SATU titik
+// kontrol: scheduler pesan terjadwal, CSAT pending (self-heal), auto-reply
+// greeting/outside-hours, menu gateway, blast — semuanya lewat
+// sendMessageForTenant/sendMediaForTenant. Bila tenant expired → THROW
+// (error tetap tercatat di logika pemanggil: scheduled error, blastLog failed,
+// auto-reply revert marker — TIDAK ada pesan keluar atas nama tenant expired).
+// Incoming WA tetap diterima & tampil (read-only). Guard murni per-tenant —
+// jalur low-level tidak punya konteks actor (impersonate juga terblokir di
+// level ini, sesuai "tidak boleh ada pesan keluar atas nama tenant expired").
+const validity = require('../services/validity')
+async function assertCanSendTenant(tenantId) {
+  try {
+    const sub = await validity.getSubscription(tenantId)
+    if (sub && validity.isReadOnly(sub.state)) {
+      const err = new Error(
+        sub.state === 'not_started'
+          ? 'Masa aktif tenant belum dimulai — pengiriman diblokir.'
+          : 'Masa aktif tenant habis — pengiriman diblokir. Perbarui langganan untuk mengirim kembali.'
+      )
+      err.code = validity.codeFor(sub.state)
+      throw err
+    }
+  } catch (e) {
+    // Gagal membaca validity (bukan read-only rejection) → fail-open (pola
+    // middleware: DB error TIDAK boleh mematikan pengiriman tenant normal).
+    if (e.code === 'SUBSCRIPTION_EXPIRED' || e.code === 'SUBSCRIPTION_NOT_STARTED') throw e
+    logErr(tenantId, '[Validity] guard read error (fail-open):', e.message)
+  }
+}
+
 async function sendMessageForTenant(tenantId, waJid, text) {
+  await assertCanSendTenant(tenantId)
   const sock = getSocketForTenant(tenantId)
   if (!sock) {
     throw notConnectedError(config.waDisabled ? WA_DISABLED_MSG : WA_NOT_CONNECTED_MSG)
@@ -529,6 +561,7 @@ async function sendMessageForTenant(tenantId, waJid, text) {
 }
 
 async function sendMediaForTenant(tenantId, waJid, buffer, mediaType, mimetype, caption, fileName) {
+  await assertCanSendTenant(tenantId)
   const sock = getSocketForTenant(tenantId)
   if (!sock) {
     throw notConnectedError(config.waDisabled ? WA_DISABLED_MSG : WA_NOT_CONNECTED_MSG)

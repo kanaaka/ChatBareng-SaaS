@@ -5,6 +5,18 @@
     pada <html> sebelum paint pertama (spec §2).
   -->
   <div class="h-vp flex flex-col overflow-hidden">
+    <!-- ═══ v3.8 — Banner masa aktif tenant (persistent, tidak bisa di-close) ═══
+         expired: "Masa berlaku akun habis — Perbarui Langganan untuk menggunakan"
+         not_started: "Masa aktif dimulai <tanggal> — silakan kembali kemudian".
+         Tampil di SEMUA layout (desktop + mobile) di atas topbar. -->
+    <div
+      v-if="lockBanner"
+      class="flex-shrink-0 px-4 py-2 text-sm font-medium text-center"
+      style="background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container);"
+      role="alert"
+    >
+      🔒 {{ lockBanner }}
+    </div>
     <!-- Desktop top bar (>=768px) — layout tetap, reskin M3 (m3-topbar) -->
     <header class="hidden md:flex m3-topbar px-4 py-3 items-center justify-between flex-shrink-0">
       <div class="flex items-center gap-3">
@@ -159,6 +171,7 @@
             :reply-text="replyText"
             :sending="sending"
             :sending-media="sendingMedia"
+            :send-disabled="tenantLocked"
             :show-search-bar="showSearchBar"
             :search-query="searchQuery"
             :search-results="searchResults"
@@ -338,6 +351,8 @@ import TanganKanan from '../components/TanganKanan.vue'
 import AnnouncementBell from '../components/AnnouncementBell.vue'
 import ContactEditModal from '../components/ContactEditModal.vue'
 import BrandLogo from '../components/BrandLogo.vue'
+// v3.8 — masa aktif tenant: state untuk banner + tombol kirim disabled
+import { getSubscription, isTenantLocked, fmtDateId } from '../utils/subscription'
 // v0.10.0 — Empat Fitur
 import SnoozeDialog from '../components/SnoozeDialog.vue'
 import ScheduledDialog from '../components/ScheduledDialog.vue'
@@ -391,6 +406,19 @@ const lightboxImage = ref(null)
 const transferUsers = ref([])
 const chatListPaneRef = ref(null)
 const chatDetailRef = ref(null)
+
+// ─── v3.8 — Masa aktif tenant (banner + tombol kirim disabled) ─────
+// Reactive subscription util (getSubscription) di-set saat fetchMe/login.
+// isTenantLocked: false utk super_admin/impersonate (SA tetap bisa support).
+const subscription = getSubscription()
+const tenantLocked = computed(() => isTenantLocked(auth.user))
+const lockBanner = computed(() => {
+  if (!tenantLocked.value) return null
+  if (subscription.state === 'not_started') {
+    return `Masa aktif dimulai ${fmtDateId(subscription.validFrom)} — silakan kembali kemudian`
+  }
+  return 'Masa berlaku akun habis — Perbarui Langganan untuk menggunakan'
+})
 
 // ─── v0.10.0 — Empat Fitur: state ────────────────────────────────
 // Fitur A — Snooze
@@ -781,6 +809,11 @@ function scrollToBottom() {
 // ─── Reply / media (logika v0.1.x identik) ────────────
 async function sendReply() {
   if (!replyText.value.trim() || sending.value) return
+  // v3.8 — tenant locked (expired/belum dimulai) → JANGAN kirim (backend juga 403)
+  if (tenantLocked.value) {
+    toastStore.show({ icon: '🔒', title: 'Masa aktif tenant', message: lockBanner.value || 'Masa aktif tenant habis.', timeout: 6000 })
+    return
+  }
   sending.value = true
   try {
     await chats.sendReply(currentChat.value.id, replyText.value)
@@ -800,6 +833,13 @@ async function sendReply() {
 async function handleFileUpload(event) {
   const file = event.target.files?.[0]
   if (!file) return
+
+  // v3.8 — tenant locked → JANGAN kirim media (backend juga 403)
+  if (tenantLocked.value) {
+    toastStore.show({ icon: '🔒', title: 'Masa aktif tenant', message: lockBanner.value || 'Masa aktif tenant habis.', timeout: 6000 })
+    event.target.value = ''
+    return
+  }
 
   sendingMedia.value = true
   try {
@@ -977,6 +1017,11 @@ function handleReplyKeydown(e) {
     }
   } else {
     if (e.key === 'Enter') {
+      // v3.8 — tenant locked → Enter tidak mengirim (tombol & handler disabled)
+      if (tenantLocked.value) {
+        e.preventDefault()
+        return
+      }
       sendReply()
       return
     }

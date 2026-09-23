@@ -17,6 +17,7 @@ import { initPushInAppListener } from './utils/pushInapp'
 import { syncThemeColorMeta } from './utils/themeColor'
 import { loadAndApplyTenantTheme, clearTenantTheme } from './utils/tenantTheme'
 import { loadBrandingAndPlan, clearBranding } from './utils/branding' // v3.4
+import { setSubscription, clearSubscription } from './utils/subscription' // v3.8
 import router from './router'
 import axios from 'axios'
 
@@ -30,6 +31,17 @@ axios.interceptors.response.use(
   (err) => {
     const status = err.response?.status
     const msg = err.response?.data?.error
+    const code = err.response?.data?.code
+    // v3.8 — 403 masa aktif tenant (expired / belum dimulai): toast + redirect ke
+    // tampilan awal (guard route menahan di sana). JANGAN swallow error lain.
+    if (status === 403 && (code === 'SUBSCRIPTION_EXPIRED' || code === 'SUBSCRIPTION_NOT_STARTED')) {
+      try {
+        const toast = useToastStore()
+        toast.show({ icon: '🔒', title: 'Masa aktif tenant', message: msg || 'Masa aktif tenant habis.', timeout: 6000 })
+      } catch {}
+      const path = window.location.pathname
+      if (path !== '/' && !path.startsWith('/chat/')) router.push('/')
+    }
     if (status === 403 && typeof msg === 'string' && msg.includes('tidak tersedia di paket Anda')) {
       try {
         const toast = useToastStore()
@@ -64,6 +76,8 @@ onMounted(() => {
       loadAndApplyTenantTheme()
       // v3.4 — branding (brandName + logo) + plan.features utk menu gating
       await loadBrandingAndPlan()
+      // v3.8 — subscription state (banner + route guard masa aktif)
+      setSubscription(auth.user?.subscription)
       const socket = useSocketStore()
       socket.init(auth.token)
       const announcements = useAnnouncementsStore()
@@ -75,6 +89,7 @@ onMounted(() => {
     // tab lain / sesi kadaluarsa) → permukaan kembali netral.
     clearTenantTheme()
     clearBranding()
+    clearSubscription() // v3.8 — reset state masa aktif
   }
 })
 </script>

@@ -112,7 +112,13 @@
                       ? 'background:#dcfce7;color:#166534;'
                       : 'background:#fee2e2;color:#991b1b;'"
                   >{{ t.status === 'active' ? 'active' : 'suspended' }}</span>
+                  <!-- v3.8 — chip masa aktif (validityState) -->
+                  <span v-if="validityChip(t)" class="sa-pill" :style="validityChip(t).style">{{ validityChip(t).label }}</span>
+                  <!-- v3.8 §A — chip status WA real-time (polling 15s) -->
                   <span v-if="t.waStatus?.disabled" class="sa-pill" style="background:#e5e7eb;color:#374151;">WA off</span>
+                  <span v-else-if="t.waStatus?.connected" class="sa-pill" style="background:#dcfce7;color:#166534;">WA terhubung</span>
+                  <span v-else-if="t.waStatus?.qrNeeded" class="sa-pill" style="background:#fef9c3;color:#854d0e;">Menunggu scan QR</span>
+                  <span v-else class="sa-pill" style="background:#e5e7eb;color:#374151;">Terputus</span>
                 </div>
                 <div class="text-sm mt-1" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
                   {{ t.userCount }} user · {{ t.chatCount }} chat
@@ -129,6 +135,8 @@
                 </div>
               </div>
               <div class="flex flex-wrap gap-2 justify-end">
+                <!-- v3.8 — masa aktif tenant -->
+                <button class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm" @click="openValidityModal(t)">Masa Aktif</button>
                 <button class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm" @click="openPlanModal(t)">Edit Paket</button>
                 <button class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm" @click="openBrandingModal(t)">Branding</button>
                 <button class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm" :disabled="backingUp === t.id" @click="backupTenant(t)">
@@ -234,6 +242,44 @@
           </div>
           <div v-if="auditNextBefore" class="text-center mt-3">
             <button class="m3-btn m3-btn--text !min-h-[36px] !text-sm" @click="loadMoreAudit">Muat lebih ({{ auditItems.length }} ditampilkan)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- v3.8 — Modal Masa Aktif (4 preset + Date start + preview selesai) -->
+      <div v-if="validityModalTenant" class="sa-modal-backdrop" @click.self="closeValidityModal">
+        <div class="sa-modal">
+          <h3 class="text-lg font-semibold mb-1">Masa Aktif — #{{ validityModalTenant.id }} {{ validityModalTenant.name }}</h3>
+          <p class="text-sm mb-3" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
+            Sekarang: {{ validityNowLabel(validityModalTenant) }}. Tenant expired tetap bisa login &amp; lihat data (read-only), tapi tidak bisa mengirim apa pun.
+          </p>
+          <label class="text-sm" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">Preset</label>
+          <select v-model="validityForm.preset" class="m3-select sa-select">
+            <option value="lifetime">Lifetime — tanpa batas</option>
+            <option value="30d">30 Hari</option>
+            <option value="1y">1 Tahun</option>
+            <option value="custom">Custom — tentukan tanggal selesai</option>
+          </select>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+            <div>
+              <label class="text-sm" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">Mulai (default hari ini WIB)</label>
+              <input v-model="validityForm.startDate" type="date" class="sa-select sa-date-input" />
+            </div>
+            <div v-if="validityForm.preset === 'custom'">
+              <label class="text-sm" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">Selesai (wajib)</label>
+              <input v-model="validityForm.endDate" type="date" class="sa-select sa-date-input" />
+            </div>
+          </div>
+          <div class="mt-3 p-3 rounded-[var(--md-sys-shape-corner-m)]" style="background: var(--md-sys-color-surface-container-high);">
+            <div class="text-sm" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">Pratinjau selesai:</div>
+            <div class="font-semibold" :style="{ color: 'var(--md-sys-color-on-surface)' }">{{ validityPreviewText }}</div>
+          </div>
+          <div v-if="validityError" class="text-sm mt-3" style="color: var(--md-sys-color-error);">{{ validityError }}</div>
+          <div class="flex gap-2 justify-end mt-4">
+            <button class="m3-btn m3-btn--text !min-h-[40px]" @click="closeValidityModal">Batal</button>
+            <button class="m3-btn m3-btn--filled !min-h-[40px]" :disabled="validitySaving" @click="saveValidity">
+              {{ validitySaving ? 'Menyimpan…' : 'Simpan' }}
+            </button>
           </div>
         </div>
       </div>
@@ -348,7 +394,7 @@
 // v3.0 — Halaman superadmin minimal (fase 1). Impersonasi view-as = fase 3.
 // v3.4 — plan editor (preset + custom), branding modal, backup download, impersonate
 // button, usage meter, audit viewer (spec §8).
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
@@ -381,9 +427,53 @@ const FEATURE_DEFS = [
 const FEATURE_LABELS = Object.fromEntries(FEATURE_DEFS.map((f) => [f.key, f.label]))
 const AUDIT_ACTIONS = [
   'tenant_create', 'tenant_update', 'tenant_delete', 'tenant_purge',
+  'validity_update', // v3.8 — masa aktif tenant
   'plan_update', 'branding_update', 'backup_download', 'impersonate', 'admin_create',
 ]
 const backingUp = ref(null)
+
+// ─── v3.8 §A — Chip WA real-time: polling GET /api/sa/tenants tiap 15s ───
+// Silent in-place update (TANPA loading flicker — loading flag tidak disentuh);
+// clearInterval saat unmount + tombol refresh manual tetap memanggil load().
+// TANPA socket baru (kemungkinan v2 — dicatat di report).
+let waPollTimer = null
+async function pollTenantsSilent() {
+  try {
+    const { data } = await axios.get(`${API}/api/sa/tenants`)
+    tenants.value = data.tenants // in-place replace — reaktif, tanpa flicker
+  } catch {
+    // polling gagal (network/error) → senyap; error state tidak diubah (silent)
+  }
+}
+function startWaPolling() {
+  stopWaPolling()
+  waPollTimer = setInterval(pollTenantsSilent, 15000)
+}
+function stopWaPolling() {
+  if (waPollTimer) { clearInterval(waPollTimer); waPollTimer = null }
+}
+onUnmounted(() => stopWaPolling())
+
+// ─── v3.8 — Chip masa aktif dari validityState ──
+function validityChip(t) {
+  const s = t.validityState
+  const fmt = (iso) => {
+    try { return new Date(iso).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) } catch { return iso }
+  }
+  if (s === 'lifetime') return { label: 'Lifetime', style: 'background:#e5e7eb;color:#374151;' }
+  if (s === 'active' && t.validUntil) return { label: `s/d ${fmt(t.validUntil)}`, style: 'background:#dcfce7;color:#166534;' }
+  if (s === 'expiring' && t.validUntil) {
+    const days = Math.max(0, Math.ceil((new Date(t.validUntil) - new Date()) / 86400000))
+    return { label: `⏰ ${days} hari lagi`, style: 'background:#fef9c3;color:#854d0e;' }
+  }
+  if (s === 'expired') return { label: `Kedaluwarsa ${t.validUntil ? fmt(t.validUntil) : ''}`, style: 'background:#fee2e2;color:#991b1b;' }
+  if (s === 'not_started') return { label: `Mulai ${t.validFrom ? fmt(t.validFrom) : '?'}`, style: 'background:#dbeafe;color:#1e40af;' }
+  return null
+}
+function validityNowLabel(t) {
+  const chip = validityChip(t)
+  return chip ? chip.label : 'Lifetime'
+}
 
 const adminFormFor = ref(null)
 const adminUsername = ref('')
@@ -445,6 +535,84 @@ function fmtBytes(n) {
 function activeFeatures(t) {
   if (!t.plan) return []
   return FEATURE_DEFS.filter((f) => t.plan[f.key]).map((f) => ({ key: f.key, label: f.label }))
+}
+
+// ── v3.8 — Modal Masa Aktif (4 preset + Date start default hari-ini-WIB + preview) ──
+const validityModalTenant = ref(null)
+const validityForm = ref({ preset: 'lifetime', startDate: '', endDate: '' })
+const validitySaving = ref(false)
+const validityError = ref('')
+
+/** Hari ini (WIB, UTC+7) sebagai date-input value YYYY-MM-DD. */
+function wibTodayValue() {
+  const now = new Date(Date.now() + 7 * 60 * 60 * 1000)
+  return now.toISOString().slice(0, 10)
+}
+function parseWibDateToIso(dateStr, endOfDay = false) {
+  // date-input YYYY-MM-DD → ISO: WIB midnight (atau 23:59:59.999 utk endDate)
+  if (!dateStr) return null
+  const ms = endOfDay ? (23 * 60 + 59) * 60 * 1000 + 999 : 0
+  return new Date(Date.UTC(
+    Number(dateStr.slice(0, 4)), Number(dateStr.slice(5, 7)) - 1, Number(dateStr.slice(8, 10)),
+    0, 0, 0, ms
+  ) - 7 * 60 * 60 * 1000).toISOString()
+}
+function openValidityModal(t) {
+  validityModalTenant.value = t
+  validityForm.value = {
+    preset: t.validityState === 'lifetime' ? 'lifetime' : 'custom',
+    startDate: t.validFrom ? new Date(new Date(t.validFrom).getTime() + 7 * 3600000).toISOString().slice(0, 10) : wibTodayValue(),
+    endDate: t.validUntil ? new Date(new Date(t.validUntil).getTime() + 7 * 3600000).toISOString().slice(0, 10) : '',
+  }
+  validityError.value = ''
+}
+function closeValidityModal() {
+  validityModalTenant.value = null
+}
+// Preview tanggal selesai sesuai preset + input saat ini
+const validityPreviewText = computed(() => {
+  const f = validityForm.value
+  const fmt = (iso) => {
+    try { return new Date(iso).toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) } catch { return iso }
+  }
+  if (f.preset === 'lifetime') return 'Lifetime — tanpa batas waktu'
+  const startIso = parseWibDateToIso(f.startDate, false)
+  if (!startIso) return 'Pilih tanggal mulai'
+  if (f.preset === '30d') {
+    const d = new Date(new Date(startIso).getTime() + 30 * 86400000)
+    return `${fmt(startIso)} + 30 hari → ${fmt(d.toISOString())}`
+  }
+  if (f.preset === '1y') {
+    const d = new Date(new Date(startIso).getTime())
+    d.setUTCFullYear(d.getUTCFullYear() + 1)
+    return `${fmt(startIso)} + 1 tahun → ${fmt(d.toISOString())}`
+  }
+  // custom
+  if (!f.endDate) return 'Pilih tanggal selesai (wajib utk Custom)'
+  const endIso = parseWibDateToIso(f.endDate, true)
+  if (endIso && new Date(endIso) <= new Date(startIso)) return '⚠️ Tanggal selesai harus SETELAH tanggal mulai'
+  return `s/d ${fmt(endIso)} (23:59 WIB)`
+})
+async function saveValidity() {
+  const t = validityModalTenant.value
+  if (!t) return
+  validitySaving.value = true
+  validityError.value = ''
+  try {
+    const body = { preset: validityForm.value.preset }
+    if (validityForm.value.startDate) body.startDate = parseWibDateToIso(validityForm.value.startDate, false)
+    if (validityForm.value.preset === 'custom') {
+      if (!validityForm.value.endDate) { validityError.value = 'endDate wajib untuk preset Custom'; validitySaving.value = false; return }
+      body.endDate = parseWibDateToIso(validityForm.value.endDate, true)
+    }
+    await axios.put(`${API}/api/sa/tenants/${t.id}/validity`, body)
+    closeValidityModal()
+    await load()
+  } catch (e) {
+    validityError.value = e.response?.data?.error || 'Gagal menyimpan masa aktif'
+  } finally {
+    validitySaving.value = false
+  }
 }
 
 // ── v3.4 — Modal Edit Paket ──
@@ -756,6 +924,8 @@ function handleLogout() {
 onMounted(() => {
   load()
   loadAudit()
+  // v3.8 §A — polling WA real-time 15s (silent in-place, clear saat unmount)
+  startWaPolling()
 })
 </script>
 
@@ -814,6 +984,11 @@ onMounted(() => {
   border: 1px solid var(--md-sys-color-outline);
   background: var(--md-sys-color-surface);
   color: var(--md-sys-color-on-surface);
+}
+/* v3.8 — date input di modal Masa Aktif */
+.sa-date-input {
+  margin-top: 4px;
+  min-height: 44px;
 }
 .sa-usage {
   display: flex;

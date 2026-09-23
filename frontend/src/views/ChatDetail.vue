@@ -471,6 +471,9 @@
       <span class="text-sm text-amber-700">🔒 Chat belum di-Take. Ambil chat dulu sebelum membalas.</span>
       <button v-if="auth.isAdmin" @click="$emit('take')" class="text-xs px-3 py-1.5 rounded bg-wa-green text-white font-medium active:bg-green-600">Take chat ini</button>
     </div>
+    <div v-else-if="sendDisabled" class="bg-[var(--md-sys-color-error-container)] border-t border-[var(--md-sys-color-error)] p-4 flex items-center justify-center flex-shrink-0">
+      <span class="text-sm font-medium" style="color: var(--md-sys-color-on-error-container);">🔒 Masa berlaku akun habis — Perbarui Langganan untuk menggunakan</span>
+    </div>
     <div
       v-else
       ref="composerBar"
@@ -664,6 +667,8 @@ const props = defineProps({
   replyText: { type: String, default: '' },
   sending: { type: Boolean, default: false },
   sendingMedia: { type: Boolean, default: false },
+  // v3.8 — masa aktif tenant habis → tombol kirim/reply disabled (read-only)
+  sendDisabled: { type: Boolean, default: false },
   // Search
   showSearchBar: { type: Boolean, default: false },
   searchQuery: { type: String, default: '' },

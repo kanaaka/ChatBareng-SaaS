@@ -70,6 +70,47 @@ const apiLimiter = rateLimit({
 })
 app.use('/api/', apiLimiter)
 
+// ═══ v3.8 — Global WRITE-GUARD masa aktif tenant (READ-ONLY enforcement) ═══
+// Keputusan owner 15:30: tenant expired TETAP bisa login + GET/read (lihat chat,
+// kontak, statistik, export); SEMUA aksi tulis diblokir 403 SUBSCRIPTION_EXPIRED.
+// WAJIB SEBELUM router tenant terdaftar (middleware chain order) — intercept
+// semua non-GET dgn resolver tenant (resolveTenant; butuh token utk tenant user;
+// super_admin bebas). Router yang TIDAK disentuh (whitelist di bawah): branding
+// (logo = GET-asset, auth flexible), media (GET media viewer utk semua), push
+// (self-service device), appearance (GET publik), history/blast/contacts export
+// (read-only = spec "export dibuka"). Low-level send guard di pool.js menutup
+// jalur scheduler/auto-reply/greeting/CSAT.
+const { requireActiveSubscription } = require('./auth')
+const { resolveTenant } = require('./middleware/tenant')
+app.use('/api', (req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next()
+  const p = req.path
+  // Whitelist NON-GET yang TIDAK kena guard (self-service / tidak memengaruhi tenant):
+  if (
+    p.startsWith('/auth/') || // login + change-password mandiri (logout = POST /api/auth/logout)
+    p.startsWith('/branding/') || // serve logo (GET-ish, auth flexible ?token=)
+    p.startsWith('/media/') || // POST upload — di-guard per-route (media viewer harus tetap jalan)
+    p.startsWith('/push/') || // push subscription milik user sendiri (perangkat sendiri)
+    (p.startsWith('/csat/') && !p.startsWith('/csat/config')) || // csat submit publik (token, bukan sesi)
+    (p.startsWith('/appearance') && p !== '/appearance') || // GET /appearance/public dll
+    (p.startsWith('/gdrive/') && p.startsWith('/gdrive/oauth/callback')) || // OAuth redirect publik
+    (p.startsWith('/history/') && p.startsWith('/history/export')) || // export = read (spec: export dibuka)
+    (p.startsWith('/blast/') && (p === '/blast/upload-csv' || p.startsWith('/blast/preview') || p.startsWith('/blast/export'))) || // preview CSV/eksport riwayat = read-only, TIDAK menulis apa pun
+    p.startsWith('/contacts/export') // export kontak = read (spec: export dibuka)
+  ) {
+    return next()
+  }
+  // resolveTenant butuh req.user — pastikan auth header diparse ringan tanpa reject:
+  // guard ini JANGAN menolak 401 sendiri (biar route asli yang handle); kalau tak ada
+  // token → next() (route asli yang 401).
+  const header = req.headers.authorization
+  const token = header && header.startsWith('Bearer ') ? header.slice(7) : null
+  const decoded = token ? require('./auth').verifyToken(token) : null
+  if (!decoded) return next()
+  req.user = decoded
+  resolveTenant(req, res, () => requireActiveSubscription(req, res, next))
+})
+
 // API routes
 app.use('/api/auth', authRoutes)
 app.use('/api/sa', superadminRoutes) // v3.0 — Platform owner (requireSuperAdmin di dalam)

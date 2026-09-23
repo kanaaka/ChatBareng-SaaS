@@ -68,6 +68,36 @@ const router = createRouter({
 
 router.beforeEach((to, from, next) => {
   const auth = useAuthStore()
+  // v3.8 — route guard masa aktif tenant (READ-ONLY enforcement):
+  // expired / not_started → hanya tampilan awal (Dashboard/ChatDetail) + logout
+  // jalan; navigasi ke menu lain DIBLOKIR (redirect balik + toast). super_admin
+  // (termasuk impersonate) bebas. Halaman auth/public tidak di-lock.
+  import('./utils/subscription').then(({ isTenantLocked, fmtDateId }) => {
+    const locked = isTenantLocked(auth.user)
+    if (locked) {
+      const publicPaths = ['/login']
+      const allowedWhileLocked = ['Dashboard', 'ChatDetail', 'Login']
+      if (!allowedWhileLocked.includes(to.name) && !publicPaths.includes(to.path)) {
+        import('./stores/toast').then(({ useToastStore }) => {
+          try {
+            const toast = useToastStore()
+            const msg = auth.user?.subscription?.state === 'not_started'
+              ? `Masa aktif dimulai ${fmtDateId(auth.user.subscription.validFrom)} — silakan kembali kemudian`
+              : 'Masa berlaku akun habis — Perbarui Langganan untuk menggunakan'
+            toast.show({ icon: '🔒', title: 'Masa aktif habis', message: msg, timeout: 5000 })
+          } catch {}
+        })
+        next('/')
+        return
+      }
+      next()
+      return
+    }
+    guardRest(to, from, next, auth)
+  })
+})
+
+function guardRest(to, from, next, auth) {
   if (to.meta.auth && !auth.isLoggedIn) {
     next('/login')
   } else if (to.meta.superadmin && !auth.isSuperAdmin) {
@@ -103,6 +133,6 @@ router.beforeEach((to, from, next) => {
   } else {
     next()
   }
-})
+}
 
 export default router

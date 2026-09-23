@@ -120,6 +120,49 @@ function resolveTenant(req, res, next) {
   next()
 }
 
+// ═══ v3.8 — Guard masa aktif tenant (READ-ONLY enforcement, keputusan owner 15:30) ═══
+// Pasang SETELAH requireTenant (butuh req.tenantId) pada SEMUA route NON-GET tenant.
+// - Expired / not_started → 403 SUBSCRIPTION_EXPIRED / SUBSCRIPTION_NOT_STARTED.
+// - super_admin via impersonate (?tenant=) TIDAK kena — SA harus tetap bisa
+//   support tenant (perbarui validity, pakai app). Sumber kebenaran: role token.
+// - Lifetime (validUntil null) + active/expiring → lanjut normal (zero change).
+// - GET/read TIDAK dipasangi guard ini (lihat chat/kontak/statistik/export bebas).
+// Cache subscription per-request: pool low-level guard baca DB sendiri (satu
+// query per call — scheduler tick jarang, aman).
+const validityService = require('./services/validity')
+const prisma = require('./prisma')
+function requireActiveSubscription(req, res, next) {
+  try {
+    // super_admin (termasuk impersonate) → bebas (spec v3.8 §B enforcement)
+    if (req.user && req.user.role === 'super_admin') return next()
+    const tid = Number(req.tenantId)
+    if (!Number.isFinite(tid) || tid <= 0) return next() // bukan tenant-scope → di luar scope guard ini
+    prisma.tenant
+      .findUnique({ where: { id: tid }, select: { validFrom: true, validUntil: true } })
+      .then((tenant) => {
+        if (!tenant) return next() // tenant hilang → jalur lain yang 404/403
+        const state = validityService.validityState(tenant)
+        if (validityService.isReadOnly(state)) {
+          return res.status(403).json({
+            error:
+              state === 'not_started'
+                ? 'Masa aktif tenant belum dimulai. Menunggu tanggal mulai langganan.'
+                : 'Masa aktif tenant habis. Perbarui langganan untuk menggunakan kembali.',
+            code: validityService.codeFor(state),
+          })
+        }
+        return next()
+      })
+      .catch((e) => {
+        console.error('[Validity] middleware error (fail-open):', e.message)
+        return next()
+      })
+  } catch (e) {
+    console.error('[Validity] middleware error (fail-open):', e.message)
+    next()
+  }
+}
+
 module.exports = {
   signToken,
   signShortToken,
@@ -132,4 +175,5 @@ module.exports = {
   requireTenant,
   forbidSuperAdmin,
   resolveTenant,
+  requireActiveSubscription,
 }

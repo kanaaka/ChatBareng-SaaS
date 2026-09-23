@@ -40,6 +40,14 @@ model Tenant {
   brandName    String? // kosong/null = tampil "ChatBareng" polos
   logoPath     String? // path file logo di disk (data/branding/tenant-<id>/)
 
+  // ═══ v3.8 — Masa aktif tenant (subscription validity, ADDITIVE) ═══
+  // validFrom: null = info saja; validUntil: null = Lifetime (tanpa batas);
+  // validUntil < now = kedaluwarsa → READ-ONLY mode (keputusan owner 15:30,
+  // JANGAN hard-lockout — tenant expired tetap bisa login & lihat Dashboard).
+  // Existing tenants (null/null) = Lifetime, zero behavior change.
+  validFrom    DateTime?
+  validUntil   DateTime?
+
   @@index([status])
 }
 
