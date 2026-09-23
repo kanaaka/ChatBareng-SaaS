@@ -19,6 +19,9 @@
       </div>
     </div>
 
+    <!-- v3.9.2 K1-A — badge nomor asal (label slot) per chat: user harus selalu tau
+         chat ini lewat nomor mana. Data slot di-fetch dari /api/wa/status (label + slot). -->
+
     <!-- Filters section -->
     <div class="border-b border-gray-200">
       <button
@@ -142,6 +145,12 @@
                     <span v-if="chat.status === 'resolved'" class="text-green-500 text-xs flex-shrink-0" title="Resolved">✓</span>
                     <!-- v0.5.1 — badge "transfer belum dibaca" -->
                     <span v-if="chat.transferUnseen" class="inline-flex items-center gap-0.5 bg-amber-100 text-amber-700 text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0">📤 Transfer</span>
+                    <!-- v3.9.2 K1-A — badge nomor asal (label slot) — tampil bila tenant punya >1 slot -->
+                    <span
+                      v-if="waSlots.length > 1"
+                      class="inline-flex items-center gap-0.5 bg-indigo-100 text-indigo-700 text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0"
+                      :title="slotBadgeTitle(chat.numberSlot)"
+                    >{{ slotBadgeLabel(chat.numberSlot) }}</span>
                   </div>
                   <div class="flex items-center gap-1">
                     <span class="text-xs text-gray-500 truncate">{{ chat.lastMessagePreview || 'No messages' }}</span>
@@ -248,6 +257,35 @@ const agentList = ref([])
 
 // Tag data untuk filter dropdown
 const allTags = ref([])
+
+// v3.9.2 K1-A — badge nomor asal: slot list dari /api/wa/status (label slot);
+// refresh saat wa_status broadcast. Zero-change: tenant 1 nomor → badge tidak tampil.
+const waSlots = ref([])
+
+async function fetchWaSlots() {
+  try {
+    const res = await axios.get(`${API}/api/wa/status`)
+    waSlots.value = res.data.slots || []
+  } catch (e) {
+    console.error('Fetch WA slots for badges:', e)
+  }
+}
+
+function slotInfo(slot) {
+  const s = Number(slot) || 0
+  return waSlots.value.find(x => Number(x.slot) === s) || null
+}
+
+function slotBadgeLabel(slot) {
+  const info = slotInfo(slot)
+  return info?.label ? info.label.slice(0, 12) : `Slot ${Number(slot) || 0}`
+}
+
+function slotBadgeTitle(slot) {
+  const info = slotInfo(slot)
+  const s = Number(slot) || 0
+  return info?.label ? `Via nomor: ${info.label} (slot ${s})` : `Via nomor slot ${s}`
+}
 
 // Global message search state
 const globalSearchResults = ref([])
@@ -406,11 +444,22 @@ const socketStore = useSocketStore()
 onMounted(() => {
   fetchAllTags()
   fetchAgentList()
+  fetchWaSlots() // v3.9.2 K1-A — data badge nomor asal
   socketStore.on('tag_created', onTagCreated)
   socketStore.on('tag_deleted', onTagDeleted)
+  // v3.9.2 — refresh slot badge saat status WA berubah (connect/logout)
+  socketStore.on('wa_status', onWaStatusChanged)
 })
 onUnmounted(() => {
   socketStore.off('tag_created', onTagCreated)
   socketStore.off('tag_deleted', onTagDeleted)
+  socketStore.off('wa_status', onWaStatusChanged)
 })
+
+// v3.9.2 K1-A — debounced refresh badge saat status WA berubah
+let waStatusDebounce = null
+function onWaStatusChanged() {
+  clearTimeout(waStatusDebounce)
+  waStatusDebounce = setTimeout(fetchWaSlots, 500)
+}
 </script>

@@ -519,6 +519,7 @@ async function maybeAutoReply(chat, msg) {
 
 module.exports = {
   getConfig,
+  getConfigForSlot, // v3.9.2 K1-A — dipakai menuGateway.startFlow (resolve per-slot)
   invalidateConfig,
   isOutsideHours,
   personalizeText,

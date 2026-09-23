@@ -232,7 +232,8 @@ async function startFlow(chat) {
     // Guard total: gateway OFF → bukan jalur menu (caller memutuskan jalur lama)
     if (!cfg.enabled) return false
     // greetMode menu-nya di-evaluasi caller; defense-in-depth: cek lagi di sini
-    const autoCfg = await prisma.autoReplyConfig.findFirst({ where: { tenantId, numberSlot: null } })
+    // v3.9.2 K1-A — resolve per SLOT asal chat (fallback shared null) — bukan selalu shared.
+    const autoCfg = await require('./autoReply').getConfigForSlot(tenantId, chat.numberSlot)
     if (!autoCfg || !autoCfg.greetEnabled || autoCfg.greetMode !== 'menu') return false
 
     // Repeat frequency (D6/F4) — CEK SEBELUM claim (anti-orphan v0.13.3): repeat

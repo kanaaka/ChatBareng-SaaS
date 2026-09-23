@@ -195,6 +195,12 @@ async function findGroupChat(tenantId, chatId) {
   return chat
 }
 
+// v3.9.2 K1-A — grup TIDAK dipisah per slot (1 grup = 1 baris): findFirst by
+// (tenantId, waJid) tanpa slot (deterministik: id asc). Pakai createGroup & fallback.
+async function findGroupChatRowAnySlot(tenantId, waJid) {
+  return prisma.chat.findFirst({ where: { tenantId, waJid: String(waJid) }, orderBy: { id: 'asc' } })
+}
+
 function isOrphanRow(chat) {
   return !chat.picUserId
 }
@@ -434,12 +440,17 @@ async function createGroup(user, tenantId, body) {
     unreadCount: 0,
   }
   const chatUpdate = { picUserId, assignedToId: picUserId, queuedAt: null }
+  // v3.9.2 K1-A — grup (@g.us) TIDAK dipisah per slot (1 grup = 1 baris): lookup
+  // by (tenantId, waJid) via findFirst; create selalu numberSlot 0 (slot grup).
   let chat
   try {
-    chat = await prisma.chat.upsert({ where: { tenantId_waJid: { tenantId, waJid: gid } }, create: chatData, update: chatUpdate })
+    chat = await findGroupChatRowAnySlot(tenantId, gid) || await prisma.chat.create({ data: { ...chatData, numberSlot: 0 } })
+    chat = await prisma.chat.update({ where: { id: chat.id }, data: chatUpdate })
   } catch (e) {
     if (e?.code !== 'P2002') throw e
-    chat = await prisma.chat.upsert({ where: { tenantId_waJid: { tenantId, waJid: gid } }, create: chatData, update: chatUpdate })
+    chat = await findGroupChatRowAnySlot(tenantId, gid)
+    if (!chat) throw e
+    chat = await prisma.chat.update({ where: { id: chat.id }, data: chatUpdate })
   }
 
   await logAction(user.id, tenantId, chat.id, 'create', `subject="${subject}" picUserId=${picUserId}`)
@@ -725,11 +736,20 @@ async function sendGroupInviteLinks(user, tenantId, chatId, lidJids, groupName) 
       const pj = validateParticipantJid(jid)
 
       // Label manusiawi: nama kontak tersimpan (Contact linked by chatId Int).
-      const ct = await prisma.contact.findFirst({ where: { tenantId, chat: { waJid: pj.jid } }, select: { name: true } })
+      // v3.9.2 K1-A — 1 identity per orang: contact by phone (nomor asli — slot
+      // apapun); @lid tanpa nomor asli → fallback contact via chat (slot apapun).
+      const ct = pj.isPhoneJid
+        ? await prisma.contact.findFirst({ where: { tenantId, phone: pj.digits }, select: { name: true } })
+        : await prisma.contact.findFirst({ where: { tenantId, chat: { waJid: pj.jid } }, select: { name: true } })
       display = (ct?.name || '').trim() || pj.jid
 
       // Isolasi: chat 1:1 dipegang CS lain → error per-target (bukan throw — partial).
-      const existingChat = await prisma.chat.findUnique({ where: { tenantId_waJid: { tenantId, waJid: pj.jid } } })
+      // v3.9.2 K1-A — cek SEMUA chat 1:1 nomor ini (slot apapun): pesan group-invite
+      // dikirim via socket slot-0 (getSocketForTenant default).
+      const existingChat = await prisma.chat.findFirst({
+        where: { tenantId, waJid: pj.jid, assignedToId: { not: null } },
+        orderBy: { id: 'asc' },
+      })
       if (existingChat && existingChat.assignedToId != null && existingChat.assignedToId !== user.id && !isAdmin(user)) {
         results.push({ phone: display, status: 'error', error: 'Chat 1:1 sedang dipegang CS lain', viaLink: true })
         continue
@@ -739,12 +759,15 @@ async function sendGroupInviteLinks(user, tenantId, chatId, lidJids, groupName) 
       const waResult = await sock.sendMessage(pj.jid, { text })
 
       // Upsert Chat 1:1 anti-race (pola createGroup/pmParticipant — P2002 retry).
+      // v3.9.2 K1-A — find-or-create per (tenantId, numberSlot, waJid); PM dari
+      // grup = slot-0 (sama dgn socket pengirim), existing slot lain gak disentuh.
       const chatData = {
         tenantId,
         waJid: pj.jid,
         contactPhone: pj.digits, // Chat.contactPhone = fallback display (pola upsertChat), BUKAN Contact.phone
         contactName: ct?.name || null,
         phoneJid: pj.isPhoneJid ? pj.jid : null,
+        numberSlot: 0,
         assignedToId: user.id,
         status: 'open',
         unreadCount: 0,
@@ -752,10 +775,19 @@ async function sendGroupInviteLinks(user, tenantId, chatId, lidJids, groupName) 
       const chatUpdate = {} // chat existing tidak disentuh assignment-nya
       let pmChat
       try {
-        pmChat = await prisma.chat.upsert({ where: { tenantId_waJid: { tenantId, waJid: pj.jid } }, create: chatData, update: chatUpdate })
+        pmChat = await prisma.chat.findFirst({ where: { tenantId, numberSlot: 0, waJid: pj.jid } })
+        if (!pmChat) {
+          pmChat = await prisma.chat.create({ data: chatData }).catch(async (e) => {
+            if (e?.code !== 'P2002') throw e
+            return prisma.chat.findFirst({ where: { tenantId, numberSlot: 0, waJid: pj.jid } })
+          })
+        }
+        if (Object.keys(chatUpdate).length > 0) {
+          pmChat = await prisma.chat.update({ where: { id: pmChat.id }, data: chatUpdate })
+        }
       } catch (e) {
         if (e?.code !== 'P2002') throw e
-        pmChat = await prisma.chat.upsert({ where: { tenantId_waJid: { tenantId, waJid: pj.jid } }, create: chatData, update: chatUpdate })
+        pmChat = await prisma.chat.findFirst({ where: { tenantId, numberSlot: 0, waJid: pj.jid } })
       }
 
       // Auto-reopen: chat resolved → open lagi (pola reply/pmParticipant).
@@ -957,7 +989,8 @@ async function handleIncomingGroupMessage(tenantId, msg, ctx) {
   try {
     const { text, mediaType, mediaPath, mediaMime, mediaSize, dbTimestamp, senderName } = ctx
     let chat = ctx.chatRow
-    if (!chat) chat = await prisma.chat.findUnique({ where: { tenantId_waJid: { tenantId, waJid: ctx.waJid } } })
+    // v3.9.2 K1-A — grup = 1 baris (TIDAK per-slot): findFirst by (tenantId, waJid).
+    if (!chat) chat = await prisma.chat.findFirst({ where: { tenantId, waJid: ctx.waJid }, orderBy: { id: 'asc' } })
     if (!chat) {
       // Grup yatim belum di-adopt → TIDAK dibuatkan row (row tanpa PIC akan
       // bocor ke queueWhere()/list 1:1 — queueWhere tidak boleh disentuh).
@@ -1211,7 +1244,11 @@ async function pmParticipant(user, tenantId, chatId, pmJidRaw, body) {
 
   // Isolasi SEBELUM kirim: chat 1:1 sudah dipegang CS lain → 403 (admin bebas).
   // Cek awal mencegah pesan terkirim lalu aksi ditolak.
-  const existingChat = await prisma.chat.findUnique({ where: { tenantId_waJid: { tenantId, waJid: pj.jid } } })
+  // v3.9.2 K1-A — cek SEMUA chat 1:1 nomor ini (slot apapun); PM dikirim via slot-0.
+  const existingChat = await prisma.chat.findFirst({
+    where: { tenantId, waJid: pj.jid, assignedToId: { not: null } },
+    orderBy: { id: 'asc' },
+  })
   if (existingChat && existingChat.assignedToId != null && existingChat.assignedToId !== user.id && !isAdmin(user)) {
     throw new GroupServiceError('FORBIDDEN', 403, 'Chat 1:1 dengan nomor ini sedang dipegang CS lain')
   }
@@ -1239,12 +1276,15 @@ async function pmParticipant(user, tenantId, chatId, pmJidRaw, body) {
   // oleh chats.upsert Baileys → P2002 → retry 1x). Update = {} : JANGAN rebet
   // assignment/status existing (chat milik orang tidak disentuh). TANPA queuedAt
   // → born-assigned, keluar dari antrean.
+  // v3.9.2 K1-A — find-or-create per (tenantId, numberSlot=0, waJid): PM dari grup
+  // lewat socket slot-0; existing slot lain gak disentuh.
   const chatData = {
     tenantId,
     waJid: pj.jid,
     contactPhone: pj.digits, // digits nomor asli — LID TIDAK PERNAH disimpan sbg phone
     contactName: notifyName,
     phoneJid: pj.isPhoneJid ? pj.jid : null, // @lid → phoneJid null (pola upsertChat Baileys)
+    numberSlot: 0,
     assignedToId: user.id,
     status: 'open',
     unreadCount: 0,
@@ -1252,10 +1292,19 @@ async function pmParticipant(user, tenantId, chatId, pmJidRaw, body) {
   const chatUpdate = {}
   let pmChat
   try {
-    pmChat = await prisma.chat.upsert({ where: { tenantId_waJid: { tenantId, waJid: pj.jid } }, create: chatData, update: chatUpdate })
+    pmChat = await prisma.chat.findFirst({ where: { tenantId, numberSlot: 0, waJid: pj.jid } })
+    if (!pmChat) {
+      pmChat = await prisma.chat.create({ data: chatData }).catch(async (e) => {
+        if (e?.code !== 'P2002') throw e
+        return prisma.chat.findFirst({ where: { tenantId, numberSlot: 0, waJid: pj.jid } })
+      })
+    }
+    if (Object.keys(chatUpdate).length > 0) {
+      pmChat = await prisma.chat.update({ where: { id: pmChat.id }, data: chatUpdate })
+    }
   } catch (e) {
     if (e?.code !== 'P2002') throw e
-    pmChat = await prisma.chat.upsert({ where: { tenantId_waJid: { tenantId, waJid: pj.jid } }, create: chatData, update: chatUpdate })
+    pmChat = await prisma.chat.findFirst({ where: { tenantId, numberSlot: 0, waJid: pj.jid } })
   }
 
   // Safety-net isolasi (race antara cek awal & upsert).

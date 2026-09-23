@@ -424,30 +424,31 @@ async function connectTenant(tenantId, opts = {}) {
 
   // ── v3.5 — chats.phoneNumberShare: WA share nomor asli utk kontak LID ──
   // Port dari hub non-SaaS (baileys.js v0.15.x L624-640), adaptasi tenant:
-  // update chat by [tenantId, waJid: normalizedLid], bukan by chat.id = JID.
+  // update chat by [tenantId, numberSlot, waJid: normalizedLid] (v3.9.2 K1-A:
+  // scoped per SLOT socket ini — jangan sentuh chat slot lain), bukan by id = JID.
   sock.ev.on('chats.phoneNumberShare', async ({ lid, jid }) => {
     try {
       if (!lid || !jid) return
       const phone = String(jid).split('@')[0]
       // Normalisasi LID — strip device suffix ("260678896062673:35@lid" → "260678896062673@lid")
       const normalizedLid = String(lid).split(':')[0] + '@lid'
-      // 1) Chat LID existing → isi contactPhone + phoneJid (display + export)
+      // 1) Chat LID existing (slot ini) → isi contactPhone + phoneJid (display + export)
       const res = await prisma.chat.updateMany({
-        where: { tenantId: tid, waJid: normalizedLid },
+        where: { tenantId: tid, numberSlot: slot, waJid: normalizedLid },
         data: { contactPhone: phone, phoneJid: jid },
       })
-      // 2) Chat phone JID milik nomor yang sama → belajar LID-nya (routing dua arah)
+      // 2) Chat phone JID milik nomor yang sama (slot ini) → belajar LID-nya (routing dua arah)
       const phoneJid = `${phone}@s.whatsapp.net`
       await prisma.chat.updateMany({
-        where: { tenantId: tid, phoneJid },
+        where: { tenantId: tid, numberSlot: slot, phoneJid },
         data: { lidJid: normalizedLid },
       })
       if (res.count > 0) {
         broadcast.emitToTenant(tid, 'chat_update', { waJid: normalizedLid, contactPhone: phone, phoneJid })
       }
-      log(tid, `phoneNumberShare: LID ${normalizedLid} → phone ${phone} (chat updated: ${res.count})`)
+      log(tid, slot, `phoneNumberShare: LID ${normalizedLid} → phone ${phone} (chat updated: ${res.count}, slot ${slot})`)
     } catch (e) {
-      logErr(tid, 'phoneNumberShare error:', e.message)
+      logErr(tid, slot, 'phoneNumberShare error:', e.message)
     }
   })
 
@@ -841,17 +842,19 @@ async function resolveLidToPhone(sock, lidJid) {
 
 /**
  * v3.5 — Merge guard dua arah (§2/§4): setelah chat LID belajar phone-nya,
- * cek apakah sudah ada chat LAIN dengan waJid = phone JID itu (scope tenant).
+ * cek apakah sudah ada chat LAIN dengan waJid = phone JID itu (scope tenant + SLOT —
+ * v3.9.2 K1-A: merge HANYA antar chat dalam slot yang sama, JANGAN lintas slot).
  * Kalau ada → merge ringan: pindahkan pesan chat LID → chat phone, pindahkan
  * Contact LID (delete, data diambil chat phone), pasang lidJid di chat phone,
  * hapus chat LID. Return chat phone. Gagal merge → return chat LID apa adanya
  * (routing tidak boleh gagal karena merge — non-fatal).
  */
-async function mergeLidIntoPhoneChat(tid, lidChat, phoneJid) {
+async function mergeLidIntoPhoneChat(tid, slot, lidChat, phoneJid) {
+  const s = Number(slot) || 0
   const phone = String(phoneJid).split('@')[0]
   try {
     const phoneChat = await prisma.chat.findUnique({
-      where: { tenantId_waJid: { tenantId: tid, waJid: phoneJid } },
+      where: { tenantId_numberSlot_waJid: { tenantId: tid, numberSlot: s, waJid: phoneJid } },
     })
     if (!phoneChat || phoneChat.id === lidChat.id) return lidChat
 
@@ -890,25 +893,27 @@ async function mergeLidIntoPhoneChat(tid, lidChat, phoneJid) {
       await tx.chat.delete({ where: { id: lidChat.id } })
       return mv
     })
-    log(tid, `mergeLidIntoPhoneChat: chat LID ${lidChat.waJid} (#${lidChat.id}) → chat phone #${phoneChat.id} (${r.count} pesan dipindah)`)
+    log(tid, s, `mergeLidIntoPhoneChat: chat LID ${lidChat.waJid} (#${lidChat.id}) → chat phone #${phoneChat.id} (slot ${s}, ${r.count} pesan dipindah)`)
     broadcast.emitToTenant(tid, 'chat_update', { chatId: phoneChat.id, contactPhone: phone, phoneJid })
     return await prisma.chat.findUnique({ where: { id: phoneChat.id } })
   } catch (e) {
-    logErr(tid, 'mergeLidIntoPhoneChat error (non-fatal):', e.message)
+    logErr(tid, s, 'mergeLidIntoPhoneChat error (non-fatal):', e.message)
     return lidChat
   }
 }
 
 /**
- * v3.5 — Inline LID resolve (port hub L833-857, tenant-scoped):
+ * v3.5 — Inline LID resolve (port hub L833-857, tenant-scoped + SLOT-scoped v3.9.2):
  * pesan 1:1 dari LID yang phoneJid-nya masih null → fire-and-forget resolve
- * (tidak memblokir persist pesan). Dapat phone → update chat LID + merge guard;
+ * (tidak memblokir persist pesan). Dapat phone → update chat LID (SLOT INI SAJA —
+ * K1-A: JANGAN menyentuh chat slot lain) + merge guard dalam-slot;
  * gagal → kirim requestPhoneNumber SEKALI per LID (Set per socket, reset saat reconnect).
  */
 function maybeResolveLidChat(tid, chat, sock, slot = 0) {
+  const s = Number(slot) || 0
   try {
     if (!chat.waJid.endsWith('@lid') || chat.phoneJid) return
-    const st = pool.get(slotKey(tid, Number(slot) || 0))
+    const st = pool.get(slotKey(tid, s))
     if (!sock || !st) return
     resolveLidToPhone(sock, chat.waJid)
       .then(async (phoneJid) => {
@@ -919,34 +924,36 @@ function maybeResolveLidChat(tid, chat, sock, slot = 0) {
             set.add(chat.waJid)
             try {
               await sock.sendMessage(chat.waJid, { requestPhoneNumber: true })
-              log(tid, `requestPhoneNumber terkirim ke ${chat.waJid} (inline fallback)`)
+              log(tid, s, `requestPhoneNumber terkirim ke ${chat.waJid} (inline fallback)`)
             } catch (e) {
-              logErr(tid, `inline requestPhoneNumber error ${chat.waJid}:`, e.message)
+              logErr(tid, s, `inline requestPhoneNumber error ${chat.waJid}:`, e.message)
             }
           }
           return
         }
         const phone = phoneJid.split('@')[0]
+        // v3.9.2 K1-A — scoped per slot: update chat LID di slot INI saja.
         await prisma.chat.updateMany({
-          where: { tenantId: tid, waJid: chat.waJid },
+          where: { tenantId: tid, numberSlot: s, waJid: chat.waJid },
           data: { contactPhone: phone, phoneJid },
         })
-        // Merge guard: bila chat phone dgn JID sama sudah ada → gabungkan
-        const fresh = await prisma.chat.findUnique({ where: { tenantId_waJid: { tenantId: tid, waJid: chat.waJid } } })
-        if (fresh) await mergeLidIntoPhoneChat(tid, fresh, phoneJid)
+        // Merge guard: bila chat phone dgn JID sama sudah ada (SLOT SAMA) → gabungkan
+        const fresh = await prisma.chat.findUnique({ where: { tenantId_numberSlot_waJid: { tenantId: tid, numberSlot: s, waJid: chat.waJid } } })
+        if (fresh) await mergeLidIntoPhoneChat(tid, s, fresh, phoneJid)
       })
-      .catch((e) => logErr(tid, 'Inline LID resolve error:', e.message))
+      .catch((e) => logErr(tid, s, 'Inline LID resolve error:', e.message))
   } catch (e) {
-    logErr(tid, 'maybeResolveLidChat error (non-fatal):', e.message)
+    logErr(tid, s, 'maybeResolveLidChat error (non-fatal):', e.message)
   }
 }
 
 /**
  * Process one incoming WA message for a specific tenant (+SLOT, v3.9).
- * Chat find-or-create by [tenantId, waJid] — JID sama di 2 tenant = 2 chat terpisah.
- * v3.9 — ATURAN TUNGGAL reply: chat dicatat dgn numberSlot = slot penerima; kontak
- * sama via nomor beda = chat terpisah (JID per sesi) — reply SELALU via nomor penerima
- * (owner 18:24 #1). Mode assigned/mix → born-assigned ke agent slot (pola PIC grup).
+ * v3.9.2 K1-A — Chat find-or-create by [tenantId, numberSlot, waJid]: kontak sama
+ * via nomor beda = chat TERPISAH beneran per slot (owner locked 20:27). Semua
+ * routing LID↔phone di-scope per slot — merge inline hanya antar chat DALAM slot
+ * yang sama, JANGAN pernah menyentuh chat slot lain (unread/queue state).
+ * Mode assigned/mix → born-assigned ke agent slot (pola PIC grup).
  * Return { chat, message } | null.
  */
 async function processIncomingMessage(tenantId, msg, meta = {}) {
@@ -955,34 +962,40 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
   if (!Number.isFinite(tid) || tid <= 0 || !rawJid) return null
   if (rawJid === 'status@broadcast') return null
   const inboxSlot = Number(meta?.slot) || 0
+  // v3.9.2 — true bila chat dibuat BARU oleh pesan ini (unread=1 sudah dihitung
+  // di create — update final tidak increment lagi, cegah double-increment).
+  let firstMessageCounted = false
 
   // v3.5 §1 — resolveEffectiveJid: match chat existing dua arah sebelum create.
   // 1:1 saja (@lid / @s.whatsapp.net); grup (@g.us) dan status lewat jalur lama.
+  // v3.9.2 K1-A — SEMUA lookup di-scope per SLOT (numberSlot = inboxSlot):
+  // pesan masuk slot N tidak pernah menyentuh chat milik slot lain.
   const altJid = msg?.key?.remoteJidAlt || null
   let routeMode = 'exact' // exact | lid-to-phone | phone-to-lid
   let routedChat = null
 
   if (rawJid.endsWith('@lid') || rawJid.endsWith('@s.whatsapp.net')) {
-    // (1) status quo: chat by [tenantId, waJid: rawJid]
+    // (1) status quo: chat by [tenantId, numberSlot, waJid: rawJid]
     routedChat = await prisma.chat.findUnique({
-      where: { tenantId_waJid: { tenantId: tid, waJid: rawJid } },
+      where: { tenantId_numberSlot_waJid: { tenantId: tid, numberSlot: inboxSlot, waJid: rawJid } },
     })
     // v3.5.1 — PESAN LID yang membawa altJid phone (remoteJidAlt): chat PHONE
     // menang atas exact LID chat. Kasus 02:27 (Kanaka): chat LID lama exist dari
     // test sebelumnya → exact match menang → balasan nyasar + greeting. Kalau
     // chat phone utk nomor yang sama ada → itu canonical; kalau chat LID lama
     // JUGA ada (beda row) → merge inline LID → phone, route ke phone.
+    // v3.9.2 K1-A: scoped ke inboxSlot — merge hanya antar chat dalam slot sama.
     if (rawJid.endsWith('@lid')) {
       const altPhonePref = altJid && String(altJid).endsWith('@s.whatsapp.net') ? altJid : null
       if (altPhonePref) {
         const altPhoneChat = await prisma.chat.findUnique({
-          where: { tenantId_waJid: { tenantId: tid, waJid: altPhonePref } },
+          where: { tenantId_numberSlot_waJid: { tenantId: tid, numberSlot: inboxSlot, waJid: altPhonePref } },
         })
         if (altPhoneChat && (!routedChat || routedChat.id !== altPhoneChat.id)) {
           if (routedChat) {
-            const merged = await mergeLidIntoPhoneChat(tid, routedChat, altPhonePref)
+            const merged = await mergeLidIntoPhoneChat(tid, inboxSlot, routedChat, altPhonePref)
             routedChat = merged && merged.waJid === altPhonePref ? merged : altPhoneChat
-            log(tid, `routing v3.5.1: pesan LID ${rawJid} diarahkan ke chat phone #${routedChat.id}${merged && merged.waJid === altPhonePref ? ' (chat LID lama di-merge)' : ''}`)
+            log(tid, inboxSlot, `routing v3.5.1: pesan LID ${rawJid} diarahkan ke chat phone #${routedChat.id}${merged && merged.waJid === altPhonePref ? ' (chat LID lama di-merge, slot sama)' : ''}`)
           } else {
             routedChat = altPhoneChat
           }
@@ -991,11 +1004,11 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
       }
     }
     if (!routedChat && rawJid.endsWith('@lid')) {
-      // (2) LID baru → chat phone-JID milik nomor yang sama
+      // (2) LID baru → chat phone-JID milik nomor yang sama (SLOT INI SAJA)
       const altPhone = altJid && altJid.endsWith('@s.whatsapp.net') ? altJid : null
       if (altPhone) {
         const byAlt = await prisma.chat.findUnique({
-          where: { tenantId_waJid: { tenantId: tid, waJid: altPhone } },
+          where: { tenantId_numberSlot_waJid: { tenantId: tid, numberSlot: inboxSlot, waJid: altPhone } },
         })
         if (byAlt) {
           routedChat = byAlt
@@ -1004,7 +1017,7 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
       }
       if (!routedChat) {
         const byLidField = await prisma.chat.findFirst({
-          where: { tenantId: tid, lidJid: rawJid },
+          where: { tenantId: tid, numberSlot: inboxSlot, lidJid: rawJid },
           orderBy: { id: 'asc' },
         })
         if (byLidField) {
@@ -1014,11 +1027,11 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
       }
       if (!routedChat) {
         // (2b) LID baru tanpa lidJid tercatat → chat phone via phoneJid (mapping
-        // kolom, chat LID lama yang sudah resolved ke nomor itu).
+        // kolom, chat LID lama yang sudah resolved ke nomor itu — slot ini).
         const altPhone2 = altJid && altJid.endsWith('@s.whatsapp.net') ? altJid : null
         if (altPhone2) {
           const byPhoneField = await prisma.chat.findFirst({
-            where: { tenantId: tid, phoneJid: altPhone2, waJid: { not: rawJid } },
+            where: { tenantId: tid, numberSlot: inboxSlot, phoneJid: altPhone2, waJid: { not: rawJid } },
             orderBy: { id: 'asc' },
           })
           if (byPhoneField) {
@@ -1028,13 +1041,13 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
         }
       }
     } else if (!routedChat && rawJid.endsWith('@s.whatsapp.net')) {
-      // (3) phone JID → chat LID yang mapping-nya sudah tersimpan:
+      // (3) phone JID → chat LID yang mapping-nya sudah tersimpan (SLOT INI):
       //     altJid LID (v3.5.1) → kolom lidJid ATAU kolom phoneJid (chat LID yang
       //     sudah belajar nomor ini).
       const altLid = altJid && String(altJid).endsWith('@lid') ? String(altJid).split(':')[0] + '@lid' : null
       if (altLid) {
         const byAltLid = await prisma.chat.findUnique({
-          where: { tenantId_waJid: { tenantId: tid, waJid: altLid } },
+          where: { tenantId_numberSlot_waJid: { tenantId: tid, numberSlot: inboxSlot, waJid: altLid } },
         })
         if (byAltLid) {
           routedChat = byAltLid
@@ -1043,7 +1056,7 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
       }
       if (!routedChat) {
       const byLidField = await prisma.chat.findFirst({
-        where: { tenantId: tid, lidJid: rawJid },
+        where: { tenantId: tid, numberSlot: inboxSlot, lidJid: rawJid },
         orderBy: { id: 'asc' },
       })
       if (byLidField) {
@@ -1051,7 +1064,7 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
         routeMode = 'phone-to-lid'
       } else {
         const byPhoneField = await prisma.chat.findFirst({
-          where: { tenantId: tid, phoneJid: rawJid, waJid: { endsWith: '@lid' } },
+          where: { tenantId: tid, numberSlot: inboxSlot, phoneJid: rawJid, waJid: { endsWith: '@lid' } },
           orderBy: { id: 'asc' },
         })
         if (byPhoneField) {
@@ -1089,7 +1102,8 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
     if (mediaMsg?.caption) effectiveText = mediaMsg.caption
     else if (mediaType === 'document' && mediaMsg?.fileName) effectiveText = mediaMsg.fileName
     // Media nyata: download + encrypt + save (paritas dgn v2 pool)
-    const sock = getSocketForTenant(tid)
+    // v3.9.2 — socket slot penerima (bukan selalu slot-0)
+    const sock = getSocketForTenant(tid, inboxSlot)
     if (sock) {
       try {
         const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: P({ level: 'silent' }) })
@@ -1121,6 +1135,9 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
 
   // (7) chat hasil routing dipakai utk SEMUA downstream; kalau tidak ada match
   //     → find-or-create seperti biasa (dengan mapping bila ada).
+  //     v3.9.2 K1-A — find-or-create by [tenantId, numberSlot, waJid]: kontak
+  //     sama via nomor beda = 2 baris Chat berbeda (masing-masing slot tetap;
+  //     TIDAK toggle numberSlot mengikuti pesan terakhir — owner 20:27 A.3).
   let chat
   if (effectiveChat) {
     chat = effectiveChat
@@ -1143,7 +1160,7 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
     }
   } else {
     chat = await prisma.chat.findUnique({
-      where: { tenantId_waJid: { tenantId: tid, waJid: chatId } },
+      where: { tenantId_numberSlot_waJid: { tenantId: tid, numberSlot: inboxSlot, waJid: chatId } },
     })
     if (!chat) {
       chat = await prisma.chat.create({
@@ -1154,34 +1171,34 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
           contactName: msg.pushName || null,
           phoneJid: mappingPhoneJid,
           lidJid: mappingLidJid,
-          numberSlot: inboxSlot, // v3.9 — slot asal pesan masuk (reply via nomor yang sama)
+          numberSlot: inboxSlot, // v3.9.2 K1-A — slot asal pesan masuk (reply via nomor yang sama; chat per-slot)
           unreadCount: msg.key.fromMe ? 0 : 1,
           status: 'open',
           queuedAt: dbTimestamp,
           firstIncomingAt: msg.key.fromMe ? null : dbTimestamp,
         },
       })
+      firstMessageCounted = true
       if (mappingLidJid || (isLid && mappingPhoneJid)) {
-        log(tid, inboxSlot, `chat baru ${chatId} dibuat dengan mapping (phoneJid=${mappingPhoneJid}, lidJid=${mappingLidJid})`)
+        log(tid, inboxSlot, `chat baru ${chatId} dibuat dgn mapping (phoneJid=${mappingPhoneJid}, lidJid=${mappingLidJid}, slot=${inboxSlot})`)
       }
     }
   }
 
   // ═══ v3.9 — numberSlot + born-assigned routing (owner 18:24 #1/#2) ═══
-  // Pesan masuk (bukan fromMe): catat slot penerima di chat + routing mode:
+  // Pesan masuk (bukan fromMe): routing mode:
   //   pool → antrean existing TANPA perubahan (multi-nomor transparan utk CS)
   //   assigned → born-assigned ke agent slot (gak masuk antrean umum) + notif
   //   mix → per-slot (slot dgn assignedAgentId = assigned, sisanya pool)
-  // ATURAN TUNGGAL: kontak sama via nomor beda = chat terpisah; slot reply ikut
-  // numberSlot chat (tidak pernah fallback — owner 18:24 #3).
+  // v3.9.2 K1-A ATURAN TUNGGU: kontak sama via nomor beda = chat terpisah per
+  // slot; numberSlot chat TIDAK pernah ditoggle mengikuti pesan terakhir (chat
+  // sudah unik per slot — pesan masuk slot N gak nyentuh chat slot lain).
+  // Reply tetap ikut numberSlot chat (tidak pernah fallback — owner 18:24 #3).
   if (!msg.key.fromMe) {
     try {
       const route = await resolveRouteForSlot(tid, inboxSlot)
-      // Set numberSlot hanya bila berubah (hemat write; null-safe)
-      if (chat.numberSlot !== inboxSlot) {
-        await prisma.chat.update({ where: { id: chat.id }, data: { numberSlot: inboxSlot } })
-        chat = { ...chat, numberSlot: inboxSlot }
-      }
+      // v3.9.2 K1-A: chat sudah di-scope ke inboxSlot (find-or-create by slot) —
+      // numberSlot TIDAK pernah diubah lagi di sini (chat slot N tetap slot N).
       if (route === 'assigned' && chat.assignedToId == null) {
         const numRow = await prisma.tenantNumber.findUnique({
           where: { tenantId_slot: { tenantId: tid, slot: inboxSlot } },
@@ -1340,16 +1357,21 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
   }
 
   // Update chat last message + unread (rating consumed tidak menaikkan unread)
+  // v3.9.2 — fix double-increment chat BARU: pesan pertama sudah dihitung di create
+  // (unread=1). ATOMIC increment hanya bila chat existing / pesan lanjutan.
   const preview = effectiveText || (mediaType ? `[${mediaType.charAt(0).toUpperCase() + mediaType.slice(1)}]` : '[Media]')
-  const newUnread = msg.key.fromMe ? chat.unreadCount : (chat.unreadCount || 0) + 1
+  const chatUpdateFinal = {
+    lastMessageAt: dbMsg.timestamp,
+    lastMessagePreview: encryptText(preview),
+  }
+  if (!msg.key.fromMe && !firstMessageCounted) chatUpdateFinal.unreadCount = { increment: 1 }
   await prisma.chat.update({
     where: { id: chat.id },
-    data: {
-      lastMessageAt: dbMsg.timestamp,
-      lastMessagePreview: encryptText(preview),
-      unreadCount: newUnread,
-    },
+    data: chatUpdateFinal,
   })
+  const newUnread = msg.key.fromMe
+    ? (chat.unreadCount || 0)
+    : (firstMessageCounted ? (chat.unreadCount || 0) : ((chat.unreadCount || 0) + 1))
 
   // Broadcast scoped ke room tenant (plaintext utk UI)
   broadcast.emitToTenant(tid, 'new_message', { chatId: chat.id, message: { ...dbMsg, content: decryptTextSafe(dbMsg.content) } })
@@ -1438,6 +1460,18 @@ async function syncContactFromChat(tenantId, chatIdInt) {
     phone = normalizePhoneForContact(phoneRaw)
   }
   const hasComplete = chat.contact && chat.contact.phone && chat.contact.name
+  // v3.9.2 K1-A — Contact.chatId = PRIMARY chat (chat terakhir aktif kontak itu).
+  // Chat 1:1 LAIN dgn nomor sama (slot beda) tetap sync kontak; bila kontak sudah
+  // lengkap → HANYA pindahkan primary (chatId) ke chat yang baru aktif ini.
+  if (chat.contact && (!phone || chat.contact.phone === phone)) {
+    if (!chat.contact.chatId || chat.contact.chatId !== chat.id) {
+      // Primary pindah ke chat yang baru masuk pesan (race-safe: bila kontak
+      // sudah di-claim chat lain di antara baca & update → biarkan; C1 pola v3.7).
+      await prisma.contact.updateMany({ where: { id: chat.contact.id }, data: { chatId: chat.id } }).catch((e) => {
+        if (!String(e?.message || '').includes('Unique constraint')) console.error('[Pool] primary chat move error (non-fatal):', e.message)
+      })
+    }
+  }
   if (hasComplete && (!phone || chat.contact.phone === phone)) return
 
   const updateData = {}
@@ -1473,8 +1507,17 @@ async function syncContactFromChat(tenantId, chatIdInt) {
       const patch = {}
       if (phone && !existing.phone) patch.phone = phone
       if (chat.contactName && !existing.name) patch.name = chat.contactName
+      // v3.9.2 K1-A — kontak existing (nomor sama, slot lain) + chat baru ini aktif
+      // → PRIMARY pindah ke chat ini (Contact.chatId = chat terakhir aktif).
+      // 1 kontak per orang tetap (identity per phone); JANGAN bikin kontak dobel.
+      if (existing.chatId !== chat.id) patch.chatId = chat.id
       if (Object.keys(patch).length > 0) {
-        await prisma.contact.update({ where: { id: existing.id }, data: patch })
+        try {
+          await prisma.contact.update({ where: { id: existing.id }, data: patch })
+        } catch (e) {
+          if (!String(e?.message || '').includes('Unique constraint')) throw e
+          // Unique chatId = kontak lain sudah nge-claim chat ini (race) — skip.
+        }
       }
       return
     }

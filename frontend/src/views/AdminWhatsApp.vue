@@ -36,6 +36,8 @@
               </span>
               <span v-if="s.status?.phoneNumber" class="text-sm text-gray-500">(+{{ s.status.phoneNumber }})</span>
               <span v-if="s.routeMode === 'assigned'" class="text-xs font-medium px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">Assigned → agent #{{ s.assignedAgentId }}</span>
+              <!-- v3.9.2 K1-A — jumlah chat per slot (nice-to-have E.14) -->
+              <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600" title="Jumlah chat lewat nomor ini">💬 {{ s.chatCount || 0 }} chat</span>
             </div>
 
             <!-- Label edit (inline) -->
@@ -275,7 +277,7 @@ async function addSlot() {
 async function removeSlot(s) {
   const ok = await confirmAction({
     title: `Hapus Nomor Slot ${s.slot}?`,
-    message: 'Sesi WhatsApp nomor ini akan dihapus (logout). Slot lain tidak terpengaruh.',
+    message: 'Sesi WhatsApp nomor ini akan dihapus (logout). Slot lain tidak terpengaruh. Slot yang masih punya chat tidak bisa dihapus (409).',
     confirmText: 'Hapus',
     danger: true,
   })

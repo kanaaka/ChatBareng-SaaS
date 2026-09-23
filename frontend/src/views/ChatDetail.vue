@@ -45,6 +45,12 @@
             <template v-if="groupChat">{{ groupSubtitle }}</template>
             <template v-else>{{ formatPhone(chat.contactPhone) }}</template>
             <span v-if="chat.assignedTo" class="text-blue-500">· @{{ chat.assignedTo.username }}</span>
+            <!-- v3.9.2 K1-A — badge nomor asal (label slot) di header chat -->
+            <span
+              v-if="!groupChat && waSlots.length > 1"
+              class="inline-flex items-center gap-0.5 bg-indigo-100 text-indigo-700 text-[10px] font-medium px-1.5 py-0.5 rounded"
+              :title="slotBadgeTitle(chat.numberSlot)"
+            >· {{ slotBadgeLabel(chat.numberSlot) }}</span>
             <!-- v0.10.0 — Fitur A: badge snooze aktif di header -->
             <span v-if="isSnoozed" class="text-amber-600 font-medium">· 😴 Kembali {{ snoozeUntilLabel }}</span>
           </div>
@@ -650,6 +656,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
+import axios from 'axios' // v3.9.2 K1-A — fetch slot list utk badge nomor asal
 import { useAuthStore } from '../stores/auth'
 import KebabMenu from '../components/KebabMenu.vue'
 import NotesPanel from '../components/NotesPanel.vue'
@@ -658,6 +665,7 @@ import { getInitials, formatTime, formatPhone, tagColorClass, tagDotClass } from
 // v0.14.4 — participant action menu (save-contact + PM) via grup API client
 import { groupsClient, friendlyGroupError } from '../utils/groupsApi'
 import { useToastStore } from '../stores/toast'
+import { useSocketStore } from '../stores/socket' // v3.9.2 K1-A — refresh badge saat status WA berubah
 
 const props = defineProps({
   chat: { type: Object, required: true },
@@ -715,6 +723,8 @@ const auth = useAuthStore()
 const router = useRouter()
 // v0.14.4 — toast + state popover peserta grup
 const toast = useToastStore()
+// v3.9.2 K1-A — socket store (refresh badge nomor asal saat status WA berubah)
+const socketStore = useSocketStore()
 const senderMenu = ref({ msgId: null, mode: 'menu', loading: false, sending: false, pmText: '' })
 const pmInputRef = ref(null)
 
@@ -1006,6 +1016,43 @@ watch(() => props.showSearchBar, (val) => {
   if (val) nextTick(() => searchInputRef.value?.focus())
 })
 
+// ═══ v3.9.2 K1-A — badge nomor asal (label slot) di header chat ═══
+// Slot list dari /api/wa/status; refresh saat wa_status broadcast. Zero-change:
+// tenant 1 nomor → badge tidak tampil.
+const WA_API = import.meta.env.VITE_API_URL || ''
+const waSlots = ref([])
+
+async function fetchWaSlots() {
+  try {
+    const res = await axios.get(`${WA_API}/api/wa/status`)
+    waSlots.value = res.data.slots || []
+  } catch (e) {
+    console.error('Fetch WA slots for header badge:', e)
+  }
+}
+
+function slotInfo(slot) {
+  const s = Number(slot) || 0
+  return waSlots.value.find(x => Number(x.slot) === s) || null
+}
+
+function slotBadgeLabel(slot) {
+  const info = slotInfo(slot)
+  return info?.label ? info.label.slice(0, 12) : `Slot ${Number(slot) || 0}`
+}
+
+function slotBadgeTitle(slot) {
+  const info = slotInfo(slot)
+  const s = Number(slot) || 0
+  return info?.label ? `Via nomor: ${info.label} (slot ${s})` : `Via nomor slot ${s}`
+}
+
+let waStatusDebounce = null
+function onWaStatusChanged() {
+  clearTimeout(waStatusDebounce)
+  waStatusDebounce = setTimeout(fetchWaSlots, 500)
+}
+
 onMounted(() => {
   window.addEventListener('resize', onWindowResize)
   if (window.visualViewport) {
@@ -1018,6 +1065,9 @@ onMounted(() => {
   // v0.14.4 — Escape menutup popover peserta grup
   document.addEventListener('keydown', onSenderMenuKeydown)
   measureComposer()
+  // v3.9.2 K1-A — badge nomor asal: fetch slot + live refresh (socket wa_status)
+  fetchWaSlots()
+  socketStore.on('wa_status', onWaStatusChanged)
 })
 onUnmounted(() => {
   window.removeEventListener('resize', onWindowResize)
@@ -1027,6 +1077,8 @@ onUnmounted(() => {
   document.removeEventListener('click', onDocClickDismiss)
   document.removeEventListener('keydown', onSenderMenuKeydown)
   messagesContainer.value?.removeEventListener('scroll', onScroll)
+  socketStore.off('wa_status', onWaStatusChanged)
+  clearTimeout(waStatusDebounce)
 })
 
 // v0.10.3 — klik di luar (bukan di dalam menu/flyout/kontrollernya) → tutup semuanya

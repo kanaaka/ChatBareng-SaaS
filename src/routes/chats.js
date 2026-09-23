@@ -89,6 +89,69 @@ function accessDenied(res) {
   return res.status(403).json({ error: 'Anda tidak memiliki akses ke chat ini' })
 }
 
+// ═══ v3.9.2 K1-A — Contact identity helpers (C.8) ═══
+// Kontak = identity per (tenantId, phone): 1 orang = 1 kontak, WALAUPUN dia punya
+// chat di beberapa slot. Chat yang dihapus boleh per-chat, kontak TIDAK boleh
+// dibuang kalau masih dibutuhkan chat lain.
+
+/**
+ * Cari kontak yang nempel chat ini + chat 1:1 LAIN milik nomor yang sama
+ * (slot lain — match by phone normalized). Return { contact, otherChat }.
+ * Nomor LID yang belum resolved gak bisa di-match by phone → dianggap tidak sharing.
+ */
+async function findContactAndSiblingChat(tx, tenantId, chatId) {
+  const contact = await tx.contact.findFirst({ where: { chatId, tenantId } })
+  if (!contact) return { contact: null, otherChat: null }
+  const chat = await tx.chat.findUnique({ where: { id: chatId }, select: { id: true, waJid: true, contactPhone: true, tenantId: true } })
+  if (!chat) return { contact, otherChat: null }
+  // Grup / LID belum resolved → tidak ada sibling yang bisa dipastikan.
+  if (chat.waJid.endsWith('@g.us') || !contact.phone) return { contact, otherChat: null }
+  const jid = `${contact.phone}@s.whatsapp.net`
+  // chat 1:1 sisanya milik nomor sama — slot apapun (contact.phone = identity).
+  // Match by contactPhone OR phoneJid (chat LID yang sudah ke-resolve ke nomor ini).
+  const otherChat = await tx.chat.findFirst({
+    where: {
+      tenantId,
+      id: { not: chatId },
+      waJid: { not: { endsWith: '@g.us' } },
+      OR: [
+        { waJid: jid },
+        { phoneJid: jid },
+      ],
+    },
+    orderBy: { lastMessageAt: 'desc' },
+    select: { id: true },
+  })
+  return { contact, otherChat }
+}
+
+/**
+ * deleteContactOnlyIfNotShared — HAPUS kontak linked ke chat ini, KECUALI kontak
+ * masih nempel (via phone) ke chat 1:1 lain slot lain → DIPERTAHANKAN (primary
+ * otomatis pindah saat chat itu aktif lagi — syncContactFromChat K1-A).
+ */
+async function deleteContactOnlyIfNotShared(tx, tenantId, chatId) {
+  const { contact, otherChat } = await findContactAndSiblingChat(tx, tenantId, chatId)
+  if (!contact) return { count: 0 }
+  if (otherChat) return { count: 0 } // identitas masih dibutuhkan — pertahankan
+  return tx.contact.deleteMany({ where: { id: contact.id } })
+}
+
+/**
+ * detachContactKeepIdentity — kontak di-detach dari chat yang dihapus.
+ * v3.9.2 K1-A: bila kontak juga punya chat LAIN (slot lain, nomor sama) → primary
+ * pindah ke chat sisanya (paling baru aktif; BUKAN orphan); kalau tidak ada →
+ * orphan (chatId null, pola v3.7).
+ */
+async function detachContactKeepIdentity(tx, tenantId, chatId) {
+  const { contact, otherChat } = await findContactAndSiblingChat(tx, tenantId, chatId)
+  if (!contact) return { count: 0 }
+  if (otherChat) {
+    return tx.contact.updateMany({ where: { id: contact.id, chatId }, data: { chatId: otherChat.id } })
+  }
+  return tx.contact.updateMany({ where: { id: contact.id, chatId }, data: { chatId: null } })
+}
+
 // GET /api/chats - list chats
 router.get('/', ...rt, async (req, res) => {
   try {
@@ -983,6 +1046,7 @@ router.post('/:id/media', ...rt, upload.single('file'), async (req, res) => {
     // Send via pool per-tenant (v3 — WA_DISABLED → error jelas, message tetap disimpan)
     // v3.9 — reply media via nomor asal chat (numberSlot), tanpa fallback.
     let waResult
+    let waMediaSendError = null // v3.9.2 — paritas BUG-6: alasan gagal per-slot ke CS
     const replySlotMedia = Number(chat.numberSlot) || 0
     try {
       waResult = await wa.sendMediaForTenant(
@@ -997,6 +1061,7 @@ router.post('/:id/media', ...rt, upload.single('file'), async (req, res) => {
       )
     } catch (sendErr) {
       console.error('[Chats] WA send media error:', sendErr.message)
+      waMediaSendError = sendErr.message
       // Still save the message to DB even if WA send fails
       waResult = null
     }
@@ -1073,7 +1138,7 @@ router.post('/:id/media', ...rt, upload.single('file'), async (req, res) => {
     // v0.12.9 — implied read (media reply, sama dgn reply teks)
     receipts.markIncomingRead(req.tenantId, chat.id).catch(e => console.error('[Receipts] media:', e.message))
 
-    res.json({ message: messageOut })
+    res.json({ message: messageOut, waError: waMediaSendError || undefined }) // v3.9 fix BUG-6 (media)
   } catch (e) {
     console.error('Media reply error:', e)
     res.status(500).json({ error: e.message || 'Internal server error' })
@@ -1334,9 +1399,14 @@ router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
         ['scheduledMessages', () => tx.scheduledMessage.deleteMany({ where: { chatId: chat.id } })],
         deleteContact
           ? // v3.6 behavior: kontak linked ikut terhapus total
-            ['contacts', () => tx.contact.deleteMany({ where: { chatId: chat.id } })]
+            // v3.9.2 K1-A (C.8) — kontak dihapus HANYA bila dia TIDAK link ke chat
+            // lain milik slot lain (1 identity per orang — jangan buang identitas).
+            // Chat 1:1 nomor sama di slot lain = kontak masih dibutuhkan.
+            ['contacts', () => deleteContactOnlyIfNotShared(tx, req.tenantId, chat.id)]
           : // v3.7 KEEP: DETACH — kontak utuh (nama, nomor, tag) tapi lepas dari chat
-            ['contacts', () => tx.contact.updateMany({ where: { chatId: chat.id }, data: { chatId: null } })],
+            // v3.9.2 K1-A — detach HANYA bila kontak gak link ke chat lain (slot lain):
+            // kalau masih link → primary pindah ke chat sisanya (jangan jadi orphan).
+            ['contacts', () => detachContactKeepIdentity(tx, req.tenantId, chat.id)],
         ['chats', () => tx.chat.delete({ where: { id: chat.id } })],
       ]
       const result = {}

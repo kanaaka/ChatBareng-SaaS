@@ -18,6 +18,8 @@ datasource db {
 //  - Semua model milik tenant punya `tenantId` + @@index([tenantId]).
 //  - Chat direstrukturisasi: id Int autoincrement + tenantId + waJid,
 //    unik per [tenantId, waJid] — JID sama di 2 tenant = 2 chat terpisah.
+//    v3.9.2 K1-A — diperluas jadi [tenantId, numberSlot, waJid]: kontak sama
+//    via nomor beda = chat terpisah beneran per slot (owner locked 20:27).
 //  - FavoriteMessage / AnnouncementRead / PushSubscription TANPA tenantId:
 //    seluruhnya di-resolve lewat userId (join User) — di-scope via user tenant.
 //  - Model config singleton (AppConfig, AutoReplyConfig, MenuGatewayConfig(+Option),
@@ -147,13 +149,17 @@ model Chat {
   picUserId             Int?
   pic                   User?      @relation("groupPics", fields: [picUserId], references: [id])
   // ═══ v3.9 — Multi-nomor (ADDITIVE kolom) ═══
-  // numberSlot: slot nomor WA asal pesan masuk (0..2). Null = chat lama (pre-v3.9)
-  // ATAU tenant belum punya baris TenantNumber — reply slot-0 (kompatibilitas §0).
-  numberSlot            Int?
+  // numberSlot: slot nomor WA asal pesan masuk (0..2).
+  // v3.9.2 K1-A — NOT NULL default 0 (chat lama = milik slot-0; backfill null→0).
+  // Prisma menolak compound key dgn NULL (lesson v3.9.1) → wajib NOT NULL.
+  numberSlot            Int       @default(0)
   createdAt             DateTime   @default(now())
   updatedAt             DateTime   @updatedAt
 
-  @@unique([tenantId, waJid])
+  // v3.9.2 K1-A — chat UNIK per (tenantId, numberSlot, waJid): kontak sama yang
+  // chat ke 2 nomor beda = 2 baris Chat berbeda, masing-masing numberSlot tetap
+  // (tidak toggle mengikuti pesan terakhir). LID↔phone routing tetap jalan per slot.
+  @@unique([tenantId, numberSlot, waJid])
   @@index([tenantId])
   @@index([tenantId, status, assignedToId])
   @@index([waJid])

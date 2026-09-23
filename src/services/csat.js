@@ -165,15 +165,18 @@ async function sendSurveyMessage(surveyId) {
   const chat = await prisma.chat.findFirst({
     where: { id: survey.chatId, tenantId },
     // v0.12.1 — +assignedToId/status utk payload toast gate frontend
-    select: { waJid: true, contactName: true, contactPhone: true, assignedToId: true, status: true },
+    // v3.9.2 K1-A — +numberSlot (cek connect slot yang benar)
+    select: { waJid: true, contactName: true, contactPhone: true, assignedToId: true, status: true, numberSlot: true },
   })
   if (!chat) return 'no_phone'
   const phone = (chat.contactPhone || '').replace(/\D/g, '')
   if (!phone || phone.length < 8) return 'no_phone'
 
   const wa = require('../wa/pool')
-  if (!wa.isTenantConnected(tenantId)) {
-    console.log('[CSAT] WA belum connect — survey tetap pending (scheduler akan coba lagi)')
+  // v3.9.2 K1-A — cek connect SLOT chat ini (bukan selalu slot-0); no-fallback.
+  const surveySlot = Number(chat.numberSlot) || 0
+  if (!wa.isTenantConnected(tenantId, surveySlot)) {
+    console.log(`[CSAT] WA slot ${surveySlot} belum connect — survey tetap pending (scheduler akan coba lagi)`)
     return 'wa_not_connected'
   }
 

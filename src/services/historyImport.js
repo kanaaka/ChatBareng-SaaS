@@ -241,10 +241,19 @@ async function processChat(tx, tenantId, chatEntry, userMap, dryRun, result) {
 
   // v3.0 — chat find-or-create by [tenantId, waJid] (Chat.id Int). chatEntry.chatId
   // dari file JID-string dijadikan waJid lookup; entry.chatId diganti Int id hasil.
-  const existingChat = await tx.chat.findUnique({
-    where: { tenantId_waJid: { tenantId, waJid } },
-    select: { id: true, lastMessageAt: true },
-  })
+  // v3.9.2 K1-A — unik per (tenantId, numberSlot, waJid): restore/import = slot-0
+  // (chat lama dianggap slot-0); findFirst dgn slot eksplisit + fallback slot apapun
+  // (biar merge ke chat existing meski slot beda — import tidak boleh dobel baris).
+  const existingChat =
+    (await tx.chat.findFirst({
+      where: { tenantId, numberSlot: 0, waJid },
+      select: { id: true, lastMessageAt: true },
+    })) ||
+    (await tx.chat.findFirst({
+      where: { tenantId, waJid },
+      select: { id: true, lastMessageAt: true },
+      orderBy: { id: 'asc' },
+    }))
 
   if (existingChat) {
     chatEntry.chatId = existingChat.id // sambungkan Contact/ChatTag ke Int id
@@ -376,6 +385,7 @@ async function processChat(tx, tenantId, chatEntry, userMap, dryRun, result) {
       unreadCount: 0,
       transferUnseen: false,
       queuedAt: null,
+      numberSlot: 0, // v3.9.2 K1-A — chat restore = slot-0 (kompatibilitas chat lama)
     },
   })
   chatEntry.chatId = createdChat.id // Int id utk Contact/ChatTag pasca-create

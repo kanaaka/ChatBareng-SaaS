@@ -111,16 +111,18 @@ const CHAT_FETCH_INCLUDE = {
 /**
  * Cari chat existing by waJid → phoneJid → lidJid (urut id asc utk deterministik).
  * Return row Chat pertama yang cocok, atau null. Semua tenant-scoped.
+ * v3.9.2 K1-A — unik sekarang per (tenantId, numberSlot, waJid) → lookup by waJid
+ * pakai findFirst (bisa multiple baris per JID, 1 per slot). Opsi `slot` menyempitkan
+ * ke slot itu; null = slot apapun (urut id asc = paling lama, deterministik).
  */
-async function findChatByAnyJid(tenantId, phoneJidOrLid) {
+async function findChatByAnyJid(tenantId, phoneJidOrLid, slot = null) {
   const jid = String(phoneJidOrLid || '')
   if (!jid) return null
+  const slotWhere = (slot === null || slot === undefined) ? {} : { numberSlot: Number(slot) || 0 }
   return (
-    (await prisma.chat.findUnique({
-      where: { tenantId_waJid: { tenantId, waJid: jid } },
-    })) ||
-    (await prisma.chat.findFirst({ where: { tenantId, phoneJid: jid }, orderBy: { id: 'asc' } })) ||
-    (await prisma.chat.findFirst({ where: { tenantId, lidJid: jid }, orderBy: { id: 'asc' } })) ||
+    (await prisma.chat.findFirst({ where: { tenantId, ...slotWhere, waJid: jid }, orderBy: { id: 'asc' } })) ||
+    (await prisma.chat.findFirst({ where: { tenantId, ...slotWhere, phoneJid: jid }, orderBy: { id: 'asc' } })) ||
+    (await prisma.chat.findFirst({ where: { tenantId, ...slotWhere, lidJid: jid }, orderBy: { id: 'asc' } })) ||
     null
   )
 }
@@ -160,11 +162,14 @@ async function findExistingContactByPhone(tenantId, phone) {
   })
 }
 
-async function findChatByPhone(tenantId, phone) {
+async function findChatByPhone(tenantId, phone, slot = 0) {
   if (!phone) return null
   const jid = `${phone}@s.whatsapp.net`
-  const chat = await prisma.chat.findUnique({
-    where: { tenantId_waJid: { tenantId, waJid: jid } },
+  // v3.9.2 K1-A — unik per (tenantId, numberSlot, waJid) → findFirst by slot
+  // (default slot-0 = perilaku lama; start-chat dari kontak default slot-0).
+  const chat = await prisma.chat.findFirst({
+    where: { tenantId, numberSlot: Number(slot) || 0, waJid: jid },
+    orderBy: { id: 'asc' },
     include: CHAT_FETCH_INCLUDE,
   })
   return chat
@@ -322,6 +327,9 @@ router.post('/', ...rt, async (req, res) => {
 })
 
 // ─── GET /api/contacts/by-chat/:chatId — get or create by chat ─────────
+// v3.9.2 K1-A (C.7): lookup by-chat → tidak ketemu → fallback BY PHONE chat itu
+// (lintas slot OK — 1 identity kontak per orang). Hasil fallback TIDAK di-relink
+// otomatis ke chat ini (primary tetap chat aktif kontak) — cuma untuk tampilan.
 router.get('/by-chat/:chatId', ...rt, async (req, res) => {
   try {
     const chat = await prisma.chat.findFirst({ where: { id: Number(req.params.chatId), tenantId: req.tenantId } })
@@ -335,8 +343,18 @@ router.get('/by-chat/:chatId', ...rt, async (req, res) => {
     })
 
     if (!contact) {
+      // Fallback by-phone (K1-A C.7): kontak dengan nomor yang sama — 1 identity per orang
       const phoneNorm = normalizePhone(chat.contactPhone)
       const phone = phoneNorm.valid && !isLidDigits(chat.waJid) ? phoneNorm.normalized : null
+      if (phone) {
+        contact = await prisma.contact.findFirst({
+          where: { tenantId: req.tenantId, phone },
+          include: { chat: chatInclude() },
+        })
+        if (contact) {
+          return res.json({ contact: contactToJson(contact), linkedViaPhone: true })
+        }
+      }
       // v3.7 — ANTI-DOBEL: sebelum create, re-link kontak orphan (chatId=null,
       // data utuh — mis. hasil "Hapus Chat" mode keep) dgn nomor yang sama.
       const relinked = phone ? await relinkOrphanContact(req.tenantId, phone, chat.id, chat.contactName || null) : null
@@ -696,7 +714,9 @@ router.post('/import', ...rt, csvUpload.single('file'), async (req, res) => {
   }
 })
 
-// ─── POST /api/contacts/:id/open — chat again ──────────────────────────
+// ─── POST /api/contacts/:id/open — chat again ────────────────────────
+// v3.9.2 K1-A (D.10): default slot-0; UI boleh kirim body { numberSlot } utk
+// start chat via slot lain (chat terpisah per slot — cari slot itu dulu).──
 router.post('/:id/open', ...rt, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10)
@@ -741,8 +761,14 @@ router.post('/:id/open', ...rt, async (req, res) => {
       return prisma.chat.findFirst({ where: { id: ch.id, tenantId: req.tenantId }, include: CHAT_FETCH_INCLUDE })
     }
 
+    // v3.9.2 K1-A (D.10) — target slot: body.numberSlot (0..2) atau default slot-0.
+    const reqSlotRaw = Number(req.body?.numberSlot)
+    const openSlot = Number.isFinite(reqSlotRaw) && reqSlotRaw >= 0 && reqSlotRaw <= 2 ? Math.trunc(reqSlotRaw) : 0
+
     // Existing linked chat
-    if (contact.chatId && contact.chat) {
+    // v3.9.2 K1-A — bila caller minta slot LAIN dari primary: cari/create chat di
+    // slot itu (chat terpisah per slot), JANGAN selalu balikin chat primary.
+    if (contact.chatId && contact.chat && openSlot === (Number(contact.chat.numberSlot) || 0)) {
       let chat = contact.chat
       if (chat.status === 'resolved') {
         const reopenedCount = (chat.reopenedCount || 0) + 1
@@ -765,6 +791,7 @@ router.post('/:id/open', ...rt, async (req, res) => {
         unreadCount: chat.unreadCount,
         assignedTo: chat.assignedTo,
         tags: chat.tags,
+        numberSlot: chat.numberSlot || 0, // v3.9.2 K1-A — slot chat primary
         contactName: contact.name,
         contactPhone: contact.phone,
       } })
@@ -782,7 +809,8 @@ router.post('/:id/open', ...rt, async (req, res) => {
     const jid = `${phoneNorm.normalized}@s.whatsapp.net`
     // v3.5 §4 — cek dua arah sebelum create: waJid → phoneJid → lidJid
     // (chat LID yang mapping-nya sudah ke nomor ini = chat yang sama, bukan duplikat).
-    let chat = await findChatByAnyJid(req.tenantId, jid)
+    // v3.9.2 K1-A — scoped ke slot target: slot beda = chat beda.
+    let chat = await findChatByAnyJid(req.tenantId, jid, openSlot)
     if (chat) {
       chat = await prisma.chat.findFirst({ where: { id: chat.id, tenantId: req.tenantId }, include: CHAT_FETCH_INCLUDE })
     }
@@ -795,27 +823,28 @@ router.post('/:id/open', ...rt, async (req, res) => {
           contactPhone: phoneNorm.normalized,
           contactName: contact.name || null,
           phoneJid: jid,
+          numberSlot: openSlot, // v3.9.2 K1-A — chat start-chat milik slot target
           lastMessageAt: new Date(),
         },
         include: CHAT_FETCH_INCLUDE,
       })
     }
 
-    if (!contact.chatId) {
+    if (!contact.chatId || contact.chatId !== chat.id) {
       // v3.7 — ANTI-DOBEL: kontak orphan (mis. hasil "Hapus Chat" mode keep)
       // yang di-start chat lagi → re-link ke chat existing/baru by phone,
       // BUKAN biarkan orphan + bikin kontak dobel di jalur WA masuk nanti.
-      // Fallback C4 = SET row INI SAJA by id (bukan by phone!): helper relink
-      // null karena nomor sudah kepake kontak lain / invalid — kalau by phone
-      // bisa tabrak unique chatId milik kontak lain (500, kasus QA 4a).
-      // updateMany by id berkondisi chatId null = race-safe + no-op kalau
-      // row sudah ke-link proses lain.
+      // v3.9.2 K1-A (C.8) — kontak existing dgn chat lain (slot lain) juga ikut:
+      // chat yang dibuka sekarang = PRIMARY (terakhir aktif). relinkOrphanContact
+      // cuma pegang orphan (chatId=null); kontak ber-owner lewat fallback updateMany
+      // race-safe by id (chatId sudah null/kontak ini → aman ditimpa; unique chatId
+      // milik kontak lain → race → biarkan orphan, log).
       const relinked = await relinkOrphanContact(req.tenantId, contact.phone, chat.id, contact.name)
       if (!relinked) {
         try {
-          await prisma.contact.updateMany({ where: { id: contact.id, tenantId: req.tenantId, chatId: null }, data: { chatId: chat.id } })
+          await prisma.contact.updateMany({ where: { id: contact.id, tenantId: req.tenantId }, data: { chatId: chat.id } })
         } catch (e) {
-          // Unique chatId milik kontak lain (nomor double-row lama) — JANGAN 500;
+          // Unique chatId milik kontak lain (race) — JANGAN 500;
           // kontak biarkan orphan, chat tetap dibuka (log utk observer).
           console.error('[Contacts] re-link fallback chatId dilewati (unique):', e.message)
         }
@@ -845,6 +874,7 @@ router.post('/:id/open', ...rt, async (req, res) => {
       unreadCount: chat.unreadCount,
       assignedTo: chat.assignedTo,
       tags: chat.tags,
+      numberSlot: chat.numberSlot || 0, // v3.9.2 K1-A — slot chat start-chat
       contactName: contact.name,
       contactPhone: contact.phone,
     } })

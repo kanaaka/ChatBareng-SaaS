@@ -103,3 +103,42 @@ per nomor). Logout per-slot. Disconnect satu slot gak ganggu slot lain.
 - Restart 5047 by-PID 1x; health 200; t4/t8 reconnect (atau QR ready) sebelum lapor.
 - fisio 8770 & portable jangan disentuh. NO git commit (review Alita).
 - Report: `docs/report-v3.9.md` + ringkas di reply final.
+---
+
+# ADDENDUM K1-A — Chat Terpisah Beneran per Slot (owner locked 2026-09-23 20:27)
+
+> **Keputusan owner (20:27):** "Harus terpisah beneran biar nggak menimbulkan error di kemudian hari... Fix model itu yaaa." — Opsi A dipilih: 1 kontak × 3 nomor = 3 chat terpisah. Ini MENIMPA batasan M1 (1 chat/kontak). Re-audit penuh wajib pakai Kimi-K3 setelah fix.
+
+## A. Identitas chat
+1. **Chat unik per (tenantId, numberSlot, waJid)** — ganti `@@unique([tenantId, waJid])` → `@@unique([tenantId, numberSlot, waJid])`.
+2. `Chat.numberSlot` jadi **NOT NULL default 0** + backfill `null → 0` (chat lama = milik slot-0). Prisma menolak compound key dgn NULL (lesson v3.9.1) — makanya wajib NOT NULL.
+3. Kontak sama yang chat lewat 2 nomor beda tenant = **2 baris Chat berbeda**, masing-masing `numberSlot`-nya tetap (TIDAK toggle mengikuti pesan terakhir).
+
+## B. Routing inbound (pool.js)
+4. LID↔phone two-way routing (v3.5/v3.5.1) TETAP jalan, tapi **di-scope per slot**: resolve LID→phone dulu, lalu find-or-create chat by (tenantId, numberSlot, resolvedJid). Merge LID inline hanya antar chat DALAM slot yang sama — JANGAN pernah merge chat lintas slot.
+5. Pesan masuk di slot N TIDAK PERNAH menyentuh/mengubah chat milik slot lain (termasuk unread/queue state).
+
+## C. Kontak (model Contact) — identity per phone, bukan per chat
+6. Contact TETAP identity per (tenantId, phone) — 1 orang = 1 kontak (blast/tags/CSAT/notes gak boleh dobel).
+7. `Contact.chatId @unique` → maknanya **primary chat** (chat terakhir aktif kontak itu). Semua lookup by-chat (`/api/contacts/by-chat/:chatId`) HARUS fallback: by chatId → tidak ketemu → by phone chat itu (lintas slot OK).
+8. `contactRelink` (v3.7): re-link tetap by-phone tenant-scoped, target = chat yang sedang aktif (jadi primary). Hapus chat + kontak: kalau kontak masih link ke chat lain milik slot lain → kontak DIPERTAHANKAN (jangan buang identitas).
+
+## D. Reply & send path
+9. Reply SELALU via `chat.numberSlot` (sudah jalan di v3.9.1 — pertahankan, no-fallback).
+10. Start-chat dari kontak (POST /open) → default slot-0, kecuali UI kirim `numberSlot`.
+11. Blast/CSAT/scheduler/autoreply/gateway: pakai path existing per-slot (v3.9) — tidak berubah, TAPI blast & CSAT target chat tetap per-chat (jid sama, slot beda = baris chat beda).
+
+## E. UI
+12. Chat list & header chat: badge kecil nomor asal (label slot) di tiap chat — user harus selalu tau chat ini lewat nomor mana.
+13. Kontak page: 1 kontak per orang; detail kontak boleh menampilkan daftar chat-nya (nice-to-have, boleh menyusul).
+14. Admin WhatsApp: slot list + label + QR per slot (sudah ada) — tambah indikator jumlah chat per slot di daftar slot (nice-to-have).
+
+## F. Migration & safety
+15. Backup DB SEBELUM db push (SUDAH: backup/saas-v3-backup-20260923-2036-pre-k1a.db).
+16. db push additive: kolom numberSlot NOT NULL default 0 + backfill + ganti unique index. ❌ DILARANG --force-reset/--accept-data-loss/DROP. Kalau Prisma minta destructive → STOP & lapor.
+17. Zero-change tenant 1-nomor: Parahita #4 & Mazaya #8 (semua chat numberSlot 0) — perilaku identik sebelum/sesudah.
+18. Slot yang masih punya chat → DELETE slot ditolak 409 dgn pesan jelas (pilih logout saja, atau pindahkan chat manual). Update endpoint DELETE tenant-side & SA.
+
+## G. Acceptance
+19. Test E2E (tenant dummy): kontak X chat ke nomor A & nomor B → 2 chat terpisah, reply masing-masing via nomor masing-masing, queue pool mode menggabungkan keduanya, assigned mode route per slot.
+20. Chat lama (pre-v3.9) tetap kebaca & ke-reply via slot-0.

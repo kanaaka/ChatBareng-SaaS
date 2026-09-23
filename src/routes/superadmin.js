@@ -581,6 +581,7 @@ router.post(
 // DELETE /api/sa/tenants/:id/numbers/:slot — hapus slot (logout + hapus dir sesi slot itu).
 // slot-0 TIDAK boleh dihapus (slot utama = sesi existing). Sesi slot dihapus AMAN
 // (logoutTenant per-slot hanya menyentuh dir slot itu).
+// v3.9.2 K1-A (18): slot yang MASIH PUNYA chat → 409 dgn pesan jelas.
 router.delete('/tenants/:id/numbers/:slot', ...sa, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10)
@@ -591,6 +592,14 @@ router.delete('/tenants/:id/numbers/:slot', ...sa, async (req, res) => {
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
     const row = await prisma.tenantNumber.findUnique({ where: { tenantId_slot: { tenantId: id, slot } } })
     if (!row) return res.status(404).json({ error: 'Slot tidak terdaftar' })
+    // v3.9.2 K1-A (18) — slot masih punya chat → tolak 409 (chat gak boleh menggantung)
+    const chatCount = await prisma.chat.count({ where: { tenantId: id, numberSlot: slot } })
+    if (chatCount > 0) {
+      return res.status(409).json({
+        error: `Slot ${slot} masih punya ${chatCount} chat di tenant ini. Hapus/pindahkan chat-nya dulu (atau logout saja tanpa hapus slot) sebelum menghapus nomor.`,
+        chatCount,
+      })
+    }
     // Logout per-slot: sesi WA slot itu dihapus aman (slot lain tidak tersentuh)
     // v3.9 fix BUG-11: logout GAGAL → 409, row TIDAK dihapus (cegah socket hantu)
     try {

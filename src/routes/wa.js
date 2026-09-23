@@ -3,6 +3,7 @@ const router = express.Router()
 const { requireAuth, requireAdmin, requireTenant } = require('../auth')
 const wa = require('../wa/pool')
 const config = require('../config')
+const prisma = require('../prisma') // v3.9.2 K1-A — chatCount per slot di GET /status
 
 // v3.2 — Semua endpoint WA scoped per tenant (requireTenant men-set req.tenantId).
 // WA_DISABLED=1 → status balik { connected:false, disabled:true } tanpa menyentuh Baileys.
@@ -21,9 +22,18 @@ router.get('/status', ...rt, async (req, res) => {
   try {
     const s0 = wa.getStatusForTenant(req.tenantId, 0)
     // v3.9 — slots: daftar baris TenantNumber + status per-slot (additive field)
+    // v3.9.2 K1-A (E.14 nice-to-have) — chatCount per slot (berapa chat lewat nomor itu).
+    // Raw query — aman bila numberSlot masih nullable (sebelum db push produksi).
+    // Slot-0 SELALU disertakan (sintetis bila belum ada baris — compat tenant lama).
     let slots = []
     try {
       const rows = await wa.listTenantNumbers(req.tenantId)
+      const countRows = await prisma.$queryRawUnsafe(
+        'SELECT COALESCE(numberSlot, 0) AS slot, COUNT(*) AS cnt FROM Chat WHERE tenantId = ? GROUP BY COALESCE(numberSlot, 0)',
+        req.tenantId
+      )
+      const countMap = new Map(countRows.map((c) => [Number(c.slot) || 0, Number(c.cnt)]))
+      const seenSlots = new Set()
       slots = rows.map((n) => ({
         id: n.id,
         slot: n.slot,
@@ -33,7 +43,25 @@ router.get('/status', ...rt, async (req, res) => {
         reassignOffline: !!n.reassignOffline,
         waSessionDir: n.waSessionDir || null,
         status: wa.getStatusForTenant(req.tenantId, n.slot),
+        chatCount: countMap.get(n.slot) || 0, // v3.9.2 K1-A
+        _synthetic: !!n._synthetic,
       }))
+      for (const s of slots) seenSlots.add(s.slot)
+      // v3.9.2 — slot-0 implisit (bila belum ada baris TenantNumber slot-0)
+      if (!seenSlots.has(0)) {
+        slots.unshift({
+          id: 0,
+          slot: 0,
+          label: null,
+          routeMode: 'pool',
+          assignedAgentId: null,
+          reassignOffline: false,
+          waSessionDir: null,
+          status: wa.getStatusForTenant(req.tenantId, 0),
+          chatCount: countMap.get(0) || 0,
+          _synthetic: true,
+        })
+      }
     } catch (e) {
       console.error('[WA route] slots list error:', e.message)
     }
@@ -226,6 +254,7 @@ router.post('/numbers', ...rt, requireAdmin, async (req, res) => {
 })
 
 // DELETE /api/wa/numbers/:slot — hapus slot (v3.9 fix BUG-12): logout dulu (slot-0 tidak boleh dihapus)
+// v3.9.2 K1-A (18): slot yang MASIH PUNYA chat → 409 dgn pesan jelas.
 router.delete('/numbers/:slot', ...rt, requireAdmin, async (req, res) => {
   try {
     const slot = parseInt(req.params.slot, 10)
@@ -236,6 +265,15 @@ router.delete('/numbers/:slot', ...rt, requireAdmin, async (req, res) => {
     const prisma = require('../prisma')
     const row = await prisma.tenantNumber.findUnique({ where: { tenantId_slot: { tenantId: req.tenantId, slot } } })
     if (!row) return res.status(404).json({ error: 'Slot tidak ditemukan' })
+    // v3.9.2 K1-A (18) — slot masih punya chat → tolak 409 (chat gak boleh menggantung:
+    // reply chat itu butuh nomor slot ini). Pilihan: logout saja, atau pindahkan chat manual.
+    const chatCount = await prisma.chat.count({ where: { tenantId: req.tenantId, numberSlot: slot } })
+    if (chatCount > 0) {
+      return res.status(409).json({
+        error: `Slot ${slot} masih punya ${chatCount} chat. Hapus/pindahkan chat-nya dulu (atau logout saja tanpa hapus slot) sebelum menghapus nomor.`,
+        chatCount,
+      })
+    }
     try {
       await wa.logoutTenant(req.tenantId, slot) // end socket + hapus sesi dir slot ini
     } catch (logoutErr) {
