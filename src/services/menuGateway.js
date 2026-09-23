@@ -38,19 +38,19 @@ async function getConfig(tenantId) {
   const tid = Number(tenantId)
   if (!Number.isFinite(tid)) throw new Error('menuGateway.getConfig butuh tenantId')
   if (configCache.has(tid)) return configCache.get(tid)
-  let cfg = await prisma.menuGatewayConfig.findUnique({
-    where: { tenantId: tid },
+  // v3.9 fix BUG-1 (+ compound-NULL): Prisma menolak compound key dgn NULL → findFirst
+  let cfg = await prisma.menuGatewayConfig.findFirst({
+    where: { tenantId: tid, numberSlot: null },
     include: { options: { orderBy: { position: 'asc' } } },
   })
   if (!cfg) {
     cfg = await prisma.menuGatewayConfig.create({
-      data: { tenantId: tid },
+      data: { tenantId: tid, numberSlot: null },
       include: { options: { orderBy: { position: 'asc' } } },
     }).catch(async (e) => {
-      // Race dengan proses lain — baca ulang
       if (e.code === 'P2002') {
-        return prisma.menuGatewayConfig.findUnique({
-          where: { tenantId: tid },
+        return prisma.menuGatewayConfig.findFirst({
+          where: { tenantId: tid, numberSlot: null },
           include: { options: { orderBy: { position: 'asc' } } },
         })
       }
@@ -232,7 +232,7 @@ async function startFlow(chat) {
     // Guard total: gateway OFF → bukan jalur menu (caller memutuskan jalur lama)
     if (!cfg.enabled) return false
     // greetMode menu-nya di-evaluasi caller; defense-in-depth: cek lagi di sini
-    const autoCfg = await prisma.autoReplyConfig.findUnique({ where: { tenantId } })
+    const autoCfg = await prisma.autoReplyConfig.findFirst({ where: { tenantId, numberSlot: null } })
     if (!autoCfg || !autoCfg.greetEnabled || autoCfg.greetMode !== 'menu') return false
 
     // Repeat frequency (D6/F4) — CEK SEBELUM claim (anti-orphan v0.13.3): repeat

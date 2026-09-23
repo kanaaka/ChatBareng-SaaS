@@ -121,8 +121,9 @@ async function runBlast(blastId) {
       currentSlot = activeSlots[rrIndex]
       return currentSlot
     }
-    if (rotateEvery > 0) nextSlot() // initial resolve
-    else currentSlot = fixedSlot
+    // FIX BUG-9 (off-by-one): JANGAN panggil nextSlot() di init — pesan pertama
+    // harus mulai dari activeSlots[0] (currentSlot sudah di-set di atas).
+    if (rotateEvery <= 0) currentSlot = fixedSlot
 
     // Update status to running
     await prisma.blast.update({
@@ -216,22 +217,24 @@ async function runBlast(blastId) {
           // v3.9 — slot pengirim: rotateEvery → round-robin antar slot connected;
           // off = fixed slot (slot pertama terpilih). Slot mati → kirim gagal
           // (BlastLog.failed dgn pesan jelas; TIDAK fallback ke nomor lain).
-          const sendSlot = rotateEvery > 0 && activeSlots.length > 0 ? nextSlot() : currentSlot
+          let sendSlotBlast = currentSlot
+
+          try { sendSlotBlast = rotateEvery > 0 && activeSlots.length > 0 ? nextSlot() : currentSlot } catch {}
           if (hasMedia) {
             // Image with caption — decrypt the media file before sending
             // blast.mediaPath points to an ENCRYPTED file on disk; Baileys
             // needs the raw (decrypted) buffer, same as regular chat media.
             const mediaBuffer = loadMedia(blast.mediaPath)
-            await wa.sendMediaForTenant(tenantId, jid, mediaBuffer, 'image', 'image/jpeg', personalizedMsg, null, { slot: sendSlot })
+            await wa.sendMediaForTenant(tenantId, jid, mediaBuffer, 'image', 'image/jpeg', personalizedMsg, null, { slot: sendSlotBlast })
           } else {
             // Text only
-            await wa.sendMessageForTenant(tenantId, jid, personalizedMsg, { slot: sendSlot })
+            await wa.sendMessageForTenant(tenantId, jid, personalizedMsg, { slot: sendSlotBlast })
           }
 
           // Update log (+ senderSlot v3.9 — audit nomor pengirim per baris)
           await prisma.blastLog.update({
             where: { id: log.id },
-            data: { status: 'sent', sentAt: new Date(), senderSlot: sendSlot },
+            data: { status: 'sent', sentAt: new Date(), senderSlot: sendSlotBlast },
           })
 
           sentCount++
@@ -240,7 +243,7 @@ async function runBlast(blastId) {
           
           await prisma.blastLog.update({
             where: { id: log.id },
-            data: { status: 'failed', error: err.message?.slice(0, 500) || 'Unknown error', senderSlot: sendSlot },
+            data: { status: 'failed', error: err.message?.slice(0, 500) || 'Unknown error', senderSlot: sendSlotBlast },
           })
 
           failedCount++

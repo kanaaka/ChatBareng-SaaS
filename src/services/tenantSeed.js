@@ -33,7 +33,7 @@ async function seedTenantDefaults(tenantId) {
   }
 
   // ── 2. AutoReplyConfig (v0.7.0 — default kedua fitur OFF) ──
-  const ar = await prisma.autoReplyConfig.findUnique({ where: { tenantId: tid } })
+  const ar = await prisma.autoReplyConfig.findFirst({ where: { tenantId: tid, numberSlot: null } })
   if (!ar) {
     await prisma.autoReplyConfig.create({ data: { tenantId: tid } })
     seeded.push('autoReplyConfig')
@@ -71,7 +71,7 @@ async function seedTenantDefaults(tenantId) {
   }
 
   // ── 7. MenuGatewayConfig (v0.13.0 — default OFF, tanpa opsi) ──
-  const mg = await prisma.menuGatewayConfig.findUnique({ where: { tenantId: tid } })
+  const mg = await prisma.menuGatewayConfig.findFirst({ where: { tenantId: tid, numberSlot: null } })
   if (!mg) {
     await prisma.menuGatewayConfig.create({ data: { tenantId: tid } })
     seeded.push('menuGatewayConfig')

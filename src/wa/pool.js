@@ -525,9 +525,10 @@ async function handleLoggedOut(st) {
 /**
  * Soft disconnect: end socket, SESI TETAP ada di disk (tinggal connect lagi).
  */
-async function disconnectTenant(tenantId) {
+async function disconnectTenant(tenantId, slot = 0) {
   const tid = Number(tenantId)
-  const st = pool.get(tid)
+  const s = Number(slot) || 0
+  const st = pool.get(slotKey(tid, s))
   if (!st) return { ok: true, state: 'disconnected' }
 
   st.manualDisconnect = true
@@ -554,9 +555,10 @@ async function disconnectTenant(tenantId) {
  * Logout penuh: logout dari WA + hapus dir sesi + clear Tenant.waPhone.
  * waSessionDir string di DB dibiarkan (dir dibuat ulang saat connect berikutnya).
  */
-async function logoutTenant(tenantId) {
+async function logoutTenant(tenantId, slot = 0) {
   const tid = Number(tenantId)
-  const st = pool.get(tid)
+  const s = Number(slot) || 0
+  const st = pool.get(slotKey(tid, s))
 
   if (st) {
     st.manualDisconnect = true
@@ -903,10 +905,10 @@ async function mergeLidIntoPhoneChat(tid, lidChat, phoneJid) {
  * (tidak memblokir persist pesan). Dapat phone → update chat LID + merge guard;
  * gagal → kirim requestPhoneNumber SEKALI per LID (Set per socket, reset saat reconnect).
  */
-function maybeResolveLidChat(tid, chat, sock) {
+function maybeResolveLidChat(tid, chat, sock, slot = 0) {
   try {
     if (!chat.waJid.endsWith('@lid') || chat.phoneJid) return
-    const st = pool.get(tid)
+    const st = pool.get(slotKey(tid, Number(slot) || 0))
     if (!sock || !st) return
     resolveLidToPhone(sock, chat.waJid)
       .then(async (phoneJid) => {
@@ -1243,7 +1245,7 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
 
   // v3.5 §2 — inline LID resolve (fire-and-forget; tidak memblokir persist)
   if (!msg.key.fromMe) {
-    maybeResolveLidChat(tid, chat, getSocketForTenant(tid))
+    maybeResolveLidChat(tid, chat, getSocketForTenant(tid, inboxSlot), inboxSlot)
   }
 
   if (!msg.key.fromMe) {

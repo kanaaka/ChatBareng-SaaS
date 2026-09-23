@@ -2309,3 +2309,32 @@ All notable changes to this project will be documented in this file.
 - Frontend-only, build ulang (index--Z7HdcXL.js + BrandLogo-Ddr-f2ho.js). Verified compiled chunk render pakai computed, bukan prop.
 - **Follow-up test Kanaka (15:02):** masih "ChatBareng" doang (malah suffix hilang) → akar kedua: state di `utils/branding.js` = plain object singleton GAK reactive → hard refresh render pertama dgn state kosong, `loadBrandingAndPlan()` isi belakangan → Vue GAK re-render (computed stuck). Repro @vue/reactivity: plain NO, reactive YES. **Fix #2:** state dibungkus `reactive()` (import dari vue) — render ulang otomatis pas fetch selesai. Build final: index-CGRBOmCz.js.
 - **v3.7.1 hotfix tambahan — "Logout & Clear Session" gak bisa (Admin WhatsApp):** backend route `POST /api/wa/logout` wajib guard `?confirm=true` (sejak v3.2), frontend masih POST telanjang → 400 'Konfirmasi diperlukan' senyap (console.error doang) → tombol keliatan mati. Fix: teruskan konfirmasi dialog M3 ke API (`?confirm=true`) + toast feedback sukses/gagal. Kena SaaS saja (non-SaaS gak ada guard). Bundle: index-C2M70e0Z.js.
+
+## v3.9 — 2026-09-23
+### Multi-Nomor WA per Tenant (Pool / Assigned / Mix)
+- **Tiap tenant bisa nautkan hingga 3 nomor WA** (slot 0–2; kuota diatur superadmin via plan `maxNumbers`, hard cap 3; kuota dihitung dari slot yang ADA)
+- **3 mode routing** (Tenant.waMode): `pool` (antrean sama, sumber multi-nomor transparan) / `assigned` (nomor → agent tertentu, born-assigned) / `mix` (per-slot: sebagian pool, sebagian assigned + tick reassign-opsional default OFF)
+- **Aturan tunggal balas via nomor penerima** — slot asal mati saat reply = kirim GAGAL dgn pesan jelas (JANGAN fallback ke nomor lain, keputusan owner)
+- **Auto-reply & menu gateway:** "Terapkan ke: Semua nomor (linked, default) / Nomor ini saja" (per-slot config + fallback shared)
+- **Blast:** multi-select nomor pengirim + rotate tiap N pesan (round-robin antar slot connected) + BlastLog senderSlot
+- **Superadmin:** modal "Nomor WA" per tenant (slot mgmt + kuota) + plan field Maks. Nomor WA
+- **Tenant Admin→WhatsApp:** daftar slot + label + QR/pairing/logout per slot
+- Schema additive: `TenantNumber` + `Tenant.waMode` + `Chat.numberSlot` + dst (backup: saas-v3-backup-20260923-155256.db; counts verified 2 tenant/9 user)
+- Tenant 1-nomor = zero behavior change (slot-0 = path sesi lama, tidak dimigrasi)
+- Report: docs/report-v3.9.md; spec: docs/spec-v3.9-multi-wa.md (keputusan owner locked 18:24)
+
+
+## v3.9.1 — 2026-09-23 (hotfix audit Kimi)
+### 12 bug dari dual-audit (Kimi-K3 & Kimi-K2.7) difix
+- **C1/C2:** `logoutTenant(tenantId, slot)` + `disconnectTenant(tenantId, slot)` slot-aware + pakai slotKey (pool key string `tid:slot`) — logout 500 fixed; reconnect per-slot benar
+- **BUG-4/5:** LID inline resolve pakai socket slot penerima; reconnect chain membersihkan state lama
+- **H1/BUG-1 (sistemik):** semua lookup legacy `where:{tenantId}` pada AutoReplyConfig/MenuGatewayConfig → compound `tenantId_numberSlot` (12 call-site: services, routes, tenantSeed) — autoreply & menu gateway mati total sebelum ini
+- **compound-NULL:** Prisma menolak compound key dgn `numberSlot: null` → shared row via `findFirst` + update by id (semua call-site)
+- **C3/BUG-12:** endpoint `POST/DELETE /api/wa/numbers*` ditambah (kuota plan.maxNumbers → 403); PUT tetap update-only untuk row yang ada
+- **H2/BUG-13:** blast `sendSlot` di-hoist sebelum try (catch crash fixed)
+- **BUG-9:** blast round-robin mulai dari `activeSlots[0]` (off-by-one)
+- **BUG-10:** SA POST numbers menolak slot > 2 (sebelumnya slot=3 lolos → slot yatim makan kuota)
+- **BUG-11:** SA DELETE slot → 409 bila logout gagal (cegah socket hantu)
+- **BUG-6:** reply gagal → response API + broadcast membawa `waError` (CS tau slot mana mati)
+- **BUG-14:** GET numbers `used` konsisten hitung dari DB
+- Verified runtime: `getConfig(4)` OK untuk kedua model (smoke test), 12 file syntax OK, build sukses, app restarted by-PID (54240→56509), health 200, QR siap scan

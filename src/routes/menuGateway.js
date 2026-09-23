@@ -255,7 +255,7 @@ router.get('/', ...rt, featMenuGatewayGate, async (req, res) => {
     const waitingCount = await menuGateway.countWaiting(req.tenantId)
     // v0.13.2 — greetMode/greetEnabled ikut dikirim (sumber tampilan radio Auto Reply;
     // enabled = satu saklar efektif bersama radio greeting — sync 2 arah)
-    const autoCfg = await prisma.autoReplyConfig.findUnique({ where: { tenantId: req.tenantId }, select: { greetEnabled: true, greetMode: true } })
+    const autoCfg = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { greetEnabled: true, greetMode: true } })
     res.json({ config: cfg, waitingCount, greetEnabled: autoCfg?.greetEnabled ?? false, greetMode: autoCfg?.greetMode ?? 'text', numberSlot: cfg.numberSlot ?? null })
   } catch (e) {
     console.error('MenuGateway GET error:', e)
@@ -315,9 +315,27 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
         if (e.code !== 'P2002') throw e
       })
     }
+    // v3.9 fix BUG-1 (+compound-NULL): shared row (targetSlot null) → cari dulu by findFirst
+    // (Prisma menolak compound key dgn NULL). Per-slot row → compound key valid (non-null).
+    let sharedRowId = null
+    if (!perSlot) {
+      const sharedRow = await prisma.menuGatewayConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
+      sharedRowId = sharedRow?.id || null
+    }
     const whereKey = perSlot
       ? { tenantId_numberSlot: { tenantId: req.tenantId, numberSlot: targetSlot } }
-      : { tenantId: req.tenantId }
+      : { id: sharedRowId }
+    if (!perSlot && !sharedRowId) {
+      // row shared belum ada — buat dulu (link-all save sebelum seed)
+      const created = await prisma.menuGatewayConfig.create({
+        data: { tenantId: req.tenantId, numberSlot: null },
+        include: { options: { orderBy: { position: 'asc' } } },
+      }).catch(async (e) => {
+        if (e.code !== 'P2002') throw e
+        return prisma.menuGatewayConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, include: { options: { orderBy: { position: 'asc' } } } })
+      })
+      sharedRowId = created?.id
+    }
     const cfg = await prisma.$transaction(async (tx) => {
       const cfgRow = await tx.menuGatewayConfig.findUnique({ where: whereKey })
       const cfgId = cfgRow?.id

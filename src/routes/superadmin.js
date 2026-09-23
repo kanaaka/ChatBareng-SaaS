@@ -493,7 +493,8 @@ router.get('/tenants/:id/numbers', ...sa, async (req, res) => {
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
     const slots = await waSlotsFor(id)
     const maxNumbers = await effectiveMaxNumbers(id)
-    res.json({ slots, maxNumbers, used: slots.length, waMode: tenant.waMode || 'pool' })
+    const usedDb = await prisma.tenantNumber.count({ where: { tenantId: id } }) // v3.9 fix BUG-14: konsisten dgn POST (hitung dari DB)
+    res.json({ slots, maxNumbers, used: Math.max(usedDb, 1), waMode: tenant.waMode || 'pool' })
   } catch (e) {
     console.error('[SA] List numbers error:', e)
     res.status(500).json({ error: 'Internal server error' })
@@ -517,8 +518,8 @@ router.post(
       if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
 
       const slot = parseInt(req.body.slot, 10)
-      if (!Number.isFinite(slot) || slot < 0 || slot > SA_MAX_NUMBERS_HARD_CAP) {
-        return res.status(400).json({ error: `Slot harus 0..${SA_MAX_NUMBERS_HARD_CAP}` })
+      if (!Number.isFinite(slot) || slot < 0 || slot > SA_MAX_NUMBERS_HARD_CAP - 1) {
+        return res.status(400).json({ error: `Slot harus 0..${SA_MAX_NUMBERS_HARD_CAP - 1} (maks ${SA_MAX_NUMBERS_HARD_CAP} nomor)` })
       }
 
       const maxNumbers = await effectiveMaxNumbers(id)
@@ -591,10 +592,12 @@ router.delete('/tenants/:id/numbers/:slot', ...sa, async (req, res) => {
     const row = await prisma.tenantNumber.findUnique({ where: { tenantId_slot: { tenantId: id, slot } } })
     if (!row) return res.status(404).json({ error: 'Slot tidak terdaftar' })
     // Logout per-slot: sesi WA slot itu dihapus aman (slot lain tidak tersentuh)
+    // v3.9 fix BUG-11: logout GAGAL → 409, row TIDAK dihapus (cegah socket hantu)
     try {
       await wa.logoutTenant(id, slot)
     } catch (e) {
-      console.error(`[SA] logout slot ${slot} error (non-fatal):`, e.message)
+      console.error(`[SA] logout slot ${slot} error:`, e.message)
+      return res.status(409).json({ error: `Gagal logout slot ${slot}: ${e.message}. Slot tidak dihapus — coba lagi setelah perbaikan koneksi.` })
     }
     await prisma.tenantNumber.delete({ where: { id: row.id } })
     console.log(`[SA] Tenant #${id} (${tenant.name}) number slot=${slot} DIHAPUS by @${req.user.username}`)

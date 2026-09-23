@@ -848,9 +848,10 @@ router.post('/:id/reply', ...rt, replyValidation, async (req, res) => {
     // v3.9 — ATURAN TUNGGAL reply: keluar via nomor ASAL chat (numberSlot);
     // slot mati → GAGAL dgn pesan jelas, JANGAN fallback ke nomor lain (owner 18:24).
     const replySlot = Number(chat.numberSlot) || 0
+    let waSendError = null // v3.9 fix BUG-6: alasan gagal per-slot ke CS (bukan cuma di log)
     const waResult = await wa.sendMessageForTenant(req.tenantId, chat.waJid, personalizedContent, { slot: replySlot }).catch((err) => {
       console.error('[Chats] WA send error (non-fatal, tetap simpan):', err.message)
-      err._replySlotFailed = true
+      waSendError = err.message
       return null
     })
     // v3.9 — bila reply slot-0 juga gagal not-connected → pesan ke CS tetap jelas
@@ -925,7 +926,7 @@ router.post('/:id/reply', ...rt, replyValidation, async (req, res) => {
     // (fire-and-forget; gate AppConfig di dalam service, default OFF)
     receipts.markIncomingRead(req.tenantId, chat.id).catch(e => console.error('[Receipts] reply:', e.message))
 
-    res.json({ message: messageOut })
+    res.json({ message: messageOut, waError: waSendError || undefined }) // v3.9 fix BUG-6
   } catch (e) {
     console.error('Reply error:', e)
     res.status(500).json({ error: e.message || 'Internal server error' })

@@ -148,11 +148,14 @@ router.put('/', ...rt, async (req, res) => {
     // JANGAN menimpa config shared. Tanpa mode itu → update config shared (compat).
     let cfg
     if (numberSlotSpecified && numberSlotValue !== null) {
-      cfg = await prisma.autoReplyConfig.upsert({
-        where: { tenantId: req.tenantId },
-        update: {},
-        create: { tenantId: req.tenantId },
-      })
+      // v3.9 fix BUG-1 (+compound-NULL): shared row via findFirst + update/create
+      cfg = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null } })
+      if (!cfg) {
+        cfg = await prisma.autoReplyConfig.create({ data: { tenantId: req.tenantId, numberSlot: null } }).catch(async (e) => {
+          if (e.code === 'P2002') return prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null } })
+          throw e
+        })
+      }
       // Bila row shared JUGA belum ada → salin nilai lama dulu (clone), lalu update
       cfg = await prisma.autoReplyConfig.create({
         data: { tenantId: req.tenantId, numberSlot: numberSlotValue, ...data, updatedById: req.user.id },
@@ -167,7 +170,7 @@ router.put('/', ...rt, async (req, res) => {
     } else {
       if (numberSlotSpecified) data.numberSlot = null // eksplisit link-all
       cfg = await prisma.autoReplyConfig.update({
-        where: { tenantId: req.tenantId },
+        where: { id: (await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } }))?.id },
         data: { ...data, updatedById: req.user.id },
       })
     }
@@ -181,11 +184,17 @@ router.put('/', ...rt, async (req, res) => {
     if (data.greetMode !== undefined) {
       const menuGatewaySvc = require('../services/menuGateway')
       if (data.greetMode === 'menu') {
-        await prisma.menuGatewayConfig.upsert({
-          where: { tenantId: req.tenantId },
-          update: { enabled: true, updatedById: req.user.id },
-          create: { tenantId: req.tenantId, enabled: true, updatedById: req.user.id },
-        })
+        // v3.9 fix: shared row via findFirst (compound-NULL ditolak Prisma)
+        const mgShared = await prisma.menuGatewayConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
+        if (mgShared) {
+          await prisma.menuGatewayConfig.update({ where: { id: mgShared.id }, data: { enabled: true, updatedById: req.user.id } })
+        } else {
+          await prisma.menuGatewayConfig.create({ data: { tenantId: req.tenantId, numberSlot: null, enabled: true, updatedById: req.user.id } }).catch(async (e) => {
+            if (e.code !== 'P2002') throw e
+            const again = await prisma.menuGatewayConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
+            if (again) await prisma.menuGatewayConfig.update({ where: { id: again.id }, data: { enabled: true, updatedById: req.user.id } })
+          })
+        }
         menuGatewayEnabled = true
       } else {
         const off = await prisma.menuGatewayConfig.updateMany({ where: { tenantId: req.tenantId }, data: { enabled: false } })

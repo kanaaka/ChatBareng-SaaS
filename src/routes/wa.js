@@ -198,6 +198,57 @@ router.put('/numbers/:slot', ...rt, requireAdmin, async (req, res) => {
   }
 })
 
+// POST /api/wa/numbers — tambah slot (v3.9 fix BUG-12): cek kuota plan.maxNumbers (403 bila penuh, K4)
+router.post('/numbers', ...rt, requireAdmin, async (req, res) => {
+  try {
+    const slot = parseInt(req.body.slot, 10)
+    if (!Number.isFinite(slot) || slot < 0 || slot > wa.MAX_SLOT) {
+      return res.status(400).json({ error: `Slot tidak valid (0..${wa.MAX_SLOT})` })
+    }
+    const prisma = require('../prisma')
+    const plans = require('../services/plans')
+    const existing = await prisma.tenantNumber.findUnique({ where: { tenantId_slot: { tenantId: req.tenantId, slot } } })
+    if (existing) return res.status(409).json({ error: 'Slot ini sudah ada' })
+    const plan = await plans.getPlan(req.tenantId)
+    const maxN = (plan?.maxNumbers == null || !Number.isFinite(Number(plan.maxNumbers))) ? 1 : Math.max(0, Math.trunc(Number(plan.maxNumbers)))
+    const effMax = Math.min(maxN, wa.MAX_SLOT + 1)
+    const used = await prisma.tenantNumber.count({ where: { tenantId: req.tenantId } })
+    if (used >= effMax) {
+      return res.status(403).json({ error: `Kuota nomor penuh (${used}/${effMax}). Perbarui langganan/plan untuk menambah nomor.` })
+    }
+    const label = String(req.body.label || '').trim().slice(0, 50) || null
+    const row = await prisma.tenantNumber.create({ data: { tenantId: req.tenantId, slot, label } })
+    res.status(201).json({ number: row })
+  } catch (e) {
+    console.error('[WA route] numbers POST error:', e)
+    res.status(500).json({ error: e.message || 'Internal server error' })
+  }
+})
+
+// DELETE /api/wa/numbers/:slot — hapus slot (v3.9 fix BUG-12): logout dulu (slot-0 tidak boleh dihapus)
+router.delete('/numbers/:slot', ...rt, requireAdmin, async (req, res) => {
+  try {
+    const slot = parseInt(req.params.slot, 10)
+    if (!Number.isFinite(slot) || slot < 0 || slot > wa.MAX_SLOT) {
+      return res.status(400).json({ error: `Slot tidak valid (0..${wa.MAX_SLOT})` })
+    }
+    if (slot === 0) return res.status(400).json({ error: 'Slot-0 (nomor utama) tidak bisa dihapus — gunakan logout WhatsApp saja' })
+    const prisma = require('../prisma')
+    const row = await prisma.tenantNumber.findUnique({ where: { tenantId_slot: { tenantId: req.tenantId, slot } } })
+    if (!row) return res.status(404).json({ error: 'Slot tidak ditemukan' })
+    try {
+      await wa.logoutTenant(req.tenantId, slot) // end socket + hapus sesi dir slot ini
+    } catch (logoutErr) {
+      return res.status(409).json({ error: `Gagal logout slot ${slot}: ${logoutErr.message}. Slot tidak dihapus.` })
+    }
+    await prisma.tenantNumber.delete({ where: { id: row.id } })
+    res.json({ ok: true, deletedSlot: slot })
+  } catch (e) {
+    console.error('[WA route] numbers DELETE error:', e)
+    res.status(500).json({ error: e.message || 'Internal server error' })
+  }
+})
+
 // PUT /api/wa/mode — tenant.waMode = pool | assigned | mix (admin tenant)
 router.put('/mode', ...rt, requireAdmin, async (req, res) => {
   try {

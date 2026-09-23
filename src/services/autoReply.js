@@ -40,11 +40,12 @@ async function getConfig(tenantId) {
   const tid = Number(tenantId)
   if (!Number.isFinite(tid)) throw new Error('autoReply.getConfig butuh tenantId')
   if (configCache.has(tid)) return configCache.get(tid)
-  let cfg = await prisma.autoReplyConfig.findUnique({ where: { tenantId: tid } })
+  // v3.9 fix BUG-1 (+ compound-NULL fix): Prisma menolak compound key dgn NULL → findFirst
+  let cfg = await prisma.autoReplyConfig.findFirst({ where: { tenantId: tid, numberSlot: null } })
   if (!cfg) {
-    cfg = await prisma.autoReplyConfig.create({ data: { tenantId: tid } }).catch(async (e) => {
+    cfg = await prisma.autoReplyConfig.create({ data: { tenantId: tid, numberSlot: null } }).catch(async (e) => {
       // Race dengan server lain — baca ulang
-      if (e.code === 'P2002') return prisma.autoReplyConfig.findUnique({ where: { tenantId: tid } })
+      if (e.code === 'P2002') return prisma.autoReplyConfig.findFirst({ where: { tenantId: tid, numberSlot: null } })
       throw e
     })
   }

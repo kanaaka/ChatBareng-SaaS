@@ -346,6 +346,11 @@ function validateClient() {
 async function fetchAll() {
   try {
     const res = await axios.get(`${API}/api/menu-gateway`)
+    // v3.9 fix BUG-7 — daftar slot (untuk dropdown Terapkan ke)
+    try {
+      const st = await axios.get(`${API}/api/wa/status`)
+      waSlots.value = st.data.slots || []
+    } catch {}
     const cfg = res.data.config
     form.value.enabled = !!cfg.enabled
     form.value.introText = cfg.introText || ''
@@ -422,6 +427,11 @@ async function save() {
     saving.value = false
   }
 }
+
+// v3.9 — Terapkan ke: 'all' (link-all, default) | slot 0..2 (fix BUG-7: deklarasi hilang)
+const waSlots = ref([])
+const applySlot = ref('all')
+const applyingToSlot = computed(() => (applySlot.value === 'all' ? null : Number(applySlot.value)))
 
 onMounted(fetchAll)
 </script>
