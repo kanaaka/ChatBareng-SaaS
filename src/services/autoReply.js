@@ -52,9 +52,29 @@ async function getConfig(tenantId) {
   return cfg
 }
 
+/**
+ * v3.9 — resolve config untuk SLOT tertentu: baris dgn numberSlot = slot → menang;
+ * tidak ada → fallback config shared (numberSlot null = link-all). Cache per
+ * (tenantId:slot) — invalidateConfig tetap membersihkan semuanya.
+ */
+async function getConfigForSlot(tenantId, slot = 0) {
+  const tid = Number(tenantId)
+  const s = Number(slot) || 0
+  const key = `${tid}:${s}`
+  if (configCache.has(key)) return configCache.get(key)
+  let cfg = await prisma.autoReplyConfig.findFirst({
+    where: { tenantId: tid, OR: [{ numberSlot: s }, { numberSlot: null }] },
+    orderBy: [{ numberSlot: 'desc' }], // slot-spesifik (non-null) menang di atas null
+  })
+  if (!cfg) cfg = await getConfig(tid) // fallback seed/compat
+  configCache.set(key, cfg)
+  return cfg
+}
+
 function invalidateConfig(tenantId) {
-  if (tenantId === undefined) configCache.clear()
-  else configCache.delete(Number(tenantId))
+  // v3.9 — cache key kini bisa tenantId ATAU "tenantId:slot" → clear semua
+  // (jumlah entry kecil; paling aman untuk kedua bentuk key).
+  configCache.clear()
 }
 
 // ─── WIB helpers (Asia/Jakarta, bukan timezone server) ─────────────────
@@ -298,8 +318,9 @@ async function sendAutoText(chat, text, today) {
 
   try {
     // Kirim via pool per-tenant (v3 — sendMessage legacy global dihapus).
+    // v3.9 — via nomor asal chat (numberSlot; null = slot-0 compat) — JANGAN fallback.
     const wa = require('../wa/pool')
-    await wa.sendMessageForTenant(tenantId, chat.waJid, finalText)
+    await wa.sendMessageForTenant(tenantId, chat.waJid, finalText, { slot: Number(chat.numberSlot) || 0 })
   } catch (sendErr) {
     // Send gagal → revert marker + log (tidak hang selamanya).
     // Null-kan hanya jika marker masih = today (klaim kita sendiri) —
@@ -369,7 +390,8 @@ async function maybeAutoReply(chat, msg) {
   try {
     const chatId = chat.id
     const tenantId = chat.tenantId
-    const cfg = await getConfig(tenantId)
+    // v3.9 — config resolved per SLOT asal chat (link-all null = fallback shared)
+    const cfg = await getConfigForSlot(tenantId, chat.numberSlot)
 
     // OFF total → tidak lakukan apa-apa (tidak klaim marker)
     if (!cfg.outsideHoursEnabled && !cfg.greetEnabled && !(cfg.greetMode === 'menu')) return { sent: false }

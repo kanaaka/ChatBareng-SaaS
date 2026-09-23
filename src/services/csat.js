@@ -178,7 +178,8 @@ async function sendSurveyMessage(surveyId) {
   }
 
   const finalText = personalizeText(cfg.message, chat.contactName)
-  await wa.sendMessageForTenant(tenantId, chat.waJid, finalText)
+  // v3.9 — via nomor asal chat (numberSlot; null = slot-0 compat)
+  await wa.sendMessageForTenant(tenantId, chat.waJid, finalText, { slot: Number(chat.numberSlot) || 0 })
 
   // v0.12.9 — implied read: survey CSAT menjawab pelanggan → receipt biru
   try {

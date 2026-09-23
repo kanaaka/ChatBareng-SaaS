@@ -29,12 +29,18 @@ model Tenant {
   id           Int      @id @default(autoincrement())
   name         String   @unique
   status       String   @default("active") // active | suspended
-  waPhone      String?  // fase 2
-  waSessionDir String?  // fase 2
+  waPhone      String?  // fase 2 (slot-0; nomor utama)
+  waSessionDir String?  // fase 2 (dir sesi slot-0 — JANGAN migrasi: sesi existing parahita/mazaya tinggal di sini)
   createdAt    DateTime @default(now())
   users        User[]
   chats       Chat[]
   plan         TenantPlan? // v3.4 — plan & kuota per-tenant (1:1)
+  // ═══ v3.9 — Multi-nomor WA per tenant (ADDITIVE kolom) ═══
+  // waMode: "pool" (default, semua slot masuk antrean umum) | "assigned" (semua slot
+  // born-assigned ke agent slot) | "mix" (per-slot: slot dgn assignedAgentId=assigned,
+  // sisanya pool). Tenant 1 nomor = zero behavior change (spec §0 HARD RULE).
+  waMode       String   @default("pool")
+  numbers      TenantNumber[]
 
   // v3.4 — branding per-tenant (header "<brandName> by ChatBareng")
   brandName    String? // kosong/null = tampil "ChatBareng" polos
@@ -140,6 +146,10 @@ model Chat {
   // NULL + waJid @g.us = grup yatim (hanya admin yang melihat).
   picUserId             Int?
   pic                   User?      @relation("groupPics", fields: [picUserId], references: [id])
+  // ═══ v3.9 — Multi-nomor (ADDITIVE kolom) ═══
+  // numberSlot: slot nomor WA asal pesan masuk (0..2). Null = chat lama (pre-v3.9)
+  // ATAU tenant belum punya baris TenantNumber — reply slot-0 (kompatibilitas §0).
+  numberSlot            Int?
   createdAt             DateTime   @default(now())
   updatedAt             DateTime   @updatedAt
 
@@ -148,6 +158,7 @@ model Chat {
   @@index([tenantId, status, assignedToId])
   @@index([waJid])
   @@index([tenantId, lidJid]) // v3.5 — lookup routing dua arah LID ↔ phone
+  @@index([tenantId, numberSlot]) // v3.9 — routing per-slot
 }
 
 // v0.12.9 — Pengaturan global (admin, universal) → PER-TENANT v3.
@@ -188,9 +199,10 @@ model Contact {
 // ═══════════════════════════════════════════════════════════════
 
 // Config per tenant — pola AutoReplyConfig v0.7.0.
+// v3.9 — unique per (tenantId, numberSlot): row shared (null) + row per-slot (0..2).
 model MenuGatewayConfig {
   id              Int      @id @default(autoincrement())
-  tenantId        Int      @unique // satu config per tenant
+  tenantId        Int
   enabled         Boolean  @default(false)
   introText       String   @default("Halo {name}! Silakan pilih topik yang ingin Anda sampaikan:\n1. Komplain\n2. Ambil hasil\n3. Tanya promo")
   fallbackText    String   @default("Terima kasih! CS kami akan segera membalas pesan Anda. 🙏")
@@ -198,9 +210,15 @@ model MenuGatewayConfig {
   timeoutValue    Int      @default(30) // 10..3600 (efektif detik)
   timeoutUnit     String   @default("minutes") // "seconds" | "minutes" (UI dropdown)
   repeatFrequency String   @default("daily") // "per_chat" | "daily" | "weekly"
+  // ═══ v3.9 — Multi-nomor (ADDITIVE kolom): null = "Terapkan ke semua nomor" (link-all,
+  // default & perilaku existing); angka 0..2 = config hanya utk slot itu. Runtime:
+  // resolve config slot → fallback shared (null) → disabled.
+  numberSlot      Int?
   updatedAt       DateTime @updatedAt
   updatedById     Int?
   options         MenuGatewayOption[]
+
+  @@unique([tenantId, numberSlot])
 }
 
 // Opsi menu: position = urutan tampil = nomor menu (1..8), unik per config.
@@ -350,6 +368,11 @@ model Blast {
   delayPerMsg     Int        @default(5)
   delayPerGroup   Int        @default(60)
   groupSize       Int        @default(100)
+  // ═══ v3.9 — Multi-nomor (ADDITIVE kolom) ═══
+  // numberSlots: JSON array slot terpilih (mis. [0,1]); null = slot-0 saja (default).
+  // rotateEvery: round-robin tiap N pesan (N≥1); null/0 = fixed slot (slot pertama terpilih).
+  numberSlots     String?    // JSON string ("Json" Prisma di SQLite = TEXT; String utk kompatibilitas client)
+  rotateEvery     Int?
   startedAt       DateTime?
   completedAt     DateTime?
   createdBy       Int
@@ -370,6 +393,9 @@ model BlastLog {
   status      String    @default("pending")
   error       String?
   sentAt      DateTime?
+  // ═══ v3.9 — Multi-nomor (ADDITIVE kolom): slot pengirim aktual per baris
+  // (audit round-robin; null = pre-v3.9 ATAU slot-0 fixed).
+  senderSlot  Int?
 
   @@index([blastId])
 }
@@ -487,7 +513,10 @@ model PushSubscription {
 // v0.7.0 — Auto Greeting config → PER-TENANT v3 (seed saat tenant dibuat).
 model AutoReplyConfig {
   id                  Int      @id @default(autoincrement())
-  tenantId            Int      @unique // satu config per tenant
+  tenantId            Int
+  // ═══ v3.9 — Multi-nomor: unique per (tenantId, numberSlot) — row shared (null) +
+  // row per-slot (0..2). Row null tetap satu per tenant (kompat seed lama).
+  numberSlot          Int?
   // Trigger 1: Outside Hours Reply
   outsideHoursEnabled Boolean  @default(false)
   outsideHoursText    String   @default("Halo! Mohon maaf, saat ini berada di luar jam operasional. Pesan Anda sudah kami terima dan akan dibalas saat jam kerja berikutnya. Terima kasih! 🙏")
@@ -508,6 +537,8 @@ model AutoReplyConfig {
   sunEnd              String   @default("17:00")
   updatedAt           DateTime @updatedAt
   updatedById         Int?
+
+  @@unique([tenantId, numberSlot])
 }
 
 // v0.8.0 — Auto Backup Chat ke Google Drive (OAuth per-user, admin only).
@@ -639,6 +670,9 @@ model TenantPlan {
   preset            String   @default("custom") // lite | pro | max | custom (informational)
   maxAgents         Int? // null = unlimited
   maxContacts       Int?
+  // ═══ v3.9 — Kuota nomor WA (ADDITIVE kolom). null = 1 (default, eksplisit "0/1");
+  // hard cap 3 di semua jalur (spec §5 KEPUTUSAN: kuota eksplisit 1/2/3).
+  maxNumbers        Int?
   tkQuotaBytes      BigInt? // spec Int? mustahil utk 10 GB (> i32); BigInt = BIGINT SQLite
   featAnalytics     Boolean  @default(false)
   featBlast         Boolean  @default(false)
@@ -649,6 +683,30 @@ model TenantPlan {
   updatedAt         DateTime @updatedAt
   updatedBy         Int? // plain Int, TANPA FK (hindari urutan purge)
 
+  @@index([tenantId])
+}
+
+// ═════════════════════════════════════════════════════════════════
+// v3.9 — Multi-nomor WA per tenant: slot nomor (0..2, maks 3 — hard cap).
+// slot-0 = slot utama: dir sesi = Tenant.waSessionDir existing (tenant-<id>) —
+// JANGAN pernah migrasi/break (sesi Parahita #4 / Mazaya #8). slot-1/2 = dir baru
+// tenant-<id>/slot-<slot>. routeMode hanya berlaku saat tenant.waMode = "mix"
+// ("assigned" → slot assigned; "pool" → antrean umum). Kuota = jumlah BARIS slot
+// yang ADA (connected/tidak — keputusan owner 18:24 #4).
+// Purge tenant: baris ini ikut terhapus via tenant.delete (relasi cascade by FK).
+model TenantNumber {
+  id              Int      @id @default(autoincrement())
+  tenantId        Int
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  slot            Int // 0 | 1 | 2
+  label           String? // nama bebas: "CS Utama", "Sales", ...
+  waSessionDir    String? // default: <WA_SESSION_DIR>/tenant-<id> (slot-0) / tenant-<id>/slot-<slot>
+  routeMode       String   @default("pool") // pool | assigned (khusus mode MIX)
+  assignedAgentId Int? // slot assigned → agent ini (born-assigned saat inbound)
+  reassignOffline Boolean  @default(false) // opsi "reassign ke CS lain bila agent offline" — default OFF (owner 18:24 #2)
+  createdAt       DateTime @default(now())
+
+  @@unique([tenantId, slot])
   @@index([tenantId])
 }
 

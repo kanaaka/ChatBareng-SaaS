@@ -61,9 +61,28 @@ async function getConfig(tenantId) {
   return cfg
 }
 
+/**
+ * v3.9 — resolve config untuk SLOT: baris dgn numberSlot = slot → menang;
+ * tidak ada → fallback shared (null = link-all). Cache key "tenantId:slot".
+ */
+async function getConfigForSlot(tenantId, slot = 0) {
+  const tid = Number(tenantId)
+  const s = Number(slot) || 0
+  const key = `${tid}:${s}`
+  if (configCache.has(key)) return configCache.get(key)
+  let cfg = await prisma.menuGatewayConfig.findFirst({
+    where: { tenantId: tid, OR: [{ numberSlot: s }, { numberSlot: null }] },
+    orderBy: [{ numberSlot: 'desc' }],
+    include: { options: { orderBy: { position: 'asc' } } },
+  })
+  if (!cfg) cfg = await getConfig(tid)
+  configCache.set(key, cfg)
+  return cfg
+}
+
 function invalidateConfig(tenantId) {
-  if (tenantId === undefined) configCache.clear()
-  else configCache.delete(Number(tenantId))
+  // v3.9 — cache key bisa tenantId ATAU "tenantId:slot" → clear semua (entry kecil)
+  configCache.clear()
 }
 
 /**
@@ -156,8 +175,9 @@ async function sendAutoMessage(chat, text, contactName = null) {
   const finalText = personalizeText(text, contactName)
   try {
     // Lazy require pool per-tenant (v3 — sendMessage legacy global dihapus)
+    // v3.9 — via nomor asal chat (numberSlot; null = slot-0 compat) — JANGAN fallback.
     const wa = require('../wa/pool')
-    await wa.sendMessageForTenant(tenantId, chat.waJid, finalText)
+    await wa.sendMessageForTenant(tenantId, chat.waJid, finalText, { slot: Number(chat.numberSlot) || 0 })
   } catch (sendErr) {
     console.error(`[MenuGateway] send gagal untuk chat=${chatId} (tenant ${tenantId}):`, sendErr.message)
     return false
@@ -206,7 +226,8 @@ async function startFlow(chat) {
   const chatId = chat.id
   const tenantId = chat.tenantId
   try {
-    const cfg = await getConfig(tenantId)
+    // v3.9 — config resolved per SLOT asal chat (link-all null = fallback shared)
+    const cfg = await getConfigForSlot(tenantId, chat.numberSlot)
 
     // Guard total: gateway OFF → bukan jalur menu (caller memutuskan jalur lama)
     if (!cfg.enabled) return false
@@ -357,7 +378,8 @@ async function handleChoice(chatId, plaintextText) {
     if (!chat || chat.menuState !== 'awaiting') return false // bukan limbo → bukan jalur gateway
 
     const tenantId = chat.tenantId
-    const cfg = await getConfig(tenantId)
+    // v3.9 — config resolved per SLOT asal chat (link-all null = fallback shared)
+    const cfg = await getConfigForSlot(tenantId, chat.numberSlot)
 
     // ATOMIC CLAIM transisi awaiting→done (race-safe vs sweep/release/pesan kedua).
     // Semua jalur di bawah berakhir "done" — claim lebih dulu = jaminan 1 transisi.
@@ -507,6 +529,7 @@ function stopMenuGatewaySweep() {
 
 module.exports = {
   getConfig,
+  getConfigForSlot,
   invalidateConfig,
   effectiveTimeoutSeconds,
   repeatAllows,

@@ -242,12 +242,21 @@ async function validatePayload(body, errors) {
 // ── GET /api/menu-gateway (admin) ───────────────────────────────────────
 router.get('/', ...rt, featMenuGatewayGate, async (req, res) => {
   try {
-    const cfg = await menuGateway.getConfig(req.tenantId)
+    // v3.9 — ?slot= → config per-slot (fallback shared); tanpa slot = shared (compat)
+    const slotRaw = req.query.slot
+    let cfg
+    if (slotRaw !== undefined) {
+      const s = parseInt(slotRaw, 10)
+      if (!Number.isFinite(s) || s < 0 || s > 2) return res.status(400).json({ error: 'Slot tidak valid (0..2)' })
+      cfg = await menuGateway.getConfigForSlot(req.tenantId, s)
+    } else {
+      cfg = await menuGateway.getConfig(req.tenantId)
+    }
     const waitingCount = await menuGateway.countWaiting(req.tenantId)
     // v0.13.2 — greetMode/greetEnabled ikut dikirim (sumber tampilan radio Auto Reply;
     // enabled = satu saklar efektif bersama radio greeting — sync 2 arah)
     const autoCfg = await prisma.autoReplyConfig.findUnique({ where: { tenantId: req.tenantId }, select: { greetEnabled: true, greetMode: true } })
-    res.json({ config: cfg, waitingCount, greetEnabled: autoCfg?.greetEnabled ?? false, greetMode: autoCfg?.greetMode ?? 'text' })
+    res.json({ config: cfg, waitingCount, greetEnabled: autoCfg?.greetEnabled ?? false, greetMode: autoCfg?.greetMode ?? 'text', numberSlot: cfg.numberSlot ?? null })
   } catch (e) {
     console.error('MenuGateway GET error:', e)
     res.status(500).json({ error: 'Internal server error' })
@@ -273,6 +282,19 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
     const errors = []
     await menuGateway.getConfig(req.tenantId) // pastikan config tenant ter-seed
 
+    // v3.9 — target slot: 'all' (default) = shared row; 0..2 = row Nomor ini saja.
+    const targetSlotRaw = body.numberSlot
+    let targetSlot = null // null = link-all/shared (compat)
+    let perSlot = false
+    if (targetSlotRaw !== undefined && targetSlotRaw !== null && targetSlotRaw !== '' && targetSlotRaw !== 'all') {
+      const s = parseInt(targetSlotRaw, 10)
+      if (!Number.isFinite(s) || s < 0 || s > 2) {
+        return res.status(400).json({ error: 'numberSlot tidak valid (all / 0..2)' })
+      }
+      targetSlot = s
+      perSlot = true
+    }
+
     const { data } = (await validatePayload(body, errors)) || {}
     if (!data) {
       return res.status(400).json({ error: topMessage(errors), errors })
@@ -284,11 +306,23 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
 
     // Upsert transaksional: update singleton + deleteMany/createMany options
     // dalam SATU transaksi (opsi lama tidak pernah setengah-terhapus).
+    // v3.9 — per-slot: row (tenantId, numberSlot=slot) dibuat on-demand (clone shared
+    // bila belum ada), lalu di-update; shared row tidak tersentuh.
+    if (perSlot) {
+      await prisma.menuGatewayConfig.create({
+        data: { tenantId: req.tenantId, numberSlot: targetSlot },
+      }).catch(async (e) => {
+        if (e.code !== 'P2002') throw e
+      })
+    }
+    const whereKey = perSlot
+      ? { tenantId_numberSlot: { tenantId: req.tenantId, numberSlot: targetSlot } }
+      : { tenantId: req.tenantId }
     const cfg = await prisma.$transaction(async (tx) => {
-      const cfgRow = await tx.menuGatewayConfig.findUnique({ where: { tenantId: req.tenantId } })
+      const cfgRow = await tx.menuGatewayConfig.findUnique({ where: whereKey })
       const cfgId = cfgRow?.id
       const updated = await tx.menuGatewayConfig.update({
-        where: { tenantId: req.tenantId },
+        where: whereKey,
         data: { ...configData, updatedById: req.user.id },
       })
       if (options) {
@@ -306,7 +340,7 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
         })
       }
       return tx.menuGatewayConfig.findUnique({
-        where: { tenantId: req.tenantId },
+        where: whereKey,
         include: { options: { orderBy: { position: 'asc' } } },
       })
     }, { timeout: 15000, maxWait: 5000 })

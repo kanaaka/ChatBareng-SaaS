@@ -284,6 +284,9 @@ router.post('/', ...rt, featBlastGate, async (req, res) => {
       delayPerGroup,
       groupSize,
       mediaPath,
+      // v3.9 — multi-nomor: numberSlots (array slot) + rotateEvery (null/0 = fixed)
+      numberSlots,
+      rotateEvery,
     } = req.body
 
     if (!message || !message.trim()) {
@@ -348,6 +351,16 @@ router.post('/', ...rt, featBlastGate, async (req, res) => {
     }
 
     // Create blast record with logs
+    // v3.9 — numberSlots/rotateEvery tersimpan (null = slot-0 fixed = compat)
+    let numberSlotsJson = null
+    if (Array.isArray(numberSlots) && numberSlots.length > 0) {
+      const valid = [...new Set(numberSlots.map(Number).filter((n) => Number.isFinite(n) && n >= 0 && n <= 2))].sort((a, b) => a - b)
+      numberSlotsJson = valid.length > 0 ? JSON.stringify(valid) : null
+    }
+    const rotateEveryInt = (numberSlotsJson && JSON.parse(numberSlotsJson).length > 1)
+      ? Math.max(0, parseInt(rotateEvery, 10) || 0) || null
+      : null // rotasi butuh ≥2 slot
+
     const blast = await prisma.blast.create({
       data: {
         tenantId: req.tenantId,
@@ -358,6 +371,8 @@ router.post('/', ...rt, featBlastGate, async (req, res) => {
         delayPerMsg: delayPerMsg || 5,
         delayPerGroup: delayPerGroup || 60,
         groupSize: groupSize || 100,
+        numberSlots: numberSlotsJson, // v3.9 — JSON array slot (null = slot-0)
+        rotateEvery: rotateEveryInt,
         status: 'pending',
         createdBy: req.user.id,
         logs: {

@@ -215,7 +215,26 @@
       <!-- Step 2: Compose Message -->
       <div v-if="step === 1" class="bg-white rounded-lg shadow-sm p-6">
         <h2 class="text-lg font-semibold mb-4">Compose Message</h2>
-        
+
+        <!-- v3.9 — Pilih nomor pengirim (multi-select) + rotateEvery (hanya bila ≥2 slot) -->
+        <div v-if="waSlots.length > 1" class="mb-4 p-3 bg-blue-50 rounded-lg">
+          <h3 class="text-sm font-semibold text-gray-700 mb-2">Nomor Pengirim</h3>
+          <div class="flex flex-wrap gap-3 mb-2">
+            <label v-for="s in waSlots" :key="s.slot" class="flex items-center gap-2 text-sm">
+              <input type="checkbox" :value="s.slot" v-model="selectedSlots" :disabled="!s.status || !s.status.connected" />
+              <span :class="!s.status || !s.status.connected ? 'text-gray-400' : 'text-gray-700'">
+                Slot {{ s.slot }}{{ s.label ? ' — ' + s.label : '' }}{{ s.status && s.status.phoneNumber ? ' (+' + s.status.phoneNumber + ')' : '' }}
+                <span v-if="!s.status || !s.status.connected" class="text-xs text-red-500">(offline — di-skip)</span>
+              </span>
+            </label>
+          </div>
+          <div v-if="selectedSlots.length > 1" class="flex items-center gap-2">
+            <label class="text-sm text-gray-600">Rotasi pengirim tiap</label>
+            <input v-model.number="rotateEvery" type="number" min="1" class="w-20 px-2 py-1 text-sm border border-gray-300 rounded-lg" />
+            <span class="text-sm text-gray-600">pesan (0/kosong = nomor tetap)</span>
+          </div>
+        </div>
+
         <!-- Formatting Toolbar -->
         <div class="flex items-center gap-1 mb-2 pb-2 border-b border-gray-200">
           <!-- Bold -->
@@ -829,6 +848,11 @@ async function startBlast() {
       delayPerGroup: rateConfig.value.delayPerGroup,
       groupSize: rateConfig.value.groupSize,
     }
+    // v3.9 — multi-nomor: hanya bila user memilih ≥1 slot selain default
+    if (selectedSlots.value.length > 0) {
+      payload.numberSlots = [...selectedSlots.value]
+      if (rotateEvery.value > 0 && selectedSlots.value.length > 1) payload.rotateEvery = rotateEvery.value
+    }
     
     if (attachedImagePath.value) {
       payload.mediaPath = attachedImagePath.value
@@ -845,9 +869,24 @@ async function startBlast() {
   }
 }
 
+// v3.9 — daftar slot nomor WA tenant + pilihan pengirim blast
+const waSlots = ref([])
+const selectedSlots = ref([])
+const rotateEvery = ref(0)
+
+async function fetchWaSlots() {
+  try {
+    const res = await axios.get(`${API}/api/wa/status`)
+    waSlots.value = res.data.slots || []
+  } catch (e) {
+    console.error('Fetch WA slots error:', e)
+  }
+}
+
 onMounted(() => {
   fetchChatsForPicker()
   fetchTags()
+  fetchWaSlots()
 })
 </script>
 

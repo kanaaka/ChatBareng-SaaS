@@ -40,6 +40,10 @@ const { saveMedia } = require('./media')
 const { relinkOrphanContact } = require('../utils/contactRelink')
 
 // tenantId (number) → socket state object
+// ═══ v3.9 — MULTI-NOMOR: key = `${tenantId}:${slot}` (slot 0..2). Slot-0 = slot
+// utama (dir sesi = Tenant.waSessionDir existing — JANGAN migrasi); slot 1/2 =
+// dir tenant-<id>/slot-<slot>. Semua helper lama default slot-0 → zero change
+// utk tenant 1 nomor (spec §0 HARD RULE).
 const pool = new Map()
 
 const WA_NOT_CONNECTED_MSG = 'WhatsApp belum terhubung untuk tenant ini'
@@ -50,15 +54,27 @@ const WA_DISABLED_MSG = 'WhatsApp disabled (WA_DISABLED=1) — fitur WA mati di 
 const RECONNECT_DELAYS_MS = [5000, 10000, 30000, 60000, 60000]
 const MAX_RECONNECT_ATTEMPTS = RECONNECT_DELAYS_MS.length
 
-function defaultSessionDir(tenantId) {
-  return path.resolve(config.waSessionDir, `tenant-${Number(tenantId)}`)
+// v3.9 — hard cap slot (spec §1: 0..2, maks 3)
+const MAX_SLOT = 2
+
+function slotKey(tenantId, slot) {
+  return `${Number(tenantId)}:${Number(slot) || 0}`
 }
 
-function tenantState(tenantId) {
-  let st = pool.get(Number(tenantId))
+function defaultSessionDir(tenantId, slot = 0) {
+  const s = Number(slot) || 0
+  const base = path.resolve(config.waSessionDir, `tenant-${Number(tenantId)}`)
+  // slot-0 = dir LAMA (tenant-<id>) — kompatibilitas sesi existing (HARD RULE)
+  return s === 0 ? base : path.join(base, `slot-${s}`)
+}
+
+function tenantState(tenantId, slot = 0) {
+  const key = slotKey(tenantId, slot)
+  let st = pool.get(key)
   if (!st) {
     st = {
       tenantId: Number(tenantId),
+      slot: Number(slot) || 0,
       sock: null,
       currentQR: null,
       connectionState: 'disconnected',
@@ -73,17 +89,36 @@ function tenantState(tenantId) {
       // requestPhoneNumber (hindari spam). Reset saat connect (reconnect baru).
       requestPhoneSentSet: new Set(),
     }
-    pool.set(st.tenantId, st)
+    pool.set(key, st)
   }
   return st
 }
 
-function log(tenantId, ...args) {
-  console.log(`[WA:tenant-${Number(tenantId)}]`, ...args)
+// v3.9 — logger slot-aware. Kompatibel dengan panggilan lama:
+//   log(tid, 'msg')                    → [WA:tenant-<tid>]
+//   log(tid, slot, 'msg')              → [WA:tenant-<tid>:slot-<n>] (slot>0) / [WA:tenant-<tid>] (slot-0)
+//   log(tid, {slot:1}, 'msg')          → [WA:tenant-<tid>:slot-1]
+function slotPrefix(tenantId, slot) {
+  const s = Number(slot) || 0
+  return `[WA:tenant-${Number(tenantId)}${s ? `:slot-${s}` : ''}]`
 }
 
-function logErr(tenantId, ...args) {
-  console.error(`[WA:tenant-${Number(tenantId)}]`, ...args)
+function log(tenantId, slot, ...args) {
+  if (slot === undefined || (typeof slot === 'object' && slot !== null && !(('slot') in slot))) {
+    console.log(slotPrefix(tenantId, 0), slot === undefined ? '' : slot, ...args)
+    return
+  }
+  if (typeof slot === 'object' && slot !== null) { console.log(slotPrefix(tenantId, slot.slot), ...args); return }
+  console.log(slotPrefix(tenantId, slot), ...args)
+}
+
+function logErr(tenantId, slot, ...args) {
+  if (slot === undefined || (typeof slot === 'object' && slot !== null && !(('slot') in slot))) {
+    console.error(slotPrefix(tenantId, 0), slot === undefined ? '' : slot, ...args)
+    return
+  }
+  if (typeof slot === 'object' && slot !== null) { console.error(slotPrefix(tenantId, slot.slot), ...args); return }
+  console.error(slotPrefix(tenantId, slot), ...args)
 }
 
 // ─── Broadcast helper (socket.io, room tenant:<id>) ────────────────
@@ -94,8 +129,78 @@ function broadcastWaStatus(st, extra = {}) {
     qrNeeded: st.connectionState === 'qr',
     state: st.connectionState,
     phoneNumber: st.phoneNumber,
+    // v3.9 — slot context (additive; slot-0 = compat)
+    slot: st.slot || 0,
     ...extra,
   })
+}
+
+// ─── v3.9 — TenantNumber DB helpers (sumber kebenaran slot) ───────
+
+/**
+ * listTenantNumbers(tenantId) → baris TenantNumber milik tenant (asc slot).
+ * Bila BELUM ADA baris sama sekali → SINTETIS slot-0 (agar tenant lama berperilaku
+ * 1 slot tanpa perlu backfill — spec §0 zero change).
+ */
+async function listTenantNumbers(tenantId) {
+  const tid = Number(tenantId)
+  const rows = await prisma.tenantNumber.findMany({ where: { tenantId: tid }, orderBy: { slot: 'asc' } })
+  if (rows.length === 0) {
+    return [{ id: 0, tenantId: tid, slot: 0, label: null, waSessionDir: null, routeMode: 'pool', assignedAgentId: null, reassignOffline: false, _synthetic: true }]
+  }
+  return rows
+}
+
+/**
+ * getTenantNumber(tenantId, slot) → row slot itu; fallback sintetis slot-0.
+ */
+async function getTenantNumber(tenantId, slot = 0) {
+  const tid = Number(tenantId)
+  const s = Number(slot) || 0
+  const row = await prisma.tenantNumber.findUnique({ where: { tenantId_slot: { tenantId: tid, slot: s } } })
+  if (row) return row
+  if (s === 0) return (await listTenantNumbers(tid))[0]
+  return null
+}
+
+/**
+ * ensureSlot0Row — saat connect slot-0 tanpa baris DB, buat baris slot-0 (idempoten)
+ * supaya kuota (baris yang ADA) selalu eksplisit. Gagal → non-fatal (sintetis tetap jalan).
+ */
+async function ensureSlot0Row(tenantId, sessionDir) {
+  try {
+    const existing = await prisma.tenantNumber.findUnique({ where: { tenantId_slot: { tenantId: Number(tenantId), slot: 0 } } })
+    if (existing) return existing
+    return await prisma.tenantNumber.create({ data: { tenantId: Number(tenantId), slot: 0, waSessionDir: sessionDir || null } })
+  } catch (e) {
+    logErr(tenantId, 0, 'ensureSlot0Row error (non-fatal):', e.message)
+    return null
+  }
+}
+
+/**
+ * resolveRouteForSlot(tenantId, slot) → 'assigned' | 'pool' utk pesan masuk slot itu.
+ * tenant.waMode = pool → 'pool' SELALU (zero change); assigned → assigned (slot apapun);
+ * mix → slot.routeMode.
+ * Fallback aman: gagal baca DB → 'pool' (perilaku existing).
+ */
+async function resolveRouteForSlot(tenantId, slot) {
+  const tid = Number(tenantId)
+  const s = Number(slot) || 0
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: tid }, select: { waMode: true } })
+    const mode = tenant?.waMode || 'pool'
+    if (mode === 'assigned') return 'assigned'
+    if (mode === 'mix') {
+      const row = await prisma.tenantNumber.findUnique({ where: { tenantId_slot: { tenantId: tid, slot: s } } })
+      if (row && row.routeMode === 'assigned') return 'assigned'
+      return 'pool'
+    }
+    return 'pool'
+  } catch (e) {
+    logErr(tid, s, 'resolveRouteForSlot error (fail-open → pool):', e.message)
+    return 'pool'
+  }
 }
 
 // ─── Bootstrap (dipanggil server.js via baileys.connectToWhatsApp) ──
@@ -106,15 +211,19 @@ async function connectAllTenants() {
     return
   }
   try {
-    const tenants = await prisma.tenant.findMany({ where: { status: 'active' }, orderBy: { id: 'asc' } })
+    const tenants = await prisma.tenant.findMany({ where: { status: 'active' }, orderBy: { id: 'asc' }, include: { numbers: { orderBy: { slot: 'asc' } } } })
     if (tenants.length === 0) {
       console.log('[WA] Pool: no active tenants yet')
     }
     for (const t of tenants) {
-      try {
-        await connectTenant(t.id)
-      } catch (e) {
-        logErr(t.id, 'connectTenant error:', e.message)
+      // v3.9 — connect SEMUA slot terdaftar (baris TenantNumber). Tanpa baris → slot-0 saja.
+      const slots = (t.numbers && t.numbers.length > 0) ? t.numbers.map((n) => n.slot) : [0]
+      for (const slot of slots) {
+        try {
+          await connectTenant(t.id, { slot })
+        } catch (e) {
+          logErr(t.id, slot, 'connectTenant error:', e.message)
+        }
       }
     }
   } catch (e) {
@@ -123,8 +232,10 @@ async function connectAllTenants() {
 }
 
 /**
- * Connect satu tenant: socket Baileys + auth dir milik tenant itu sendiri.
- * Guard double-connect: skip kalau isConnecting atau socket masih hidup.
+ * Connect satu tenant+SLOT: socket Baileys + auth dir milik tenant/slot itu.
+ * v3.9 — slot-0 = dir lama (Tenant.waSessionDir); slot 1/2 = tenant-<id>/slot-<n>
+ * (atau TenantNumber.waSessionDir eksplisit). Guard double-connect per-slot.
+ * opts.slot default 0 — SEMUA caller lama tidak berubah (zero change §0).
  */
 async function connectTenant(tenantId, opts = {}) {
   if (config.waDisabled) {
@@ -132,14 +243,21 @@ async function connectTenant(tenantId, opts = {}) {
   }
   const tid = Number(tenantId)
   if (!Number.isFinite(tid)) throw new Error('Invalid tenant id')
+  const slot = Number(opts.slot) || 0
+  if (slot < 0 || slot > MAX_SLOT) throw new Error(`Slot ${slot} tidak valid (0..${MAX_SLOT})`)
 
-  const tenant = await prisma.tenant.findUnique({ where: { id: tid } })
+  const tenant = await prisma.tenant.findUnique({ where: { id: tid }, include: { numbers: { where: { slot } } } })
   if (!tenant) throw new Error(`Tenant ${tid} not found`)
   if (tenant.status !== 'active') throw new Error(`Tenant ${tid} is ${tenant.status} — connect ditolak`)
+  // v3.9 — slot 1/2 WAJIB terdaftar di TenantNumber (slot-0 boleh implisit = compat)
+  if (slot !== 0 && (!tenant.numbers || tenant.numbers.length === 0)) {
+    throw new Error(`Slot ${slot} belum terdaftar untuk tenant ${tid} — tambahkan via Admin/Superadmin dulu`)
+  }
+  const numberRow = tenant.numbers?.[0] || null
 
-  const st = tenantState(tid)
+  const st = tenantState(tid, slot)
   if (st.isConnecting) {
-    log(tid, 'connectTenant() already in progress, skipping')
+    log(tid, slot, 'connectTenant() already in progress, skipping')
     return st
   }
   if (st.sock && ['connecting', 'qr', 'open'].includes(st.connectionState)) {
@@ -154,14 +272,31 @@ async function connectTenant(tenantId, opts = {}) {
   st.manualDisconnect = false
   st.currentQR = null
 
-  // Auth dir per tenant — auto-assign ke Tenant.waSessionDir kalau masih null
-  let sessionDir = tenant.waSessionDir
-  if (!sessionDir) {
-    sessionDir = defaultSessionDir(tid)
-    await prisma.tenant.update({ where: { id: tid }, data: { waSessionDir: sessionDir } })
-    log(tid, `Session dir di-assign: ${sessionDir}`)
+  // Auth dir per tenant+slot.
+  // slot-0: dir lama (Tenant.waSessionDir) — SAMA dgn sebelum v3.9 (HARD RULE).
+  // slot>0: TenantNumber.waSessionDir bila di-set; else default tenant-<id>/slot-<n>.
+  let sessionDir
+  if (slot === 0) {
+    sessionDir = tenant.waSessionDir
+    if (!sessionDir) {
+      sessionDir = defaultSessionDir(tid, 0)
+      await prisma.tenant.update({ where: { id: tid }, data: { waSessionDir: sessionDir } })
+      log(tid, 0, `Session dir di-assign: ${sessionDir}`)
+    }
+  } else {
+    sessionDir = numberRow?.waSessionDir || null
+    if (!sessionDir) {
+      sessionDir = defaultSessionDir(tid, slot)
+      try {
+        await prisma.tenantNumber.update({ where: { tenantId_slot: { tenantId: tid, slot } }, data: { waSessionDir: sessionDir } })
+      } catch (e) {
+        logErr(tid, slot, 'persist waSessionDir slot error (non-fatal):', e.message)
+      }
+      log(tid, slot, `Session dir di-assign: ${sessionDir}`)
+    }
   }
   fs.mkdirSync(sessionDir, { recursive: true })
+  if (slot === 0) await ensureSlot0Row(tid, sessionDir)
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir)
   st.saveCreds = saveCreds
@@ -207,7 +342,7 @@ async function connectTenant(tenantId, opts = {}) {
   st.sock = sock
   st.connectionState = 'connecting'
   broadcastWaStatus(st)
-  log(tid, `Socket dibuat (attempt reconnect: ${st.reconnectAttempts})`)
+  log(tid, slot, `Socket dibuat (attempt reconnect: ${st.reconnectAttempts})`)
 
   // ── connection.update ────────────────────────────────────────────
   sock.ev.on('connection.update', async (update) => {
@@ -224,7 +359,7 @@ async function connectTenant(tenantId, opts = {}) {
         } catch {
           broadcastWaStatus(st)
         }
-        log(tid, 'QR diterima — menunggu scan')
+        log(tid, slot, 'QR diterima — menunggu scan')
       }
 
       if (connection === 'connecting') {
@@ -244,16 +379,16 @@ async function connectTenant(tenantId, opts = {}) {
           st.phoneNumber = null
         }
         broadcastWaStatus(st)
-        log(tid, `Connected${st.phoneNumber ? ` sebagai +${st.phoneNumber}` : ''}`)
+        log(tid, slot, `Connected${st.phoneNumber ? ` sebagai +${st.phoneNumber}` : ''}`)
 
-        // Persist nomor ke Tenant.waPhone (kalau berubah)
+        // Persist nomor ke Tenant.waPhone (kalau berubah) — slot-0 SAJA (waPhone = nomor utama)
         try {
-          if (st.phoneNumber && tenant.waPhone !== st.phoneNumber) {
+          if (slot === 0 && st.phoneNumber && tenant.waPhone !== st.phoneNumber) {
             await prisma.tenant.update({ where: { id: tid }, data: { waPhone: st.phoneNumber } })
-            log(tid, `waPhone persisted: ${st.phoneNumber}`)
+            log(tid, slot, `waPhone persisted: ${st.phoneNumber}`)
           }
         } catch (e) {
-          logErr(tid, 'persist waPhone error:', e.message)
+          logErr(tid, slot, 'persist waPhone error:', e.message)
         }
       }
 
@@ -264,7 +399,7 @@ async function connectTenant(tenantId, opts = {}) {
           : undefined
         const loggedOut = statusCode === DisconnectReason.loggedOut
         st.connectionState = 'close'
-        log(tid, 'Connection closed, statusCode:', statusCode, 'manualDisconnect:', st.manualDisconnect)
+        log(tid, slot, 'Connection closed, statusCode:', statusCode, 'manualDisconnect:', st.manualDisconnect)
 
         if (loggedOut && !st.manualDisconnect) {
           await handleLoggedOut(st)
@@ -280,7 +415,7 @@ async function connectTenant(tenantId, opts = {}) {
         scheduleReconnect(st)
       }
     } catch (e) {
-      logErr(tid, 'connection.update handler error:', e)
+      logErr(tid, slot, 'connection.update handler error:', e)
     }
   })
 
@@ -317,15 +452,16 @@ async function connectTenant(tenantId, opts = {}) {
   })
 
   // ── messages.upsert → processIncomingMessage(tenantId, msg) ──────
+  // v3.9 — slot penerima dibawa ke routing (Chat.numberSlot + born-assigned)
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return
     for (const msg of messages) {
       try {
         if (msg.key?.remoteJid === 'status@broadcast') continue
         if (!msg.message) continue // protocol/ephemeral control events
-        await processIncomingMessage(tid, msg)
+        await processIncomingMessage(tid, msg, { slot })
       } catch (e) {
-        logErr(tid, 'processIncomingMessage error:', e.message)
+        logErr(tid, slot, 'processIncomingMessage error:', e.message)
       }
     }
   })
@@ -338,40 +474,48 @@ function scheduleReconnect(st) {
     st.connectionState = 'failed'
     st.reconnectAttempts = 0
     broadcastWaStatus(st)
-    logErr(st.tenantId, `Reconnect gagal ${MAX_RECONNECT_ATTEMPTS}x — berhenti (status failed). Gunakan reconnect manual.`)
+    logErr(st.tenantId, st.slot, `Reconnect gagal ${MAX_RECONNECT_ATTEMPTS}x — berhenti (status failed). Gunakan reconnect manual.`)
     return
   }
   st.reconnectAttempts++
   const delay = RECONNECT_DELAYS_MS[Math.min(st.reconnectAttempts, RECONNECT_DELAYS_MS.length) - 1]
   st.connectionState = 'reconnecting'
   broadcastWaStatus(st, { reconnectAttempt: st.reconnectAttempts, maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS })
-  log(st.tenantId, `Reconnect #${st.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} dalam ${delay}ms`)
+  log(st.tenantId, st.slot, `Reconnect #${st.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} dalam ${delay}ms`)
   st.reconnectTimeoutId = setTimeout(() => {
     st.reconnectTimeoutId = null
-    connectTenant(st.tenantId, { isReconnect: true }).catch((e) => {
-      logErr(st.tenantId, 'reconnect attempt error:', e.message)
+    connectTenant(st.tenantId, { isReconnect: true, slot: st.slot }).catch((e) => {
+      logErr(st.tenantId, st.slot, 'reconnect attempt error:', e.message)
       scheduleReconnect(st)
     })
   }, delay)
 }
 
 async function handleLoggedOut(st) {
-  logErr(st.tenantId, 'Logged out oleh WA — sesi dihapus, scan QR ulang diperlukan')
+  const slot = st.slot || 0
+  logErr(st.tenantId, slot, 'Logged out oleh WA — sesi dihapus, scan QR ulang diperlukan')
   st.sock = null
   st.connectionState = 'disconnected'
   st.currentQR = null
   st.phoneNumber = null
   st.isConnecting = false
-  const tenant = await prisma.tenant.findUnique({ where: { id: st.tenantId }, select: { waSessionDir: true } })
-  const dir = tenant?.waSessionDir || defaultSessionDir(st.tenantId)
-  try {
-    fs.rmSync(dir, { recursive: true, force: true })
-    log(st.tenantId, 'Session dir dihapus:', dir)
-  } catch (e) {
-    logErr(st.tenantId, 'Gagal hapus session dir:', e.message)
+  // v3.9 — dir sesi per-slot; slot-0 = Tenant.waSessionDir (kompat)
+  let dir
+  if (slot === 0) {
+    const tenant = await prisma.tenant.findUnique({ where: { id: st.tenantId }, select: { waSessionDir: true } })
+    dir = tenant?.waSessionDir || defaultSessionDir(st.tenantId, 0)
+  } else {
+    const row = await prisma.tenantNumber.findUnique({ where: { tenantId_slot: { tenantId: st.tenantId, slot } }, select: { waSessionDir: true } })
+    dir = row?.waSessionDir || defaultSessionDir(st.tenantId, slot)
   }
   try {
-    await prisma.tenant.update({ where: { id: st.tenantId }, data: { waPhone: null } })
+    fs.rmSync(dir, { recursive: true, force: true })
+    log(st.tenantId, slot, 'Session dir dihapus:', dir)
+  } catch (e) {
+    logErr(st.tenantId, slot, 'Gagal hapus session dir:', e.message)
+  }
+  try {
+    if (slot === 0) await prisma.tenant.update({ where: { id: st.tenantId }, data: { waPhone: null } })
   } catch {}
   broadcastWaStatus(st, { loggedOut: true })
 }
@@ -440,55 +584,62 @@ async function logoutTenant(tenantId) {
     st.connectionState = 'disconnected'
   }
 
-  // Hapus dir sesi tenant ini SAJA
-  const tenant = await prisma.tenant.findUnique({ where: { id: tid }, select: { waSessionDir: true } })
-  const dir = tenant?.waSessionDir || defaultSessionDir(tid)
+  // Hapus dir sesi slot ini SAJA (slot lain tidak tersentuh)
+  let dir
+  if (s === 0) {
+    const tenant = await prisma.tenant.findUnique({ where: { id: tid }, select: { waSessionDir: true } })
+    dir = tenant?.waSessionDir || defaultSessionDir(tid, 0)
+  } else {
+    const row = await prisma.tenantNumber.findUnique({ where: { tenantId_slot: { tenantId: tid, slot: s } }, select: { waSessionDir: true } })
+    dir = row?.waSessionDir || defaultSessionDir(tid, s)
+  }
   try {
     fs.rmSync(dir, { recursive: true, force: true })
-    log(tid, 'Logout: session dir dihapus', dir)
+    log(tid, s, 'Logout: session dir dihapus', dir)
   } catch (e) {
-    logErr(tid, 'Logout: gagal hapus session dir:', e.message)
+    logErr(tid, s, 'Logout: gagal hapus session dir:', e.message)
   }
 
   try {
-    await prisma.tenant.update({ where: { id: tid }, data: { waPhone: null } })
+    if (s === 0) await prisma.tenant.update({ where: { id: tid }, data: { waPhone: null } })
   } catch (e) {
-    logErr(tid, 'Logout: gagal clear waPhone:', e.message)
+    logErr(tid, s, 'Logout: gagal clear waPhone:', e.message)
   }
 
   if (st) broadcastWaStatus(st, { loggedOut: true })
-  log(tid, 'Logout selesai')
+  log(tid, s, 'Logout selesai')
   return { ok: true }
 }
 
 /**
  * Reconnect = soft disconnect + connect lagi (sesi lama dipakai kalau masih valid).
+ * v3.9 — per-slot.
  */
-async function reconnectTenant(tenantId) {
-  await disconnectTenant(tenantId)
+async function reconnectTenant(tenantId, slot = 0) {
+  await disconnectTenant(tenantId, slot)
   // beri jeda kecil agar socket lama benar-benar mati dulu
   await new Promise((r) => setTimeout(r, 500))
-  return connectTenant(tenantId)
+  return connectTenant(tenantId, { slot: Number(slot) || 0 })
 }
 
 // ─── Socket resolution (outgoing) ──────────────────────────────────
 
-function getSocketForTenant(tenantId) {
+function getSocketForTenant(tenantId, slot = 0) {
   if (config.waDisabled) return null
-  const st = pool.get(Number(tenantId))
+  const st = pool.get(slotKey(tenantId, slot))
   return st && st.connectionState === 'open' ? st.sock : null
 }
 
-function isTenantConnected(tenantId) {
-  return !!getSocketForTenant(tenantId)
+function isTenantConnected(tenantId, slot = 0) {
+  return !!getSocketForTenant(tenantId, slot)
 }
 
-function getStatusForTenant(tenantId) {
+function getStatusForTenant(tenantId, slot = 0) {
   if (config.waDisabled) {
-    return { connected: false, qrNeeded: false, state: 'disabled', phoneNumber: null, disabled: true }
+    return { connected: false, qrNeeded: false, state: 'disabled', phoneNumber: null, disabled: true, slot: Number(slot) || 0 }
   }
-  const st = pool.get(Number(tenantId))
-  if (!st) return { connected: false, qrNeeded: false, state: 'disconnected', phoneNumber: null, disabled: false }
+  const st = pool.get(slotKey(tenantId, slot))
+  if (!st) return { connected: false, qrNeeded: false, state: 'disconnected', phoneNumber: null, disabled: false, slot: Number(slot) || 0 }
   return {
     connected: st.connectionState === 'open',
     qrNeeded: st.connectionState === 'qr',
@@ -501,8 +652,8 @@ function getStatusForTenant(tenantId) {
 
 // QR tersimpan sebagai string raw Baileys di st.currentQR; data URL digenerate
 // on-demand saat route /api/wa/qr memintanya (per-tenant).
-async function getQRDataUrl(tenantId) {
-  const st = pool.get(Number(tenantId))
+async function getQRDataUrl(tenantId, slot = 0) {
+  const st = pool.get(slotKey(tenantId, slot))
   if (!st || st.connectionState !== 'qr' || !st.currentQR) return null
   try {
     return await QRCode.toDataURL(st.currentQR, { width: 300 })
@@ -546,25 +697,33 @@ async function assertCanSendTenant(tenantId) {
     // Gagal membaca validity (bukan read-only rejection) → fail-open (pola
     // middleware: DB error TIDAK boleh mematikan pengiriman tenant normal).
     if (e.code === 'SUBSCRIPTION_EXPIRED' || e.code === 'SUBSCRIPTION_NOT_STARTED') throw e
-    logErr(tenantId, '[Validity] guard read error (fail-open):', e.message)
+    logErr(tenantId, 0, '[Validity] guard read error (fail-open):', e.message)
   }
 }
 
-async function sendMessageForTenant(tenantId, waJid, text) {
+// v3.9 — pesan error tidak-connected per-slot (aturan tunggal: JANGAN fallback;
+// CS harus tahu nomor mana yang mati — owner 18:24 #3)
+function slotNotConnectedMessage(tenantId, slot) {
+  return `Nomor pengirim (slot ${Number(slot) || 0}) tidak terhubung — balas via nomor yang menerima. Nyalakan/hubungkan nomor itu dulu di Admin → WhatsApp.`
+}
+
+async function sendMessageForTenant(tenantId, waJid, text, opts = {}) {
+  const slot = Number(opts.slot) || 0
   await assertCanSendTenant(tenantId)
-  const sock = getSocketForTenant(tenantId)
+  const sock = getSocketForTenant(tenantId, slot)
   if (!sock) {
-    throw notConnectedError(config.waDisabled ? WA_DISABLED_MSG : WA_NOT_CONNECTED_MSG)
+    throw notConnectedError(config.waDisabled ? WA_DISABLED_MSG : (slot ? slotNotConnectedMessage(tenantId, slot) : WA_NOT_CONNECTED_MSG))
   }
   const result = await sock.sendMessage(waJid, { text })
   return result
 }
 
-async function sendMediaForTenant(tenantId, waJid, buffer, mediaType, mimetype, caption, fileName) {
+async function sendMediaForTenant(tenantId, waJid, buffer, mediaType, mimetype, caption, fileName, opts = {}) {
+  const slot = Number(opts.slot) || 0
   await assertCanSendTenant(tenantId)
-  const sock = getSocketForTenant(tenantId)
+  const sock = getSocketForTenant(tenantId, slot)
   if (!sock) {
-    throw notConnectedError(config.waDisabled ? WA_DISABLED_MSG : WA_NOT_CONNECTED_MSG)
+    throw notConnectedError(config.waDisabled ? WA_DISABLED_MSG : (slot ? slotNotConnectedMessage(tenantId, slot) : WA_NOT_CONNECTED_MSG))
   }
   let content
   switch (mediaType) {
@@ -781,16 +940,19 @@ function maybeResolveLidChat(tid, chat, sock) {
 }
 
 /**
- * Process one incoming WA message for a specific tenant.
+ * Process one incoming WA message for a specific tenant (+SLOT, v3.9).
  * Chat find-or-create by [tenantId, waJid] — JID sama di 2 tenant = 2 chat terpisah.
- * v3.5 — routing LID ↔ phone SEBELUM find-or-create (spec §1).
+ * v3.9 — ATURAN TUNGGAL reply: chat dicatat dgn numberSlot = slot penerima; kontak
+ * sama via nomor beda = chat terpisah (JID per sesi) — reply SELALU via nomor penerima
+ * (owner 18:24 #1). Mode assigned/mix → born-assigned ke agent slot (pola PIC grup).
  * Return { chat, message } | null.
  */
-async function processIncomingMessage(tenantId, msg) {
+async function processIncomingMessage(tenantId, msg, meta = {}) {
   const tid = Number(tenantId)
   const rawJid = msg?.key?.remoteJid
   if (!Number.isFinite(tid) || tid <= 0 || !rawJid) return null
   if (rawJid === 'status@broadcast') return null
+  const inboxSlot = Number(meta?.slot) || 0
 
   // v3.5 §1 — resolveEffectiveJid: match chat existing dua arah sebelum create.
   // 1:1 saja (@lid / @s.whatsapp.net); grup (@g.us) dan status lewat jalur lama.
@@ -948,7 +1110,7 @@ async function processIncomingMessage(tenantId, msg) {
   if (chatId.endsWith('@g.us')) {
     try {
       const groupsSvc = require('../services/groups')
-      await groupsSvc.handleIncomingGroupMessage(tid, msg, { waJid: chatId, text: effectiveText || null, mediaType, mediaPath, mediaMime, mediaSize, dbTimestamp, senderName })
+      await groupsSvc.handleIncomingGroupMessage(tid, msg, { waJid: chatId, text: effectiveText || null, mediaType, mediaPath, mediaMime, mediaSize, dbTimestamp, senderName, numberSlot: inboxSlot })
     } catch (e) {
       console.error('[WA] Group message handler error (non-fatal):', e.message)
     }
@@ -990,6 +1152,7 @@ async function processIncomingMessage(tenantId, msg) {
           contactName: msg.pushName || null,
           phoneJid: mappingPhoneJid,
           lidJid: mappingLidJid,
+          numberSlot: inboxSlot, // v3.9 — slot asal pesan masuk (reply via nomor yang sama)
           unreadCount: msg.key.fromMe ? 0 : 1,
           status: 'open',
           queuedAt: dbTimestamp,
@@ -997,8 +1160,84 @@ async function processIncomingMessage(tenantId, msg) {
         },
       })
       if (mappingLidJid || (isLid && mappingPhoneJid)) {
-        log(tid, `chat baru ${chatId} dibuat dengan mapping (phoneJid=${mappingPhoneJid}, lidJid=${mappingLidJid})`)
+        log(tid, inboxSlot, `chat baru ${chatId} dibuat dengan mapping (phoneJid=${mappingPhoneJid}, lidJid=${mappingLidJid})`)
       }
+    }
+  }
+
+  // ═══ v3.9 — numberSlot + born-assigned routing (owner 18:24 #1/#2) ═══
+  // Pesan masuk (bukan fromMe): catat slot penerima di chat + routing mode:
+  //   pool → antrean existing TANPA perubahan (multi-nomor transparan utk CS)
+  //   assigned → born-assigned ke agent slot (gak masuk antrean umum) + notif
+  //   mix → per-slot (slot dgn assignedAgentId = assigned, sisanya pool)
+  // ATURAN TUNGGAL: kontak sama via nomor beda = chat terpisah; slot reply ikut
+  // numberSlot chat (tidak pernah fallback — owner 18:24 #3).
+  if (!msg.key.fromMe) {
+    try {
+      const route = await resolveRouteForSlot(tid, inboxSlot)
+      // Set numberSlot hanya bila berubah (hemat write; null-safe)
+      if (chat.numberSlot !== inboxSlot) {
+        await prisma.chat.update({ where: { id: chat.id }, data: { numberSlot: inboxSlot } })
+        chat = { ...chat, numberSlot: inboxSlot }
+      }
+      if (route === 'assigned' && chat.assignedToId == null) {
+        const numRow = await prisma.tenantNumber.findUnique({
+          where: { tenantId_slot: { tenantId: tid, slot: inboxSlot } },
+          select: { assignedAgentId: true, reassignOffline: true, label: true },
+        })
+        let targetAgentId = numRow?.assignedAgentId || null
+        // Opsi reassign-offline (default OFF): agent assigned offline → pindah ke
+        // CS/admin tenant lain yang online. OFF → personal queue (gak di-reassign).
+        if (targetAgentId) {
+          const agent = await prisma.user.findFirst({ where: { id: targetAgentId, tenantId: tid }, select: { id: true, status: true } })
+          if (!agent || agent.status !== 'active') targetAgentId = null // agent hilang/nonaktif → jangan assign ke hantu
+          else if (numRow?.reassignOffline) {
+            const presence = require('../socket/presence')
+            if (!presence.isOnline(tid, targetAgentId)) {
+              const fallback = await prisma.user.findFirst({
+                where: { tenantId: tid, role: { in: ['cs', 'admin'] }, status: 'active', id: { not: targetAgentId } },
+                orderBy: { id: 'asc' },
+                select: { id: true },
+              })
+              const fallbackId = fallback?.id || null
+              log(tid, inboxSlot, `[v3.9] agent assigned offline + reassignOffline=ON → pindah ke ${fallbackId || 'tidak ada kandidat (tetap personal queue)'}`)
+              targetAgentId = fallbackId // null → tetap personal queue
+            }
+          }
+        }
+        if (targetAgentId && targetAgentId !== chat.assignedToId) {
+          const nowTs = dbTimestamp
+          await prisma.chat.update({
+            where: { id: chat.id },
+            data: {
+              assignedToId: targetAgentId,
+              status: 'open',
+              queuedAt: null, // born-assigned = BUKAN antrean umum
+              firstAssignedAt: chat.firstAssignedAt || nowTs,
+              lastAssignedAt: nowTs,
+            },
+          })
+          await prisma.chatEvent.create({
+            data: { tenantId: tid, chatId: chat.id, userId: null, type: 'assigned', createdAt: nowTs },
+          })
+          chat = { ...chat, assignedToId: targetAgentId, queuedAt: null, status: 'open' }
+          broadcast.emitToTenant(tid, 'chat_update', { chatId: chat.id, assignedTo: targetAgentId, queuedAt: null, numberSlot: inboxSlot, bornAssigned: true })
+          queue.emitQueueUpdate(tid)
+          log(tid, inboxSlot, `[v3.9] born-assigned chat=${chat.id} → agent=${targetAgentId} (slot ${inboxSlot}, gak lewat antrean umum)`)
+          // Notif ke agent tsb (pola push PIC)
+          try {
+            push.sendToUser(targetAgentId, {
+              kind: 'message',
+              chatId: chat.id,
+              title: chat.contactName || chat.contactPhone || chat.waJid,
+              body: push.truncate(previewTextForPush(effectiveText, mediaType)),
+              url: `/?chat=${chat.id}`,
+            })
+          } catch {}
+        }
+      }
+    } catch (e) {
+      logErr(tid, inboxSlot, '[v3.9] numberSlot/born-assigned routing error (non-fatal):', e.message)
     }
   }
 
@@ -1144,7 +1383,7 @@ async function processIncomingMessage(tenantId, msg) {
         push.sendToTenantActive(tid, queuePayload, 'admin')
       }
     } catch (e) {
-      log(tid, 'push trigger error (non-fatal):', e.message)
+      log(tid, inboxSlot, 'push trigger error (non-fatal):', e.message)
     }
     queue.emitQueueUpdate(tid)
 
@@ -1167,6 +1406,11 @@ async function processIncomingMessage(tenantId, msg) {
   }
 
   return { chat, message: dbMsg }
+}
+
+/** v3.9 — preview push aman (dipakai born-assigned sebelum preview penuh dihitung). */
+function previewTextForPush(effectiveText, mediaType) {
+  return effectiveText || (mediaType ? `[${mediaType.charAt(0).toUpperCase() + mediaType.slice(1)}]` : '[Media]')
 }
 
 /**
@@ -1328,6 +1572,14 @@ module.exports = {
   sendMediaForTenant,
   WA_NOT_CONNECTED_MSG,
   WA_DISABLED_MSG,
+  // v3.9 — multi-nomor per-slot
+  MAX_SLOT,
+  slotKey,
+  defaultSessionDir,
+  listTenantNumbers,
+  getTenantNumber,
+  ensureSlot0Row,
+  resolveRouteForSlot,
   // legacy/global (tanpa tenant) — netral/error jelas
   getStatus,
   getSocket,

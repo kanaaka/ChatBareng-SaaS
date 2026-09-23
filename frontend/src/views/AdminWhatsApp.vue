@@ -10,139 +10,94 @@
     </header>
 
     <div class="max-w-4xl mx-auto w-full p-6 space-y-4">
+      <!-- v3.9 — DAFTAR SLOT NOMOR WA (multi-nomor per tenant) -->
       <div class="bg-white rounded-lg shadow-sm p-6">
-        <h2 class="text-lg font-semibold mb-4">WhatsApp Connection</h2>
-        <div class="space-y-3">
-          <div class="flex items-center gap-2 flex-wrap">
-            <span class="text-sm">Status:</span>
-            <span :class="['text-sm font-medium px-2 py-0.5 rounded-full', waStatus.connected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700']">
-              {{ waStatus.connected ? 'Connected' : (waStatus.state || 'Disconnected') }}
-            </span>
-            <span v-if="waStatus.phoneNumber" class="text-sm text-gray-500">
-              ({{ waStatus.phoneNumber }})
-            </span>
+        <div class="flex items-start justify-between gap-4 mb-4 flex-wrap">
+          <div>
+            <h2 class="text-lg font-semibold">Nomor WhatsApp</h2>
+            <p class="text-sm text-gray-500">Setiap nomor punya sesi sendiri — connect/QR/pairing/logout per nomor. Slot-0 = nomor utama.</p>
           </div>
+          <div class="flex items-center gap-2">
+            <span v-if="waMode" class="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Mode: {{ waMode }}</span>
+            <button @click="addSlot" :disabled="addingSlot" class="px-3 py-1.5 bg-blue-100 text-blue-700 rounded-lg text-sm hover:bg-blue-200 disabled:opacity-50">
+              {{ addingSlot ? 'Menambah…' : '+ Tambah Nomor' }}
+            </button>
+          </div>
+        </div>
 
-          <!-- v0.13.7 — Dual-mode pairing: QR (DEFAULT, utuh) + Pairing Code.
-               Saat connected: keduanya disembunyikan (v-if qrNeeded) seperti QR dulu. -->
-          <div v-if="waStatus.qrNeeded" class="pt-1">
-            <!-- Tab M3 dua opsi — default: QR -->
-            <div class="flex gap-2 mb-4" role="tablist" aria-label="Metode tambahkan WhatsApp">
-              <button
-                role="tab"
-                :aria-selected="pairMode === 'qr'"
-                @click="pairMode = 'qr'"
-                :class="['px-4 py-2 rounded-full text-sm font-medium transition-colors', pairMode === 'qr' ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200']"
-              >
-                Tambahkan via QR
-              </button>
-              <button
-                role="tab"
-                :aria-selected="pairMode === 'code'"
-                @click="pairMode = 'code'"
-                :class="['px-4 py-2 rounded-full text-sm font-medium transition-colors', pairMode === 'code' ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200']"
-              >
-                Tambahkan via Pairing Code
-              </button>
+        <div v-if="slots.length === 0" class="text-sm text-gray-400 py-4">Memuat slot…</div>
+
+        <div v-else class="space-y-3">
+          <div v-for="s in slots" :key="s.slot" class="border border-gray-200 rounded-lg p-4">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-sm font-semibold">Slot {{ s.slot }}{{ s.label ? ' — ' + s.label : '' }}</span>
+              <span :class="['text-sm font-medium px-2 py-0.5 rounded-full', s.status?.connected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700']">
+                {{ s.status?.connected ? 'Connected' : (s.status?.state || 'Disconnected') }}
+              </span>
+              <span v-if="s.status?.phoneNumber" class="text-sm text-gray-500">(+{{ s.status.phoneNumber }})</span>
+              <span v-if="s.routeMode === 'assigned'" class="text-xs font-medium px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">Assigned → agent #{{ s.assignedAgentId }}</span>
             </div>
 
-            <!-- Mode QR (DEFAULT — perilaku existing UTUH, regression gate #1) -->
-            <div v-if="pairMode === 'qr'" class="text-center">
-              <p class="text-sm text-gray-600 mb-3">Scan QR code with WhatsApp → Linked Devices</p>
-              <img v-if="qrDataUrl" :src="qrDataUrl" alt="QR Code" class="mx-auto border border-gray-200 rounded-lg max-w-full" />
-              <p v-else class="text-sm text-gray-400 py-8">QR belum tersedia — tunggu beberapa saat atau klik Refresh QR.</p>
+            <!-- Label edit (inline) -->
+            <div class="flex items-center gap-2 mt-3 flex-wrap">
+              <input
+                v-model="s._labelDraft"
+                type="text"
+                placeholder="Label (mis. CS Utama)"
+                maxlength="50"
+                class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg w-56"
+              />
+              <button @click="saveLabel(s)" class="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200">Simpan Label</button>
             </div>
 
-            <!-- Mode Pairing Code (baru — v0.13.7; lifecycle UI v0.13.9: countdown 90s,
-                 auto-update kode dari broadcast, banner invalidation, hint QR) -->
-            <div v-else class="max-w-md">
-              <!-- v0.13.9 — banner invalidation: sesi pairing berakhir (TTL 5 mnt / max re-issue) -->
-              <div v-if="pairingInvalidated" class="mb-3 rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800" role="alert">
-                ⚠️ Sesi pairing berakhir — klik "Minta Kode" untuk mulai lagi.
-              </div>
-
-              <div v-if="!pairingCode" class="space-y-3">
-                <M3TextField
-                  v-model="pairingPhone"
-                  label="Nomor WhatsApp (mis. 6281234567890)"
-                  type="tel"
-                  autocomplete="off"
-                  maxlength="15"
-                  :disabled="pairingLoading"
-                />
-                <p class="text-xs text-gray-500">Masukkan nomor HP pemilik akun WhatsApp ini (8–15 digit, kode negara di depan).</p>
+            <!-- QR per-slot (hanya slot ini butuh scan) -->
+            <div v-if="s.status?.qrNeeded" class="pt-3">
+              <div class="flex gap-2 mb-3" role="tablist">
                 <button
-                  @click="requestPairingCode"
-                  :disabled="pairingLoading || pairingPhone.replace(/\D/g, '').length < 8"
-                  class="w-full sm:w-auto px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {{ pairingLoading ? 'Meminta kode…' : 'Minta Kode' }}
-                </button>
-                <p v-if="pairingError" class="text-sm text-red-600">{{ pairingError }}</p>
+                  role="tab"
+                  @click="s._pairMode = 'qr'"
+                  :class="['px-3 py-1.5 rounded-full text-xs font-medium', (s._pairMode || 'qr') === 'qr' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700']"
+                >QR</button>
+                <button
+                  role="tab"
+                  @click="s._pairMode = 'code'"
+                  :class="['px-3 py-1.5 rounded-full text-xs font-medium', (s._pairMode || 'qr') === 'code' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700']"
+                >Pairing Code</button>
               </div>
 
-              <div v-else class="space-y-4">
-                <p class="text-sm text-gray-600">Ketik kode ini di HP → WhatsApp → Setelan → Perangkat tertaut → Tautkan perangkat → "Tautkan dengan nomor telepon saja":</p>
-                <div class="flex items-center gap-3 flex-wrap">
-                  <span class="text-4xl font-mono font-bold tracking-widest text-gray-900 select-all" aria-label="Pairing code">{{ formattedPairingCode }}</span>
-                  <button
-                    @click="copyPairingCode"
-                    class="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200"
-                  >
-                    {{ pairingCopied ? 'Tersalin ✓' : 'Copy' }}
-                  </button>
-                  <button
-                    @click="requestPairingCode"
-                    :disabled="pairingLoading || pairingCooldown > 0"
-                    class="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {{ pairingCooldown > 0 ? `Tunggu ${pairingCooldown}s` : (pairingLoading ? 'Meminta…' : 'Minta ulang') }}
-                  </button>
-                  <!-- v0.13.9 — countdown masa berlaku kode (UI 90 dtk; server TTL 5 mnt) -->
-                  <span v-if="pairingCountdown > 0" class="text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded-full px-2.5 py-1">
-                    Kode aktif — {{ pairingCountdown }}s
-                  </span>
-                  <span v-else class="text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-full px-2.5 py-1">
-                    Kode kemungkinan hangus — minta ulang
-                  </span>
-                </div>
-                <ol class="text-sm text-gray-600 list-decimal list-inside space-y-1">
-                  <li>Buka WhatsApp di HP pemilik nomor ini.</li>
-                  <li>Setelan → Perangkat tertaut → Tautkan perangkat.</li>
-                  <li>Pilih "Tautkan dengan nomor telepon saja".</li>
-                  <li>Ketik kode di atas di HP (di langkah "Tautkan dengan nomor telepon saja") — tunggu hingga terhubung.</li>
-                </ol>
-                <!-- v0.13.9 — status kode: countdown otomatis; kode baru dari server
-                     (auto re-issue) mengganti tampilan TANPA reload (micro-toast) -->
-                <p class="text-xs text-gray-400">Kode diperbarui otomatis selama sesi pairing aktif — pakai selalu kode yang tampil terakhir. Kalau kedaluwarsa, tunggu sebentar (kode baru terbit otomatis) atau klik "Minta ulang".</p>
-                <!-- v0.13.9 — hint jujur: koneksi pairing tidak stabil → QR lebih andal
-                     (QR TIDAK disembunyikan — tab QR tetap tersedia di atas) -->
-                <p v-if="pairingUnstable" class="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
-                  Koneksi pairing sedang tidak stabil (kode sering berganti). QR lebih andal saat ini — tab "Tambahkan via QR" tetap tersedia.
+              <div v-if="(s._pairMode || 'qr') === 'qr'" class="text-center">
+                <img v-if="s._qrDataUrl" :src="s._qrDataUrl" alt="QR Code" class="mx-auto border border-gray-200 rounded-lg max-w-full" />
+                <p v-else class="text-sm text-gray-400 py-6">
+                  QR belum tersedia —
+                  <button @click="fetchQRSlot(s)" class="text-blue-600 hover:underline">muat ulang</button>
                 </p>
               </div>
-            </div>
-          </div>
 
-          <div class="flex flex-wrap gap-2 pt-3">
-            <button
-              @click="reconnect"
-              class="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg text-sm hover:bg-blue-200"
-            >
-              Reconnect
-            </button>
-            <button
-              @click="logout"
-              class="px-4 py-2 bg-red-100 text-red-700 rounded-lg text-sm hover:bg-red-200"
-            >
-              Logout & Clear Session
-            </button>
-            <button
-              @click="fetchQR"
-              class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200"
-            >
-              Refresh QR
-            </button>
+              <div v-else class="max-w-md">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <input v-model="s._pairPhone" type="tel" placeholder="6281234567890" maxlength="15" class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg w-48" />
+                  <button
+                    @click="requestPairingSlot(s)"
+                    class="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
+                  >Minta Kode</button>
+                  <span v-if="s._pairingCode" class="text-xl font-mono font-bold tracking-widest select-all">{{ formatCode(s._pairingCode) }}</span>
+                </div>
+                <p v-if="s._pairError" class="text-xs text-red-600 mt-1">{{ s._pairError }}</p>
+              </div>
+            </div>
+
+            <div class="flex flex-wrap gap-2 pt-3">
+              <button @click="connectSlot(s)" class="px-3 py-1.5 bg-blue-100 text-blue-700 rounded-lg text-sm hover:bg-blue-200">
+                {{ s.status?.connected ? 'Reconnect' : 'Connect' }}
+              </button>
+              <button v-if="s.status?.qrNeeded" @click="fetchQRSlot(s)" class="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200">Refresh QR</button>
+              <button
+                v-if="s.slot !== 0"
+                @click="removeSlot(s)"
+                class="px-3 py-1.5 bg-red-100 text-red-700 rounded-lg text-sm hover:bg-red-200"
+              >Hapus Nomor</button>
+              <span v-else class="text-xs text-gray-400 self-center">slot utama — tidak bisa dihapus</span>
+            </div>
           </div>
         </div>
       </div>
@@ -169,13 +124,12 @@
 
 <script setup>
 import axios from 'axios'
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useConfirm } from '../utils/confirm'
 import { useSocketStore } from '../stores/socket'
 import PageShell from '../components/PageShell.vue'
 import M3Switch from '../components/M3Switch.vue'
-import M3TextField from '../components/M3TextField.vue'
 import { useToastStore } from '../stores/toast'
 
 const API = import.meta.env.VITE_API_URL || ''
@@ -215,241 +169,131 @@ async function toggleReceipts(v) {
   }
 }
 
-// WhatsApp (dipindah dari Admin.vue v0.1.x — logika tidak berubah)
-const waStatus = ref({ connected: false, state: 'connecting' })
-const qrDataUrl = ref(null)
+// ═══ v3.9 — Multi-nomor: slot list + per-slot actions ═══
+const slots = ref([])
+const waMode = ref('pool')
+const addingSlot = ref(false)
+let pollTimer = null
 
-// ── v0.13.7 — Pairing dual-mode: QR default + pairing code ──
-const pairMode = ref('qr') // 'qr' (DEFAULT, regression gate #1) | 'code'
-const pairingPhone = ref('')
-const pairingCode = ref(null) // kode mentah dari server
-const pairingLoading = ref(false)
-const pairingError = ref(null)
-const pairingCopied = ref(false)
-// v0.13.8 — cooldown 15s antar attempt (server WA juga punya rate limit; attempt numpuk = bind sesi kacau)
-const pairingCooldown = ref(0)
-let cooldownTimer = null
-function startCooldown(seconds = 15) {
-  pairingCooldown.value = seconds
-  if (cooldownTimer) clearInterval(cooldownTimer)
-  cooldownTimer = setInterval(() => {
-    pairingCooldown.value -= 1
-    if (pairingCooldown.value <= 0) {
-      clearInterval(cooldownTimer)
-      cooldownTimer = null
-    }
-  }, 1000)
-}
-
-// ── v0.13.9 — Pairing code lifecycle UI (spec §4) ──
-// countdown 90 dtk dari momen kode terbit · auto-update kode dari broadcast wa_status
-// (auto re-issue server, tanpa reload) · banner invalidation · hint QR saat tidak stabil.
-// MODE QR TIDAK DISSENTUH SAMA SEKALI.
-const PAIRING_UI_TTL_SECONDS = 90
-const pairingIssuedAt = ref(null)      // ISO dari server (pairingIssuedAt)
-const pairingInvalidated = ref(false)  // true → banner kuning "Sesi pairing berakhir"
-const pairingCountdown = ref(0)        // detik tampil tersisa (max 90)
-const pairingUnstable = ref(false)     // true → hint "QR lebih andal"
-let countdownTimer = null
-let reissueTimestamps = []             // epoch ms kode-baru-via-broadcast (window 60 dtk)
-
-function stopCountdown() {
-  if (countdownTimer) {
-    clearInterval(countdownTimer)
-    countdownTimer = null
-  }
-}
-
-/**
- * Terima kode (manual dari POST /pairing-code atau broadcast auto re-issue).
- * Reset countdown + cooldown client-side mengikuti kode TERBARU (spec §4 poin 5);
- * tampilan kode baru tidak pernah tertahan oleh cooldown.
- */
-function adoptPairingCode(code, issuedAtIso = null, isAuto = false) {
-  const hadCode = !!pairingCode.value
-  const isNewCode = !!code && code !== pairingCode.value
-  pairingCode.value = code
-  pairingIssuedAt.value = issuedAtIso || new Date().toISOString()
-  if (isNewCode) {
-    // countdown dari issuedAt server (fallback: sekarang) — toleran clock skew minimal (host sama)
-    const issuedMs = new Date(pairingIssuedAt.value).getTime()
-    pairingCountdown.value = Math.max(0, PAIRING_UI_TTL_SECONDS - Math.floor((Date.now() - issuedMs) / 1000))
-    if (countdownTimer) clearInterval(countdownTimer)
-    countdownTimer = setInterval(() => {
-      if (pairingCountdown.value > 0) pairingCountdown.value -= 1
-      if (pairingCountdown.value <= 0 && countdownTimer) {
-        clearInterval(countdownTimer)
-        countdownTimer = null
-      }
-    }, 1000)
-    // cooldown client-side ikut kode terbaru — tapi TIDAK menahan tampilan kode baru
-    startCooldown(60)
-    if (isAuto && hadCode) {
-      // auto re-issue terdeteksi: catat utk deteksi "≥3x dalam 1 menit"
-      const now = Date.now()
-      reissueTimestamps = reissueTimestamps.filter(t => now - t < 60000)
-      reissueTimestamps.push(now)
-      pairingUnstable.value = reissueTimestamps.length >= 3
-      // micro-toast "Kode diperbarui otomatis" (spec §4 poin 2)
-      toast.show({ icon: '🔄', title: 'Kode diperbarui otomatis', message: 'Kode pairing baru terbit — gunakan kode terbaru di HP.' })
-    }
-  } else if (!countdownTimer && pairingCode.value) {
-    // kode sama di-rebroadcast (mis. page reload) → lanjutkan countdown dari issuedAt
-    startCountdownFromIssuedAt()
-  }
-}
-
-function startCountdownFromIssuedAt() {
-  if (!pairingIssuedAt.value) return
-  const issuedMs = new Date(pairingIssuedAt.value).getTime()
-  pairingCountdown.value = Math.max(0, PAIRING_UI_TTL_SECONDS - Math.floor((Date.now() - issuedMs) / 1000))
-  if (countdownTimer) clearInterval(countdownTimer)
-  countdownTimer = setInterval(() => {
-    if (pairingCountdown.value > 0) pairingCountdown.value -= 1
-    if (pairingCountdown.value <= 0 && countdownTimer) {
-      clearInterval(countdownTimer)
-      countdownTimer = null
-    }
-  }, 1000)
-}
-
-/** v0.13.9 — reset seluruh lifecycle UI pairing (saat connected / invalidated) */
-function resetPairingLifecycleUI() {
-  pairingIssuedAt.value = null
-  pairingInvalidated.value = false
-  pairingCountdown.value = 0
-  stopCountdown()
-}
-
-// Formatter XXXX-XXXX (grup 4-4) — mirror dari server (wa.formatPairingCode)
-const formattedPairingCode = computed(() => {
-  const compact = String(pairingCode.value || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+function formatCode(code) {
+  const compact = String(code || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase()
   if (compact.length !== 8) return compact
   return compact.slice(0, 4) + '-' + compact.slice(4)
-})
-
-// Input digits-only (strip non-digit saat mengetik) — via watch karena M3TextField
-// hanya emit update:modelValue (listener @input komponen tidak ikut).
-watch(pairingPhone, (val) => {
-  const clean = String(val || '').replace(/\D/g, '').slice(0, 15)
-  if (clean !== val) pairingPhone.value = clean
-})
-
-async function requestPairingCode() {
-  const phone = pairingPhone.value.replace(/\D/g, '')
-  if (phone.length < 8 || phone.length > 15) {
-    pairingError.value = 'Nomor tidak valid — masukkan 8–15 digit (kode negara di depan, mis. 6281234567890).'
-    return
-  }
-  pairingLoading.value = true
-  pairingError.value = null
-  try {
-    const res = await axios.post(`${API}/api/wa/pairing-code`, { phone })
-    if (res.data.code) {
-      // v0.13.9 — adopt dgn countdown + cooldown mengikuti kode terbaru
-      adoptPairingCode(res.data.code, res.data.issuedAt || null, false)
-    } else {
-      pairingError.value = 'Kode kosong dari server — minta ulang.'
-    }
-  } catch (e) {
-    pairingError.value = e.response?.data?.error || 'Gagal meminta pairing code — coba lagi.'
-  } finally {
-    pairingLoading.value = false
-  }
-}
-
-async function copyPairingCode() {
-  try {
-    await navigator.clipboard.writeText(formattedPairingCode.value)
-    pairingCopied.value = true
-    setTimeout(() => { pairingCopied.value = false }, 2000)
-  } catch {
-    pairingError.value = 'Gagal menyalin — salin manual kode di atas.'
-  }
 }
 
 async function fetchStatus() {
   try {
     const res = await axios.get(`${API}/api/wa/status`)
-    waStatus.value = res.data
-    // v0.13.9 — REST snapshot: adopt pairing state bila belum ada kode di layar
-    // (broadcast selalu menang bila lebih baru — snapshot hanya bootstrap reload)
-    if (!res.data.connected && res.data.pairingCode && !pairingCode.value) {
-      adoptPairingCode(res.data.pairingCode, res.data.pairingIssuedAt || null, false)
+    waMode.value = res.data.waMode || 'pool'
+    // Merge in-place supaya state _qrDataUrl/_draft tidak hilang saat polling
+    const prev = new Map(slots.value.map((s) => [s.slot, s]))
+    slots.value = (res.data.slots || []).map((n) => {
+      const old = prev.get(n.slot) || {}
+      return {
+        ...n,
+        _labelDraft: old._labelDraft ?? (n.label || ''),
+        _pairMode: old._pairMode || 'qr',
+        _qrDataUrl: old._qrDataUrl || null,
+        _pairingCode: old._pairingCode || null,
+        _pairError: old._pairError || null,
+        _pairPhone: old._pairPhone || '',
+      }
+    })
+    // Auto-fetch QR bila slot butuh scan dan QR belum tampil
+    for (const s of slots.value) {
+      if (s.status?.qrNeeded && !s._qrDataUrl) fetchQRSlot(s)
     }
-    if (!res.data.connected && res.data.pairingInvalidated) {
-      pairingInvalidated.value = true
-      pairingCode.value = null
-    }
-    if (res.data.qrNeeded) await fetchQR()
   } catch (e) { console.error(e) }
 }
 
-async function fetchQR() {
+async function fetchQRSlot(s) {
   try {
-    const res = await axios.get(`${API}/api/wa/qr`)
-    qrDataUrl.value = res.data.qrDataUrl
+    const res = await axios.get(`${API}/api/wa/qr?slot=${s.slot}`)
+    s._qrDataUrl = res.data.qrDataUrl
   } catch (e) { /* QR not available yet */ }
 }
 
-async function reconnect() {
+async function connectSlot(s) {
   try {
-    await axios.post(`${API}/api/wa/reconnect`)
+    await axios.post(`${API}/api/wa/reconnect`, { slot: s.slot })
+    toast.show({ icon: '🔄', title: 'Connect dimulai', message: `Slot ${s.slot} — tunggu QR/muncul status.` })
     setTimeout(fetchStatus, 3000)
-  } catch (e) { console.error(e) }
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal connect', message: e.response?.data?.error || 'Coba lagi' })
+  }
 }
 
-async function logout() {
-  // v0.9.0 — confirm() native → M3 dialog; handler logout WA TIDAK berubah
+async function requestPairingSlot(s) {
+  const phone = String(s._pairPhone || '').replace(/\D/g, '')
+  if (phone.length < 8) {
+    s._pairError = 'Nomor tidak valid — 8–15 digit (kode negara di depan).'
+    return
+  }
+  s._pairError = null
+  try {
+    const res = await axios.post(`${API}/api/wa/pairing-code`, { phone, slot: s.slot })
+    s._pairingCode = res.data.pairingCode
+  } catch (e) {
+    s._pairError = e.response?.data?.error || 'Gagal meminta pairing code.'
+  }
+}
+
+async function saveLabel(s) {
+  try {
+    const label = String(s._labelDraft || '').trim()
+    await axios.put(`${API}/api/wa/numbers/${s.slot}`, { label })
+    s.label = label === '' ? null : label
+    toast.show({ icon: '🏷️', title: 'Label disimpan', message: `Slot ${s.slot}: ${label || '(tanpa label)'}` })
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal simpan label', message: e.response?.data?.error || 'Coba lagi' })
+  }
+}
+
+async function addSlot() {
+  // Slot pertama yang belum terdaftar (mulai dari 1)
+  const existing = new Set(slots.value.map((s) => s.slot))
+  let target = null
+  for (let i = 1; i <= 2; i++) {
+    if (!existing.has(i)) { target = i; break }
+  }
+  if (target === null) {
+    toast.show({ icon: '⚠️', title: 'Slot penuh', message: 'Maksimal 3 nomor per tenant (slot 0..2).' })
+    return
+  }
+  addingSlot.value = true
+  try {
+    await axios.post(`${API}/api/wa/numbers`, { slot: target })
+    toast.show({ icon: '➕', title: 'Slot ditambahkan', message: `Slot ${target} terdaftar — klik Connect untuk scan QR.` })
+    await fetchStatus()
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal menambah slot', message: e.response?.data?.error || 'Coba lagi' })
+  } finally {
+    addingSlot.value = false
+  }
+}
+
+async function removeSlot(s) {
   const ok = await confirmAction({
-    title: 'Logout WhatsApp?',
-    message: 'You will need to re-scan QR.',
-    confirmText: 'Logout',
+    title: `Hapus Nomor Slot ${s.slot}?`,
+    message: 'Sesi WhatsApp nomor ini akan dihapus (logout). Slot lain tidak terpengaruh.',
+    confirmText: 'Hapus',
     danger: true,
   })
   if (!ok) return
   try {
-    // v3.7.1 fix: backend butuh guard ?confirm=true (v3.2) — POST telanjang
-    // balik 400 'Konfirmasi diperlukan' senyap → tombol keliatan 'gak bisa'.
-    // Dialog M3 di atas SUDAH konfirmasi user → teruskan ke API.
-    await axios.post(`${API}/api/wa/logout?confirm=true`)
-    waStatus.value = { connected: false, state: 'close' }
-    qrDataUrl.value = null
-    toast.show({ icon: '🚪', title: 'Logout WhatsApp', message: 'Session dihapus — scan QR ulang untuk connect.' })
-    setTimeout(fetchStatus, 3000)
+    await axios.delete(`${API}/api/wa/numbers/${s.slot}`)
+    toast.show({ icon: '🗑️', title: 'Slot dihapus', message: `Slot ${s.slot} dihapus bersih.` })
+    await fetchStatus()
   } catch (e) {
-    console.error(e)
-    toast.show({ icon: '⚠️', title: 'Gagal logout', message: e.response?.data?.error || 'Coba lagi' })
+    toast.show({ icon: '⚠️', title: 'Gagal hapus slot', message: e.response?.data?.error || 'Coba lagi' })
   }
 }
 
-function onWaStatus(data) {
-  waStatus.value = data
-  if (data.qrNeeded && data.qrDataUrl) {
-    qrDataUrl.value = data.qrDataUrl
-  }
-  // v0.13.7 — pairing code live-update (broadcast wa_status.pairingCode)
-  if (data.connected) {
-    pairingCode.value = null
-    pairingError.value = null
-    // v0.13.9 — pairing selesai → reset lifecycle UI
-    pairingUnstable.value = false
-    reissueTimestamps = []
-    resetPairingLifecycleUI()
-  } else if (data.pairingInvalidated === true) {
-    // v0.13.9 — TTL/MAX habis: banner + tombol Minta Kode tetap tersedia.
-    // Kode lama dibuang dari layar (hangus) → form muncul lagi.
-    pairingInvalidated.value = true
-    pairingCode.value = null
-    pairingIssuedAt.value = null
-    pairingCountdown.value = 0
-    stopCountdown()
-  } else if (data.pairingCode) {
-    // v0.13.9 — kode baru via broadcast (manual issue ATAU auto re-issue server):
-    // ganti kode di layar TANPA reload; isAuto=true hanya bila menggantikan kode existing
-    adoptPairingCode(data.pairingCode, data.pairingIssuedAt || null, !!pairingCode.value && data.pairingCode !== pairingCode.value)
-    if (data.pairingInvalidated === false) pairingInvalidated.value = false
-  }
+// socket broadcast: refresh slot saat status WA berubah
+function onWaStatus() {
+  // debounced refresh
+  clearTimeout(onWaStatus._t)
+  onWaStatus._t = setTimeout(fetchStatus, 500)
 }
 
 function handleLogout() {
@@ -461,11 +305,10 @@ onMounted(() => {
   fetchStatus()
   loadAppConfig()
   socketStore.on('wa_status', onWaStatus)
+  pollTimer = setInterval(fetchStatus, 10000)
 })
 onUnmounted(() => {
   socketStore.off('wa_status', onWaStatus)
-  if (cooldownTimer) clearInterval(cooldownTimer)
-  // v0.13.9 — bersihkan countdown timer
-  stopCountdown()
+  if (pollTimer) clearInterval(pollTimer)
 })
 </script>

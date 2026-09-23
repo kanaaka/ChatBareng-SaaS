@@ -102,7 +102,17 @@
       </div>
 
       <!-- Save -->
-      <div class="flex justify-end">
+      <div class="flex justify-end items-center gap-3 flex-wrap">
+        <!-- v3.9 — Terapkan ke: Semua nomor (linked, default) / Nomor ini saja -->
+        <label v-if="waSlots.length > 0" class="flex items-center gap-2 text-sm">
+          <span class="text-gray-600">Terapkan ke:</span>
+          <select v-model="applySlot" class="px-3 py-2 border border-gray-300 rounded-lg text-sm">
+            <option value="all">Semua nomor (linked)</option>
+            <option v-for="s in waSlots" :key="s.slot" :value="String(s.slot)">
+              Nomor ini saja — slot {{ s.slot }}{{ s.label ? ' · ' + s.label : '' }}
+            </option>
+          </select>
+        </label>
         <button
           @click="save"
           :disabled="saving"
@@ -146,6 +156,10 @@ const form = ref({
   sunEnabled: true, sunStart: '08:00', sunEnd: '17:00',
 })
 
+// v3.9 — Terapkan ke: 'all' (link-all, default) | slot 0..2
+const waSlots = ref([])
+const applySlot = ref('all')
+
 // Badge status ringkas di atas
 const statusBadge = computed(() => {
   const f = form.value
@@ -177,6 +191,9 @@ async function fetchConfig() {
     }
     // v0.13.0 — greetMode default "text" bila backend belum punya kolom
     if (!form.value.greetMode) form.value.greetMode = 'text'
+    // v3.9 — daftar slot (untuk dropdown Terapkan ke); hidden bila 0
+    const st = await axios.get(`${API}/api/wa/status`)
+    waSlots.value = st.data.slots || []
   } catch (e) {
     toast.show({ icon: '⚠️', title: 'Gagal memuat', message: e.response?.data?.error || 'Config tidak bisa dimuat' })
   } finally {
@@ -194,7 +211,9 @@ async function save() {
   }
   saving.value = true
   try {
-    const res = await axios.put(`${API}/api/autoreply`, form.value)
+    // v3.9 — numberSlot: 'all' = link-all (shared); slot-nya = config Nomor ini saja
+    const body = { ...form.value, numberSlot: applySlot.value === 'all' ? null : Number(applySlot.value) }
+    const res = await axios.put(`${API}/api/autoreply`, body)
     const cfg = res.data.config
     // v0.13.2 — sinkron otomatis: mode menu → gateway ON; mode text → gateway OFF
     if (res.data.menuGatewayEnabled === true) {

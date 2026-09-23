@@ -845,10 +845,16 @@ router.post('/:id/reply', ...rt, replyValidation, async (req, res) => {
     }
 
     // Send via pool per-tenant (v3 — WA_DISABLED → error jelas)
-    const waResult = await wa.sendMessageForTenant(req.tenantId, chat.waJid, personalizedContent).catch((err) => {
+    // v3.9 — ATURAN TUNGGAL reply: keluar via nomor ASAL chat (numberSlot);
+    // slot mati → GAGAL dgn pesan jelas, JANGAN fallback ke nomor lain (owner 18:24).
+    const replySlot = Number(chat.numberSlot) || 0
+    const waResult = await wa.sendMessageForTenant(req.tenantId, chat.waJid, personalizedContent, { slot: replySlot }).catch((err) => {
       console.error('[Chats] WA send error (non-fatal, tetap simpan):', err.message)
+      err._replySlotFailed = true
       return null
     })
+    // v3.9 — bila reply slot-0 juga gagal not-connected → pesan ke CS tetap jelas
+    // (message tersimpan status 'failed' seperti pola existing; error jelas di log).
 
     // Save message to DB — v0.11.0: content dienkripsi at-rest
     const message = await prisma.message.create({
@@ -974,7 +980,9 @@ router.post('/:id/media', ...rt, upload.single('file'), async (req, res) => {
     const buffer = loadMedia(mediaPath)
 
     // Send via pool per-tenant (v3 — WA_DISABLED → error jelas, message tetap disimpan)
+    // v3.9 — reply media via nomor asal chat (numberSlot), tanpa fallback.
     let waResult
+    const replySlotMedia = Number(chat.numberSlot) || 0
     try {
       waResult = await wa.sendMediaForTenant(
         req.tenantId,
@@ -983,7 +991,8 @@ router.post('/:id/media', ...rt, upload.single('file'), async (req, res) => {
         mediaType === 'application' ? 'document' : mediaType,
         mimetype,
         caption,
-        req.file.originalname
+        req.file.originalname,
+        { slot: replySlotMedia }
       )
     } catch (sendErr) {
       console.error('[Chats] WA send media error:', sendErr.message)

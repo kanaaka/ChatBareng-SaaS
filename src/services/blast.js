@@ -72,6 +72,58 @@ async function runBlast(blastId) {
     // di sini; personalisasi {name} jalan di plaintext (jangan enkripsi hasil replace).
     const messageTemplate = decryptTextSafe(blast.message)
 
+    // ═══ v3.9 — Multi-nomor: slot pool + rotateEvery (round-robin) ═══
+    // numberSlots: JSON array slot terpilih (null = [0]); rotateEvery null/0 = fixed
+    // slot pertama. Slot TIDAK connected di-skip + warning (pola spec §4).
+    let slotPool = [0]
+    try {
+      if (blast.numberSlots) {
+        const parsed = JSON.parse(blast.numberSlots)
+        if (Array.isArray(parsed)) {
+          slotPool = parsed.map(Number).filter((n) => Number.isFinite(n) && n >= 0 && n <= 2)
+        }
+      }
+    } catch {}
+    if (slotPool.length === 0) slotPool = [0]
+    const rotateEvery = Math.max(0, parseInt(blast.rotateEvery, 10) || 0)
+    const fixedSlot = slotPool[0]
+    // Filter awal: hanya slot connected yang ikut rotasi (slot mati di-skip + warning)
+    let activeSlots = slotPool.filter((s) => wa.isTenantConnected(tenantId, s))
+    if (rotateEvery > 0 && activeSlots.length < slotPool.length) {
+      const dead = slotPool.filter((s) => !activeSlots.includes(s))
+      if (dead.length > 0) {
+        console.warn(`[Blast] v3.9 slot tidak connected, di-skip: ${dead.join(', ')} (blast ${blastId})`)
+        broadcast.emitToTenant(tenantId, 'blast_warning', { blastId, message: `Nomor (slot ${dead.join(', ')}) tidak connected — di-skip dari rotasi.` })
+      }
+    }
+    if (rotateEvery > 0 && activeSlots.length === 0) {
+      // semua slot pilihan mati → jatuh ke fixedSlot (error per-pesan jelas saat kirim)
+      activeSlots = [fixedSlot]
+    }
+    let rrIndex = 0
+    let sinceRotate = 0
+    let currentSlot = (rotateEvery > 0 && activeSlots.length > 0) ? activeSlots[0] : fixedSlot
+    const nextSlot = () => {
+      if (rotateEvery <= 0 || activeSlots.length <= 1) return currentSlot
+      sinceRotate++
+      if (sinceRotate >= rotateEvery) {
+        sinceRotate = 0
+        rrIndex = (rrIndex + 1) % activeSlots.length
+        // Re-check connect saat giliran pindah — slot mati di-skip + warning
+        let tries = 0
+        while (!wa.isTenantConnected(tenantId, activeSlots[rrIndex]) && tries < activeSlots.length) {
+          console.warn(`[Blast] v3.9 slot ${activeSlots[rrIndex]} tidak connected saat rotasi — di-skip`)
+          broadcast.emitToTenant(tenantId, 'blast_progress', { blastId, warning: `Slot ${activeSlots[rrIndex]} tidak connected — di-skip.` })
+          rrIndex = (rrIndex + 1) % activeSlots.length
+          tries++
+        }
+      }
+      currentSlot = activeSlots[rrIndex]
+      return currentSlot
+    }
+    if (rotateEvery > 0) nextSlot() // initial resolve
+    else currentSlot = fixedSlot
+
     // Update status to running
     await prisma.blast.update({
       where: { id: blastId },
@@ -161,21 +213,25 @@ async function runBlast(blastId) {
           }
 
           // Send message — via pool per-tenant (v3)
+          // v3.9 — slot pengirim: rotateEvery → round-robin antar slot connected;
+          // off = fixed slot (slot pertama terpilih). Slot mati → kirim gagal
+          // (BlastLog.failed dgn pesan jelas; TIDAK fallback ke nomor lain).
+          const sendSlot = rotateEvery > 0 && activeSlots.length > 0 ? nextSlot() : currentSlot
           if (hasMedia) {
             // Image with caption — decrypt the media file before sending
             // blast.mediaPath points to an ENCRYPTED file on disk; Baileys
             // needs the raw (decrypted) buffer, same as regular chat media.
             const mediaBuffer = loadMedia(blast.mediaPath)
-            await wa.sendMediaForTenant(tenantId, jid, mediaBuffer, 'image', 'image/jpeg', personalizedMsg, null)
+            await wa.sendMediaForTenant(tenantId, jid, mediaBuffer, 'image', 'image/jpeg', personalizedMsg, null, { slot: sendSlot })
           } else {
             // Text only
-            await wa.sendMessageForTenant(tenantId, jid, personalizedMsg)
+            await wa.sendMessageForTenant(tenantId, jid, personalizedMsg, { slot: sendSlot })
           }
 
-          // Update log
+          // Update log (+ senderSlot v3.9 — audit nomor pengirim per baris)
           await prisma.blastLog.update({
             where: { id: log.id },
-            data: { status: 'sent', sentAt: new Date() },
+            data: { status: 'sent', sentAt: new Date(), senderSlot: sendSlot },
           })
 
           sentCount++
@@ -184,7 +240,7 @@ async function runBlast(blastId) {
           
           await prisma.blastLog.update({
             where: { id: log.id },
-            data: { status: 'failed', error: err.message?.slice(0, 500) || 'Unknown error' },
+            data: { status: 'failed', error: err.message?.slice(0, 500) || 'Unknown error', senderSlot: sendSlot },
           })
 
           failedCount++

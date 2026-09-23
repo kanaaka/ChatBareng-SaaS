@@ -119,10 +119,23 @@
                   <span v-else-if="t.waStatus?.connected" class="sa-pill" style="background:#dcfce7;color:#166534;">WA terhubung</span>
                   <span v-else-if="t.waStatus?.qrNeeded" class="sa-pill" style="background:#fef9c3;color:#854d0e;">Menunggu scan QR</span>
                   <span v-else class="sa-pill" style="background:#e5e7eb;color:#374151;">Terputus</span>
+                  <!-- v3.9 — jumlah nomor + mode -->
+                  <span v-if="t.slots && t.slots.length > 1" class="sa-pill" style="background:#dbeafe;color:#1e40af;">{{ t.slots.filter(s => s.status?.connected).length }}/{{ t.slots.length }} nomor · {{ t.waMode }}</span>
                 </div>
                 <div class="text-sm mt-1" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
                   {{ t.userCount }} user · {{ t.chatCount }} chat
                   <template v-if="t.waPhone"> · WA +{{ t.waPhone }}</template>
+                </div>
+                <!-- v3.9 — daftar slot per tenant (label + nomor + status per-slot) -->
+                <div v-if="t.slots && t.slots.length > 0" class="flex flex-wrap gap-1 mt-2">
+                  <span
+                    v-for="s in t.slots" :key="s.slot"
+                    class="sa-pill"
+                    :style="s.status?.connected ? 'background:#dcfce7;color:#166534;' : 'background:#e5e7eb;color:#374151;'"
+                    :title="s.waSessionDir || ''"
+                  >
+                    slot {{ s.slot }}{{ s.label ? ' · ' + s.label : '' }}{{ s.status?.connected ? ' ✓ +' + (s.status.phoneNumber || '') : ' ✕' }}
+                  </span>
                 </div>
                 <!-- v3.4 — usage meter mini + chip fitur aktif -->
                 <div v-if="t.usage" class="sa-usage mt-2">
@@ -135,6 +148,8 @@
                 </div>
               </div>
               <div class="flex flex-wrap gap-2 justify-end">
+                <!-- v3.9 — kelola nomor per tenant -->
+                <button class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm" @click="openNumbersModal(t)">Nomor WA</button>
                 <!-- v3.8 — masa aktif tenant -->
                 <button class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm" @click="openValidityModal(t)">Masa Aktif</button>
                 <button class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm" @click="openPlanModal(t)">Edit Paket</button>
@@ -246,6 +261,44 @@
         </div>
       </div>
 
+      <!-- v3.9 — Modal Nomor WA per tenant (slot management + kuota) -->
+      <div v-if="numbersModalTenant" class="sa-modal-backdrop" @click.self="closeNumbersModal">
+        <div class="sa-modal">
+          <h3 class="text-lg font-semibold mb-1">Nomor WA — #{{ numbersModalTenant.id }} {{ numbersModalTenant.name }}</h3>
+          <p class="text-sm mb-3" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
+            Kuota paket: {{ numbersForm.used }}/{{ numbersForm.maxNumbers }} (hard cap 3). Kuota dihitung dari slot yang ADA (disconnect tetap ngitung).
+          </p>
+          <div class="space-y-2 mb-4">
+            <div v-for="s in numbersForm.slots" :key="s.slot" class="flex items-center gap-2 p-2 rounded-lg" style="background: var(--md-sys-color-surface-container-high);">
+              <span class="text-sm font-semibold min-w-[70px]">Slot {{ s.slot }}</span>
+              <input v-model="s._labelDraft" type="text" placeholder="Label" maxlength="50" class="sa-select !py-1 flex-1 min-w-0" />
+              <span class="sa-pill" :style="s.status?.connected ? 'background:#dcfce7;color:#166534;' : 'background:#e5e7eb;color:#374151;'">
+                {{ s.status?.connected ? '+' + (s.status.phoneNumber || '?') : (s.status?.state || 'off') }}
+              </span>
+              <button class="m3-btn m3-btn--text !min-h-[32px] !text-xs" @click="saveSlotRow(s)">Simpan</button>
+              <button
+                class="m3-btn m3-btn--text !min-h-[32px] !text-xs"
+                style="color: var(--md-sys-color-error);"
+                :disabled="s.slot === 0"
+                @click="deleteSlotRow(s)"
+              >Hapus</button>
+            </div>
+            <div v-if="numbersForm.slots.length === 0" class="sa-empty">Belum ada slot terdaftar (slot-0 implisit jalan).</div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <M3TextField v-model="newSlot.slot" label="Slot baru (1 / 2)" type="number" min="1" max="2" />
+            <M3TextField v-model="newSlot.label" label="Label (opsional)" type="text" />
+          </div>
+          <div v-if="numbersError" class="text-sm mt-3" style="color: var(--md-sys-color-error);">{{ numbersError }}</div>
+          <div class="flex gap-2 justify-end mt-4">
+            <button class="m3-btn m3-btn--text !min-h-[40px]" @click="closeNumbersModal">Tutup</button>
+            <button class="m3-btn m3-btn--filled !min-h-[40px]" :disabled="numbersSaving" @click="addSlotRow">
+              {{ numbersSaving ? 'Menyimpan…' : 'Tambah Slot' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- v3.8 — Modal Masa Aktif (4 preset + Date start + preview selesai) -->
       <div v-if="validityModalTenant" class="sa-modal-backdrop" @click.self="closeValidityModal">
         <div class="sa-modal">
@@ -298,6 +351,7 @@
           <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
             <M3TextField v-model="planForm.maxAgents" label="Max agen (kosong = ∞)" type="number" min="0" />
             <M3TextField v-model="planForm.maxContacts" label="Max kontak (kosong = ∞)" type="number" min="0" />
+            <M3TextField v-model="planForm.maxNumbers" label="Maks. Nomor WA (kosong = 1, max 3)" type="number" min="0" max="3" />
             <M3TextField v-model="planForm.tkQuotaGb" label="Kuota TK (GB, kosong = ∞)" type="number" step="0.1" min="0" />
           </div>
           <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mt-4">
@@ -431,6 +485,88 @@ const AUDIT_ACTIONS = [
   'plan_update', 'branding_update', 'backup_download', 'impersonate', 'admin_create',
 ]
 const backingUp = ref(null)
+
+// ─── v3.9 — Modal Nomor WA per tenant ───
+const numbersModalTenant = ref(null)
+const numbersForm = ref({ slots: [], maxNumbers: 1, used: 0 })
+const numbersSaving = ref(false)
+const numbersError = ref('')
+const newSlot = ref({ slot: 1, label: '' })
+
+async function openNumbersModal(t) {
+  numbersModalTenant.value = t
+  numbersError.value = ''
+  newSlot.value = { slot: 1, label: '' }
+  try {
+    const { data } = await axios.get(`${API}/api/sa/tenants/${t.id}/numbers`)
+    numbersForm.value = {
+      slots: (data.slots || []).map((s) => ({ ...s, _labelDraft: s.label || '' })),
+      maxNumbers: data.maxNumbers,
+      used: data.used,
+    }
+  } catch (e) {
+    numbersError.value = e.response?.data?.error || 'Gagal memuat slot'
+  }
+}
+function closeNumbersModal() {
+  numbersModalTenant.value = null
+}
+async function refreshNumbersModal() {
+  const t = numbersModalTenant.value
+  if (!t) return
+  try {
+    const { data } = await axios.get(`${API}/api/sa/tenants/${t.id}/numbers`)
+    const prev = new Map(numbersForm.value.slots.map((s) => [s.slot, s]))
+    numbersForm.value.slots = (data.slots || []).map((s) => ({ ...s, _labelDraft: prev.get(s.slot)?._labelDraft ?? (s.label || '') }))
+    numbersForm.value.maxNumbers = data.maxNumbers
+    numbersForm.value.used = data.used
+  } catch {}
+}
+async function addSlotRow() {
+  const t = numbersModalTenant.value
+  if (!t) return
+  numbersSaving.value = true
+  numbersError.value = ''
+  try {
+    await axios.post(`${API}/api/sa/tenants/${t.id}/numbers`, {
+      slot: Number(newSlot.value.slot),
+      label: String(newSlot.value.label || '').trim() || undefined,
+    })
+    await refreshNumbersModal()
+    await load()
+  } catch (e) {
+    numbersError.value = e.response?.data?.error || 'Gagal menambah slot'
+  } finally {
+    numbersSaving.value = false
+  }
+}
+async function saveSlotRow(s) {
+  const t = numbersModalTenant.value
+  if (!t) return
+  numbersError.value = ''
+  try {
+    await axios.post(`${API}/api/sa/tenants/${t.id}/numbers`, {
+      slot: s.slot,
+      label: String(s._labelDraft || '').trim() || '',
+    })
+    s.label = String(s._labelDraft || '').trim() || null
+    await load()
+  } catch (e) {
+    numbersError.value = e.response?.data?.error || 'Gagal menyimpan slot'
+  }
+}
+async function deleteSlotRow(s) {
+  const t = numbersModalTenant.value
+  if (!t || s.slot === 0) return
+  numbersError.value = ''
+  try {
+    await axios.delete(`${API}/api/sa/tenants/${t.id}/numbers/${s.slot}`)
+    await refreshNumbersModal()
+    await load()
+  } catch (e) {
+    numbersError.value = e.response?.data?.error || 'Gagal menghapus slot'
+  }
+}
 
 // ─── v3.8 §A — Chip WA real-time: polling GET /api/sa/tenants tiap 15s ───
 // Silent in-place update (TANPA loading flicker — loading flag tidak disentuh);
@@ -627,6 +763,8 @@ function openPlanModal(t) {
     preset: '', // tidak mengubah apa-apa sampai user pilih
     maxAgents: t.plan?.maxAgents ?? '',
     maxContacts: t.plan?.maxContacts ?? '',
+    // v3.9 — kuota nomor WA (null = 1; tampil "" = null? tampil nilai efektif utk edit eksplisit)
+    maxNumbers: t.plan?.maxNumbers ?? '',
     tkQuotaGb: t.plan?.tkQuotaBytes != null ? +(t.plan.tkQuotaBytes / 1024 ** 3).toFixed(2) : '',
     featAnalytics: !!t.plan?.featAnalytics,
     featBlast: !!t.plan?.featBlast,
@@ -652,6 +790,12 @@ async function savePlan() {
     const numOrNull = (v) => (v === '' || v === null || v === undefined ? null : Number(v))
     body.maxAgents = numOrNull(planForm.value.maxAgents)
     body.maxContacts = numOrNull(planForm.value.maxContacts)
+    // v3.9 — maxNumbers: kosong = null (=1 server-side); terisi = 0..3 (hard cap 3)
+    if (planForm.value.maxNumbers === '' || planForm.value.maxNumbers === null) body.maxNumbers = null
+    else {
+      const n = Number(planForm.value.maxNumbers)
+      body.maxNumbers = Number.isFinite(n) ? Math.max(0, Math.min(3, Math.trunc(n))) : null
+    }
     const gb = planForm.value.tkQuotaGb
     body.tkQuotaBytes = gb === '' || gb === null || gb === undefined ? null : Math.round(Number(gb) * 1024 ** 3)
     for (const f of FEATURE_DEFS) body[f.key] = !!planForm.value[f.key]

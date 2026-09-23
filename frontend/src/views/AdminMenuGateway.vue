@@ -207,7 +207,17 @@
       </div>
 
       <!-- Simpan -->
-      <div class="flex justify-end">
+      <div class="flex justify-end items-center gap-3 flex-wrap">
+        <!-- v3.9 — Terapkan ke: Semua nomor (linked, default) / Nomor ini saja -->
+        <label v-if="waSlots.length > 0" class="flex items-center gap-2 text-sm">
+          <span class="text-gray-600">Terapkan ke:</span>
+          <select v-model="applySlot" class="px-3 py-2 border border-gray-300 rounded-lg text-sm">
+            <option value="all">Semua nomor (linked)</option>
+            <option v-for="s in waSlots" :key="s.slot" :value="String(s.slot)">
+              Nomor ini saja — slot {{ s.slot }}{{ s.label ? ' · ' + s.label : '' }}
+            </option>
+          </select>
+        </label>
         <button
           @click="save"
           :disabled="saving"
@@ -380,6 +390,8 @@ async function save() {
       timeoutValue: form.value.timeoutValue,
       timeoutUnit: form.value.timeoutUnit,
       repeatFrequency: form.value.repeatFrequency,
+      // v3.9 — target slot (all = shared/link-all; angka = Nomor ini saja)
+      numberSlot: applySlot.value === 'all' ? null : Number(applySlot.value),
       options: form.value.options.map(o => ({
         position: o.position,
         label: o.label,

@@ -38,14 +38,15 @@ function validate(req, res) {
 
 // Status WA fase 1 — pool stub (tanpa koneksi nyata). Tetap dipanggil lewat pool
 // supaya fase 2 tinggal mengganti isi pool tanpa menyentuh file ini.
-function waStatusFor(tenantId) {
-  const s = wa.getStatusForTenant(tenantId)
+function waStatusFor(tenantId, slot = 0) {
+  const s = wa.getStatusForTenant(tenantId, slot)
   return {
     connected: s.connected,
     qrNeeded: s.qrNeeded,
     state: s.state,
     phoneNumber: s.phoneNumber || null,
     disabled: !!s.disabled,
+    slot: Number(slot) || 0,
   }
 }
 
@@ -67,6 +68,7 @@ function planToJson(plan) {
     preset: plan.preset,
     maxAgents: plan.maxAgents,
     maxContacts: plan.maxContacts,
+    maxNumbers: plan.maxNumbers ?? null, // v3.9 — kuota nomor WA (null = 1, hard cap 3)
     tkQuotaBytes: plan.tkQuotaBytes == null ? null : Number(plan.tkQuotaBytes),
     featAnalytics: plan.featAnalytics,
     featBlast: plan.featBlast,
@@ -77,8 +79,25 @@ function planToJson(plan) {
   }
 }
 
+// v3.9 — status WA per-slot utk kartu tenant (polling v3.8 yang sudah ada dipakai)
+function waSlotsFor(tenantId) {
+  return wa.listTenantNumbers(tenantId)
+    .then((rows) => rows.map((n) => ({
+      id: n.id,
+      slot: n.slot,
+      label: n.label || null,
+      routeMode: n.routeMode || 'pool',
+      assignedAgentId: n.assignedAgentId || null,
+      reassignOffline: !!n.reassignOffline,
+      waSessionDir: n.waSessionDir || null,
+      status: waStatusFor(tenantId, n.slot),
+    })))
+    .catch(() => [])
+}
+
 // GET /api/sa/tenants — list + jumlah user/chat per tenant + waStatus (fase 1: disabled)
 // v3.4 — + plan (badge paket) + usage meter (agents/contacts/tkBytes)
+// v3.9 — + slots (daftar nomor per tenant + status per-slot) + waMode
 router.get('/tenants', ...sa, async (req, res) => {
   try {
     const tenants = await prisma.tenant.findMany({
@@ -103,6 +122,9 @@ router.get('/tenants', ...sa, async (req, res) => {
         userCount: t._count.users,
         chatCount: t._count.chats,
         waStatus: waStatusFor(t.id),
+        // v3.9 — mode multi-nomor + daftar slot (additive)
+        waMode: t.waMode || 'pool',
+        slots: await waSlotsFor(t.id),
         createdAt: t.createdAt,
         // v3.8 — masa aktif tenant (+ computed validityState; null/null = lifetime)
         ...validity.validityToJson(t),
@@ -448,6 +470,168 @@ router.post(
   }
 )
 
+// ═══════════════════════ v3.9 — MULTI-NOMOR WA (slot management) ═══════════════════════
+// Slot-0 = slot utama (implisit, sesi existing — TIDAK boleh dihapus via API ini);
+// slot 1/2 = tambahan (dir tenant-<id>/slot-<n>). Kuota = jumlah BARIS slot yang ADA
+// (connected/tidak — owner 18:24 #4). Cap = plan.maxNumbers (null = 1; hard cap 3).
+// Pelanggaran cap → 403 (spec §5).
+const SA_MAX_NUMBERS_HARD_CAP = 3
+
+async function effectiveMaxNumbers(tenantId) {
+  const plan = await plans.getPlan(tenantId)
+  const n = plan?.maxNumbers
+  const eff = (n == null || !Number.isFinite(Number(n))) ? 1 : Math.max(0, Math.trunc(Number(n)))
+  return Math.min(eff, SA_MAX_NUMBERS_HARD_CAP)
+}
+
+// GET /api/sa/tenants/:id/numbers — daftar slot + status per-slot
+router.get('/tenants/:id/numbers', ...sa, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid tenant id' })
+    const tenant = await prisma.tenant.findUnique({ where: { id } })
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
+    const slots = await waSlotsFor(id)
+    const maxNumbers = await effectiveMaxNumbers(id)
+    res.json({ slots, maxNumbers, used: slots.length, waMode: tenant.waMode || 'pool' })
+  } catch (e) {
+    console.error('[SA] List numbers error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/sa/tenants/:id/numbers { slot, label?, routeMode?, assignedAgentId?, reassignOffline? }
+// — tambah/daftarkan slot. Cap dgn plan.maxNumbers → 403 bila lebih.
+router.post(
+  '/tenants/:id/numbers',
+  ...sa,
+  [
+    body('slot').notEmpty().withMessage('slot wajib (0..2)'),
+  ],
+  async (req, res) => {
+    try {
+      if (!validate(req, res)) return
+      const id = parseInt(req.params.id, 10)
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid tenant id' })
+      const tenant = await prisma.tenant.findUnique({ where: { id }, include: { plan: true } })
+      if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
+
+      const slot = parseInt(req.body.slot, 10)
+      if (!Number.isFinite(slot) || slot < 0 || slot > SA_MAX_NUMBERS_HARD_CAP) {
+        return res.status(400).json({ error: `Slot harus 0..${SA_MAX_NUMBERS_HARD_CAP}` })
+      }
+
+      const maxNumbers = await effectiveMaxNumbers(id)
+      const used = await prisma.tenantNumber.count({ where: { tenantId: id } })
+      const exists = await prisma.tenantNumber.findUnique({ where: { tenantId_slot: { tenantId: id, slot } } })
+      if (!exists && used >= maxNumbers) {
+        return res.status(403).json({
+          error: `Kuota nomor WA penuh (${used}/${maxNumbers}). Naikkan "Maks. Nomor WA" di paket tenant untuk menambah slot.`,
+          used,
+          maxNumbers,
+        })
+      }
+
+      const data = {}
+      if (req.body.label !== undefined) {
+        const label = String(req.body.label || '').trim()
+        if (label.length > 50) return res.status(400).json({ error: 'Label maksimal 50 karakter' })
+        data.label = label === '' ? null : label
+      }
+      if (req.body.routeMode !== undefined) {
+        if (!['pool', 'assigned'].includes(req.body.routeMode)) {
+          return res.status(400).json({ error: 'routeMode harus pool|assigned' })
+        }
+        data.routeMode = req.body.routeMode
+      }
+      if (req.body.assignedAgentId !== undefined) {
+        if (req.body.assignedAgentId === null) data.assignedAgentId = null
+        else {
+          const aid = parseInt(req.body.assignedAgentId, 10)
+          if (!Number.isFinite(aid)) return res.status(400).json({ error: 'assignedAgentId tidak valid' })
+          const agent = await prisma.user.findFirst({ where: { id: aid, tenantId: id, role: { in: ['cs', 'admin'] }, status: 'active' } })
+          if (!agent) return res.status(400).json({ error: 'Agent tidak ditemukan di tenant ini (role cs/admin, aktif)' })
+          data.assignedAgentId = aid
+        }
+      }
+      if (req.body.reassignOffline !== undefined) data.reassignOffline = !!req.body.reassignOffline
+
+      const row = await prisma.tenantNumber.upsert({
+        where: { tenantId_slot: { tenantId: id, slot } },
+        update: data,
+        create: { tenantId: id, slot, ...data },
+      })
+      console.log(`[SA] Tenant #${id} (${tenant.name}) number slot=${slot} di-upsert by @${req.user.username}`)
+      await saAudit.audit(req.user, 'tenant_update', id, tenant.name, { action: 'number_upsert', slot, ...data })
+      // Connect slot baru langsung (best-effort; QR akan broadcast)
+      try {
+        if (!config.waDisabled) await wa.connectTenant(id, { slot })
+      } catch (e) {
+        console.error(`[SA] connect slot ${slot} gagal (non-fatal):`, e.message)
+      }
+      res.status(201).json({ number: row })
+    } catch (e) {
+      console.error('[SA] Create number error:', e)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  }
+)
+
+// DELETE /api/sa/tenants/:id/numbers/:slot — hapus slot (logout + hapus dir sesi slot itu).
+// slot-0 TIDAK boleh dihapus (slot utama = sesi existing). Sesi slot dihapus AMAN
+// (logoutTenant per-slot hanya menyentuh dir slot itu).
+router.delete('/tenants/:id/numbers/:slot', ...sa, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const slot = parseInt(req.params.slot, 10)
+    if (!Number.isFinite(id) || !Number.isFinite(slot)) return res.status(400).json({ error: 'Invalid id/slot' })
+    if (slot === 0) return res.status(400).json({ error: 'Slot-0 (nomor utama) tidak bisa dihapus — gunakan logout WhatsApp saja' })
+    const tenant = await prisma.tenant.findUnique({ where: { id } })
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
+    const row = await prisma.tenantNumber.findUnique({ where: { tenantId_slot: { tenantId: id, slot } } })
+    if (!row) return res.status(404).json({ error: 'Slot tidak terdaftar' })
+    // Logout per-slot: sesi WA slot itu dihapus aman (slot lain tidak tersentuh)
+    try {
+      await wa.logoutTenant(id, slot)
+    } catch (e) {
+      console.error(`[SA] logout slot ${slot} error (non-fatal):`, e.message)
+    }
+    await prisma.tenantNumber.delete({ where: { id: row.id } })
+    console.log(`[SA] Tenant #${id} (${tenant.name}) number slot=${slot} DIHAPUS by @${req.user.username}`)
+    await saAudit.audit(req.user, 'tenant_update', id, tenant.name, { action: 'number_delete', slot })
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('[SA] Delete number error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// PUT /api/sa/tenants/:id/wa-mode { waMode } — pool | assigned | mix
+router.put(
+  '/tenants/:id/wa-mode',
+  ...sa,
+  [body('waMode').trim().notEmpty().withMessage('waMode wajib (pool|assigned|mix)')],
+  async (req, res) => {
+    try {
+      if (!validate(req, res)) return
+      const id = parseInt(req.params.id, 10)
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid tenant id' })
+      const tenant = await prisma.tenant.findUnique({ where: { id } })
+      if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
+      const mode = String(req.body.waMode || '')
+      if (!['pool', 'assigned', 'mix'].includes(mode)) {
+        return res.status(400).json({ error: 'waMode harus pool|assigned|mix' })
+      }
+      const updated = await prisma.tenant.update({ where: { id }, data: { waMode: mode } })
+      await saAudit.audit(req.user, 'tenant_update', id, tenant.name, { action: 'wa_mode', waMode: mode })
+      res.json({ waMode: updated.waMode })
+    } catch (e) {
+      console.error('[SA] Set wa-mode error:', e)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  }
+)
+
 // GET /api/sa/stats — total tenants/users/messages lintas tenant
 router.get('/stats', ...sa, async (req, res) => {
   try {
@@ -488,6 +672,9 @@ router.get('/tenants/:id/plan', ...sa, async (req, res) => {
         maxContacts: plan?.maxContacts ?? null,
         tkBytes: usage.tkBytes,
         tkQuotaBytes: plan?.tkQuotaBytes == null ? null : Number(plan.tkQuotaBytes),
+        // v3.9 — kuota nomor WA
+        numbers: (await prisma.tenantNumber.count({ where: { tenantId: id } })),
+        maxNumbers: plan?.maxNumbers ?? null,
       },
     })
   } catch (e) {
@@ -523,6 +710,7 @@ router.put(
           preset: tenant.plan.preset,
           maxAgents: tenant.plan.maxAgents,
           maxContacts: tenant.plan.maxContacts,
+          maxNumbers: tenant.plan.maxNumbers, // v3.9
           tkQuotaBytes: tenant.plan.tkQuotaBytes == null ? null : Number(tenant.plan.tkQuotaBytes),
           featAnalytics: tenant.plan.featAnalytics,
           featBlast: tenant.plan.featBlast,
@@ -537,6 +725,21 @@ router.put(
 
       // Override individual: hanya field yang EKSPLISIT di body (null = unlimited)
       const explicitQuota = {}
+      // v3.9 — maxNumbers: null = 1 (default); 0..3 (hard cap 3 di semua jalur)
+      if (req.body.maxNumbers !== undefined) {
+        if (req.body.maxNumbers === null) explicitQuota.maxNumbers = null
+        else {
+          const n = Number(req.body.maxNumbers)
+          if (!Number.isFinite(n) || n < 0) {
+            return res.status(400).json({ error: 'maxNumbers harus angka >= 0 atau null (=1)' })
+          }
+          const capped = Math.min(Math.trunc(n), 3)
+          if (Math.trunc(n) > 3) {
+            console.warn('[SA] maxNumbers > 3 di-cap ke 3 (hard cap multi-nomor)')
+          }
+          explicitQuota.maxNumbers = capped
+        }
+      }
       for (const k of QUOTA_KEYS) {
         if (req.body[k] !== undefined) {
           if (req.body[k] === null) explicitQuota[k] = null

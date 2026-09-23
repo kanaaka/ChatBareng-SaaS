@@ -142,7 +142,8 @@ async function processScheduledMessages() {
       const finalText = personalizeText(decryptTextSafe(sm.body), sm.chat?.contactName)
       const tenantId = sm.chat?.tenantId || sm.tenantId
       const wa = require('../wa/pool')
-      await wa.sendMessageForTenant(tenantId, sm.chat?.waJid, finalText)
+      // v3.9 — via nomor asal chat (numberSlot; null = slot-0 compat)
+      await wa.sendMessageForTenant(tenantId, sm.chat?.waJid, finalText, { slot: Number(sm.chat?.numberSlot) || 0 })
 
       // v0.12.9 — implied read: pesan terjadwal menjawab pelanggan → receipt biru
       try {

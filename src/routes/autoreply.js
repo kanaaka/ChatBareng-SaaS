@@ -70,6 +70,15 @@ const GREET_MODES = ['text', 'menu']
 // ── GET /api/autoreply (admin only) ──
 router.get('/', ...rt, async (req, res) => {
   try {
+    // v3.9 — ?slot= → config per-slot (fallback shared); tanpa slot = shared (compat)
+    const slotRaw = req.query.slot
+    if (slotRaw !== undefined) {
+      const s = parseInt(slotRaw, 10)
+      if (!Number.isFinite(s) || s < 0 || s > 2) return res.status(400).json({ error: 'Slot tidak valid (0..2)' })
+      const svc = require('../services/autoReply')
+      const cfg = await svc.getConfigForSlot(req.tenantId, s)
+      return res.json({ config: cfg, numberSlot: cfg.numberSlot ?? null })
+    }
     const cfg = await getConfig(req.tenantId)
     res.json({ config: cfg })
   } catch (e) {
@@ -87,6 +96,23 @@ router.put('/', ...rt, async (req, res) => {
     await getConfig(req.tenantId) // pastikan config tenant ter-seed
 
     const data = {}
+
+    // v3.9 — numberSlot: null/undefined = tetap; null = link-all (Semua nomor);
+    // 0..2 = config Nomor ini saja. Row per-slot dibuat on-demand (upsert).
+    let numberSlotSpecified = false
+    let numberSlotValue = null
+    if (body.numberSlot !== undefined) {
+      numberSlotSpecified = true
+      if (body.numberSlot === null || body.numberSlot === '' || body.numberSlot === 'all') {
+        numberSlotValue = null // link-all
+      } else {
+        const s = parseInt(body.numberSlot, 10)
+        if (!Number.isFinite(s) || s < 0 || s > 2) {
+          return res.status(400).json({ error: 'numberSlot tidak valid (null / 0..2)' })
+        }
+        numberSlotValue = s
+      }
+    }
 
     // Toggle fitur
     if (body.outsideHoursEnabled !== undefined) data.outsideHoursEnabled = !!body.outsideHoursEnabled
@@ -118,14 +144,33 @@ router.put('/', ...rt, async (req, res) => {
       return res.status(400).json({ error: errors[0], errors })
     }
 
-    if (Object.keys(data).length === 0) {
-      return res.status(400).json({ error: 'Tidak ada field yang valid untuk diupdate' })
+    // v3.9 — numberSlot mode: tulis ke row slot-spesifik (create on-demand) —
+    // JANGAN menimpa config shared. Tanpa mode itu → update config shared (compat).
+    let cfg
+    if (numberSlotSpecified && numberSlotValue !== null) {
+      cfg = await prisma.autoReplyConfig.upsert({
+        where: { tenantId: req.tenantId },
+        update: {},
+        create: { tenantId: req.tenantId },
+      })
+      // Bila row shared JUGA belum ada → salin nilai lama dulu (clone), lalu update
+      cfg = await prisma.autoReplyConfig.create({
+        data: { tenantId: req.tenantId, numberSlot: numberSlotValue, ...data, updatedById: req.user.id },
+      }).catch(async (e) => {
+        if (e.code !== 'P2002') throw e
+        // row per-slot sudah ada → update dia
+        return prisma.autoReplyConfig.update({
+          where: { tenantId_numberSlot: { tenantId: req.tenantId, numberSlot: numberSlotValue } },
+          data: { ...data, updatedById: req.user.id },
+        })
+      })
+    } else {
+      if (numberSlotSpecified) data.numberSlot = null // eksplisit link-all
+      cfg = await prisma.autoReplyConfig.update({
+        where: { tenantId: req.tenantId },
+        data: { ...data, updatedById: req.user.id },
+      })
     }
-
-    const cfg = await prisma.autoReplyConfig.update({
-      where: { tenantId: req.tenantId },
-      data: { ...data, updatedById: req.user.id },
-    })
 
     invalidateConfig(req.tenantId) // cache service invalid → config baru aktif
 
