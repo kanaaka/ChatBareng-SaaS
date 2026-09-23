@@ -2300,3 +2300,10 @@ All notable changes to this project will be documented in this file.
 - **Anti-duplicate re-link** — helper baru `src/utils/contactRelink.js` dipanggil di 4 jalur (pool.js syncContactFromChat, GET /api/contacts/by-chat/:chatId, autoReply setContactMenuShown, POST /api/contacts/:id/open): kontak orphan by-phone tenant-scoped di-re-link race-safe (updateMany chatId:null), bukan bikin dobel — kasus "Berliana" tidak kambuh lewat pintu manapun
 - **Dialog berbeda** — keep: "Riwayat chat dihapus, kontaknya tetap tersimpan"; delete: dialog v3.6
 - QA 8/8 PASS di tenant dummy (id 17, purged bersih); 2 bug ketemu saat QA langsung difix (F1: fallback C4 by-phone tabrak unique chatId → 500; F2: helper orphan-first + unique-safe). Laporan: `docs/report-v3.7.md`
+
+## v3.7.1 — 2026-09-23
+### Hotfix branding per-tenant gak tampil di header
+- **Bug:** brandName tenant (contoh "Mazaya Fit") tersimpan bener di DB + tersaji via /auth/me, TAPI header cuma nunjukin suffix "by ChatBareng" — nama brand gak pernah muncul.
+- **Akar:** `BrandLogo.vue` — computed `effectiveText` (brandName || fallback) ada sejak v3.4 tapi **template nampilin prop `text` mentah** (kosong di header tenant; prop text cuma dipakai Login). Sisa implementasi v3.4.
+- **Fix:** template pakai `{{ effectiveText }}` (1 baris) — brandName tenant kini tampil di topbar desktop + mobile, suffix "by ChatBareng" tetap kecil di sebelahnya. Login tetap "ChatBareng" polos (by design).
+- Frontend-only, build ulang (index--Z7HdcXL.js + BrandLogo-Ddr-f2ho.js). Verified compiled chunk render pakai computed, bukan prop.

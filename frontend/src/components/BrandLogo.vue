@@ -4,6 +4,8 @@
     v3.4 — branding per-tenant: logo image (bila tenant punya) + brandName dinamis +
     suffix kecil "by ChatBareng" (muted, HARDCODED frontend — tidak disimpan DB).
     brandName kosong → "ChatBareng" polos. Login page tetap ChatBareng (prop static).
+    FIX v3.7.1 (2026-09-23): template pakai effectiveText (bukan prop text mentah) —
+    prop text kosong di header tenant bikin brandName gak pernah tampil (cuma 'by ChatBareng').
     SLOT logo tetap dijaga untuk pemakaian lama.
   -->
   <span :class="['m3-wordmark', sizeClass]" :style="{ color: color || 'inherit' }">
@@ -14,7 +16,7 @@
       class="brand-logo-img"
       :style="{ height: logoHeight }"
     />
-    <slot v-if="!logoUrl || showTextWithLogo">{{ text }}</slot>
+    <slot v-if="!logoUrl || showTextWithLogo">{{ effectiveText }}</slot>
     <span v-if="showSuffix" class="brand-suffix">by ChatBareng</span>
   </span>
 </template>
