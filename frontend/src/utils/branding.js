@@ -3,17 +3,21 @@
 // Suffix " by ChatBareng" = teks kecil muted HARDCODED di sini (tidak disimpan DB).
 // brandName kosong → tampil "ChatBareng" polos. Login page TETAP ChatBareng
 // (belum ada context tenant sebelum login — keputusan owner).
+import { reactive } from 'vue'
 import axios from 'axios'
 
 const API = import.meta.env.VITE_API_URL || ''
 
-// Global reactive-ish state (module singleton; dibaca komponen via getters di bawah)
-const state = {
+// Global state — WAJIB reactive() (v3.7.1 hotfix #2): plain object singleton GAK
+// ketrack Vue → hard refresh render pertama dgn state kosong ('ChatBareng'),
+// lalu loadBrandingAndPlan() isi state belakangan → UI gak re-render (stuck).
+// Repro @vue/reactivity: plain NO, reactive YES (2026-09-23, kasus 'Mazaya Fit').
+const state = reactive({
   brandName: '',
   logoUrl: null,
   features: null, // { analytics, blast, menuGateway, historyExport, csat, gdriveBackup }
   planUsage: null, // { maxAgents, maxContacts, tkQuotaBytes, usage: {...} } | null
-}
+})
 
 export function getBranding() {
   return state
