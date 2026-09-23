@@ -7,6 +7,8 @@ const broadcast = require('../socket/broadcast')
 const queue = require('../socket/queue')
 // v3.4 — kuota kontak per-tenant (spec §4)
 const plans = require('../services/plans')
+// v3.7 — anti-duplicate re-link kontak orphan (helper shared C1–C4)
+const { relinkOrphanContact } = require('../utils/contactRelink')
 
 // v3.0 — Isolasi tenant: kontak = tenant-scoped; chat find-or-create by [tenantId, waJid]
 const rt = [requireAuth, requireTenant]
@@ -335,16 +337,27 @@ router.get('/by-chat/:chatId', ...rt, async (req, res) => {
     if (!contact) {
       const phoneNorm = normalizePhone(chat.contactPhone)
       const phone = phoneNorm.valid && !isLidDigits(chat.waJid) ? phoneNorm.normalized : null
-      contact = await prisma.contact.create({
-        data: {
-          tenantId: req.tenantId,
-          chatId: chat.id,
-          phone,
-          name: chat.contactName || null,
-          source: 'chat',
-        },
-        include: { chat: chatInclude() },
-      })
+      // v3.7 — ANTI-DOBEL: sebelum create, re-link kontak orphan (chatId=null,
+      // data utuh — mis. hasil "Hapus Chat" mode keep) dgn nomor yang sama.
+      const relinked = phone ? await relinkOrphanContact(req.tenantId, phone, chat.id, chat.contactName || null) : null
+      if (relinked) {
+        contact = await prisma.contact.findUnique({
+          where: { chatId: chat.id },
+          include: { chat: chatInclude() },
+        })
+      }
+      if (!contact) {
+        contact = await prisma.contact.create({
+          data: {
+            tenantId: req.tenantId,
+            chatId: chat.id,
+            phone,
+            name: chat.contactName || null,
+            source: 'chat',
+          },
+          include: { chat: chatInclude() },
+        })
+      }
     }
 
     res.json({ contact: contactToJson(contact) })
@@ -789,7 +802,24 @@ router.post('/:id/open', ...rt, async (req, res) => {
     }
 
     if (!contact.chatId) {
-      await prisma.contact.update({ where: { id: contact.id }, data: { chatId: chat.id } })
+      // v3.7 — ANTI-DOBEL: kontak orphan (mis. hasil "Hapus Chat" mode keep)
+      // yang di-start chat lagi → re-link ke chat existing/baru by phone,
+      // BUKAN biarkan orphan + bikin kontak dobel di jalur WA masuk nanti.
+      // Fallback C4 = SET row INI SAJA by id (bukan by phone!): helper relink
+      // null karena nomor sudah kepake kontak lain / invalid — kalau by phone
+      // bisa tabrak unique chatId milik kontak lain (500, kasus QA 4a).
+      // updateMany by id berkondisi chatId null = race-safe + no-op kalau
+      // row sudah ke-link proses lain.
+      const relinked = await relinkOrphanContact(req.tenantId, contact.phone, chat.id, contact.name)
+      if (!relinked) {
+        try {
+          await prisma.contact.updateMany({ where: { id: contact.id, tenantId: req.tenantId, chatId: null }, data: { chatId: chat.id } })
+        } catch (e) {
+          // Unique chatId milik kontak lain (nomor double-row lama) — JANGAN 500;
+          // kontak biarkan orphan, chat tetap dibuka (log utk observer).
+          console.error('[Contacts] re-link fallback chatId dilewati (unique):', e.message)
+        }
+      }
     }
 
     if (chat.status === 'resolved') {

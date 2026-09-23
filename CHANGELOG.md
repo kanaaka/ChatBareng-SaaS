@@ -2292,3 +2292,11 @@ All notable changes to this project will be documented in this file.
   dialog yang dulu dipasang di Dashboard kini lewat dialog global.
 - Catatan: hub non-SaaS punya bug yang sama (Dashboard L298 double-mount) —
   arsip, retired, tidak di-fix (biarkan sebagai catatan historis).
+
+## v3.7 — 2026-09-23
+### "Hapus Chat" pilihan kontak + anti-duplicate re-link
+- **Kebab menu:** dua item admin-only — "🗑️ Hapus Chat" (kontak DIPERTAHANKAN, default) & "🗑️ Hapus Chat + Kontak" (kontak ikut terhapus, behavior v3.6)
+- **API:** `DELETE /api/chats/:id?deleteContact=false|true` — absent = false = keep (detach `contact.chatId=null`, data kontak utuh); purgeLog reason mencatat mode (kept|deleted)
+- **Anti-duplicate re-link** — helper baru `src/utils/contactRelink.js` dipanggil di 4 jalur (pool.js syncContactFromChat, GET /api/contacts/by-chat/:chatId, autoReply setContactMenuShown, POST /api/contacts/:id/open): kontak orphan by-phone tenant-scoped di-re-link race-safe (updateMany chatId:null), bukan bikin dobel — kasus "Berliana" tidak kambuh lewat pintu manapun
+- **Dialog berbeda** — keep: "Riwayat chat dihapus, kontaknya tetap tersimpan"; delete: dialog v3.6
+- QA 8/8 PASS di tenant dummy (id 17, purged bersih); 2 bug ketemu saat QA langsung difix (F1: fallback C4 by-phone tabrak unique chatId → 500; F2: helper orphan-first + unique-safe). Laporan: `docs/report-v3.7.md`

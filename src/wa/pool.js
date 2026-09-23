@@ -36,6 +36,8 @@ const broadcast = require('../socket/broadcast')
 const queue = require('../socket/queue')
 const push = require('../push')
 const { saveMedia } = require('./media')
+// v3.7 — anti-duplicate re-link kontak orphan (helper shared C1–C4)
+const { relinkOrphanContact } = require('../utils/contactRelink')
 
 // tenantId (number) → socket state object
 const pool = new Map()
@@ -1197,6 +1199,10 @@ async function syncContactFromChat(tenantId, chatIdInt) {
       }
       return
     }
+    // v3.7 — ANTI-DOBEL: sebelum create, coba re-link kontak orphan (chatId=null,
+    // data utuh — mis. hasil "Hapus Chat" mode keep) dengan nomor yang sama.
+    // Gagal/null → jatuh ke create baru (logic lama di bawah tetap jalan).
+    if (phone && (await relinkOrphanContact(tid, phone, chat.id, chat.contactName || null))) return
     // v3.4 — kuota kontak (spec §4): WA masuk TIDAK PERNAH diblokir. Kuota penuh →
     // SKIP pembuatan Contact secara diam; chat & pesan tetap diproses normal.
     // Log sekali per tenant per jam biar tidak spam.

@@ -20,6 +20,8 @@
 const prisma = require('../prisma')
 const broadcast = require('../socket/broadcast')
 const { encryptText, decryptTextSafe } = require('./textCrypto') // v0.11.0 — enkripsi at-rest isi pesan
+// v3.7 — anti-duplicate re-link kontak orphan (helper shared C1–C4)
+const { relinkOrphanContact } = require('../utils/contactRelink')
 const TIMEZONE = 'Asia/Jakarta'
 const SENDER_NAME = 'Auto Reply'
 const MAX_TEXT_LEN = 1000
@@ -199,6 +201,18 @@ async function setContactMenuShown(contact, chat) {
       const quota = await plans.checkContactQuota(tenantId)
       if (!quota.ok) return
     } catch {}
+    // v3.7 — ANTI-DOBEL: sebelum create minimal, coba re-link kontak orphan
+    // (chatId=null, data utuh) by chat.contactPhone. Gagal/null → create baru.
+    // LID nuansa: contactPhone invalid/kosong → relink null → biarkan create
+    // minimal lama (mapping LID v3.5 yang handle identitas).
+    let relinked = null
+    if (chat.contactPhone) {
+      relinked = await relinkOrphanContact(tenantId, String(chat.contactPhone), chatId, chat.contactName || null)
+    }
+    if (relinked) {
+      await prisma.contact.updateMany({ where: { id: relinked, tenantId }, data: { lastMenuShownAt: new Date() } })
+      return
+    }
     const created = await prisma.contact.create({ data: { tenantId, chatId, source: 'chat' } }).catch(() => null)
     if (created) {
       await prisma.contact.updateMany({ where: { id: created.id }, data: { lastMenuShownAt: new Date() } })

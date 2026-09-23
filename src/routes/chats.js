@@ -1261,8 +1261,8 @@ async function deleteGroupPicsForChat(chatId) {
   }
 }
 
-// Spec: docs/spec-v3.6-delete-chat-individual.md — ADMIN ONLY (CS tidak boleh
-// hapus permanen; super_admin via impersonation ?tenant= boleh).
+// Spec: docs/spec-v3.6-delete-chat-individual.md + v3.7 — ADMIN ONLY (CS tidak
+// boleh hapus permanen; super_admin via impersonation ?tenant= boleh).
 // Logika = PORT dari one-off script teruji (chat #7635, 2026-09-23 02:52).
 // Urutan: groupPic (PIC ref) dulu → kumpulkan mediaPath → transaksi hapus
 // child rows (FavoriteMessage ikut cascade via onDelete: Cascade di schema,
@@ -1281,6 +1281,7 @@ router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Chat not found' })
     }
 
+    const deleteContact = req.query.deleteContact === 'true' // v3.7 — default (absent/false) = KONTAK DIPERTAHANKAN (detach)
     // 2) GroupPic rows yang nge-refer chat ini dihapus dulu supaya FK
     //    "groupPics" (User.groupsAsPic → Chat.picUserId) tidak memblokir kalau
     //    chat ini PIC grup. Cache table-existence (cold-start sekali/proses) —
@@ -1310,6 +1311,9 @@ router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
     // Transaksi: child rows by chatId → chat row. FavoriteMessage TIDAK dihapus
     // eksplisit — onDelete: Cascade di relasi Message.favorites (schema v3.x)
     // menghapusnya otomatis saat message.deleteMany (VERIFIKASI schema §1 spec).
+    // v3.7 — mode Hapus Chat: kontak IKUT TERHAPUS (deleteContact=true, behavior
+    // v3.6) atau DIPERTAHANKAN (detach: chatId=null, data kontak utuh — nama,
+    // nomor, tag; re-link otomatis via contactRelink kalau chat dibuka lagi).
     const deleted = await prisma.$transaction(async (tx) => {
       const ops = [
         ['messages', () => tx.message.deleteMany({ where: { chatId: chat.id } })], // FavoriteMessage cascade
@@ -1318,7 +1322,11 @@ router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
         ['chatNotes', () => tx.chatNote.deleteMany({ where: { chatId: chat.id } })],
         ['csatSurveys', () => tx.csatSurvey.deleteMany({ where: { chatId: chat.id } })],
         ['scheduledMessages', () => tx.scheduledMessage.deleteMany({ where: { chatId: chat.id } })],
-        ['contacts', () => tx.contact.deleteMany({ where: { chatId: chat.id } })], // linked via chatId (unique FK)
+        deleteContact
+          ? // v3.6 behavior: kontak linked ikut terhapus total
+            ['contacts', () => tx.contact.deleteMany({ where: { chatId: chat.id } })]
+          : // v3.7 KEEP: DETACH — kontak utuh (nama, nomor, tag) tapi lepas dari chat
+            ['contacts', () => tx.contact.updateMany({ where: { chatId: chat.id }, data: { chatId: null } })],
         ['chats', () => tx.chat.delete({ where: { id: chat.id } })],
       ]
       const result = {}
@@ -1336,7 +1344,7 @@ router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
         purgedById: req.user.id,
         chatCount: 1,
         messageCount,
-        reason: `chat_delete: kebab menu (v3.6)${req.body?.reason ? ` — ${String(req.body.reason).slice(0, 200)}` : ''}`,
+        reason: `chat_delete: kebab menu (v3.7, contact ${deleteContact ? 'deleted' : 'kept'})${req.body?.reason ? ` — ${String(req.body.reason).slice(0, 200)}` : ''}`,
         purgeDate: new Date(),
       },
     })
@@ -1355,10 +1363,10 @@ router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
     // 7) Broadcast event BARU 'chat_deleted' (jangan recycle chats_purged)
     broadcast.emitToTenant(req.tenantId, 'chat_deleted', { chatId: chat.id })
 
-    console.log(`[Chats] Chat #${chat.id} dihapus permanen (kebab menu v3.6) by @${req.user.username} (tenant ${req.tenantId}):`, JSON.stringify({ ...deleted, groupPicDeleted, filesRemoved }))
+    console.log(`[Chats] Chat #${chat.id} dihapus permanen (kebab menu v3.7, contact ${deleteContact ? 'deleted' : 'kept'}) by @${req.user.username} (tenant ${req.tenantId}):`, JSON.stringify({ ...deleted, groupPicDeleted, filesRemoved }))
 
-    // 8) Response ringkas: counts hasil hapus
-    res.json({ ok: true, deleted: { ...deleted, groupPic: groupPicDeleted, filesRemoved } })
+    // 8) Response ringkas: counts hasil hapus + flag mode kontak (QA-friendly)
+    res.json({ ok: true, deleteContact, deleted: { ...deleted, groupPic: groupPicDeleted, filesRemoved } })
   } catch (e) {
     console.error('Delete chat error:', e)
     res.status(500).json({ error: 'Internal server error' })

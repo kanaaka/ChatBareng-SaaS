@@ -105,7 +105,7 @@
         @tangan-kanan="$emit('tangan-kanan')"
         @snooze="$emit('snooze')"
         @cancel-snooze="$emit('cancel-snooze')"
-        @delete-chat="$emit('delete-chat')"
+        @delete-chat="deleteContact => $emit('delete-chat', deleteContact)"
       />
     </div>
 
@@ -698,7 +698,7 @@ const emit = defineEmits([
   'send', 'upload-media', 'reply-keydown', 'insert-template', 'insert-template-flyout',
   'transfer', 'release', 'resolve', 'tangan-kanan', 'take',
   'snooze', 'cancel-snooze', // v0.10.0 — Fitur A
-  'delete-chat', // v3.6 — Hapus Chat permanen (admin only, kebab menu)
+  'delete-chat', // v3.6/v3.7 — Hapus Chat (admin only, kebab menu; payload flag deleteContact v3.7)
   'schedule-message', 'cancel-scheduled', // v0.10.0 — Fitur D
   'add-note', 'delete-note', 'update:noteDraft', // v0.10.0 — Fitur B
   'toggle-favorites', 'toggle-favorite', 'jump-to',
@@ -853,10 +853,11 @@ function goBack() {
   }
 }
 
-// ═══ v3.6 — Hapus Chat permanen (kebab menu, admin only) ═══
-// KebabMenu emit 'delete-chat' → parent Dashboard yang punya handler utama
-// (konfirmasi + API + clear selection) — pola sama dgn resolve/transfer.
-// Handler API tetap satu sumber di Dashboard (socket logic tetap di sana).
+// ═══ v3.6/v3.7 — Hapus Chat permanen (kebab menu, admin only) ═══
+// KebabMenu emit 'delete-chat' (payload flag deleteContact, v3.7) → parent
+// Dashboard yang punya handler utama (konfirmasi + API + clear selection) —
+// pola sama dgn resolve/transfer. Handler API tetap satu sumber di Dashboard
+// (socket logic tetap di sana).
 
 function openContactEdit() {
   emit('open-contact-edit')

@@ -196,7 +196,7 @@
             @tangan-kanan="openTanganKanan"
             @snooze="showSnoozeDialog = true"
             @cancel-snooze="handleCancelSnooze"
-            @delete-chat="confirmDeleteChat"
+            @delete-chat="deleteContact => confirmDeleteChat(deleteContact)"
             @schedule-message="openScheduledDialog"
             @cancel-scheduled="handleCancelScheduled"
             @add-note="addChatNote"
@@ -1422,25 +1422,35 @@ function onChatsPurged(data) {
   chats.removeChats(ids)
 }
 
-// ═══ v3.6 — Hapus Chat individual (permanen) dari kebab menu ═══
+// ═══ v3.6/v3.7 — Hapus Chat individual (permanen) dari kebab menu ═══
 // Confirm dialog (useConfirm, pola confirmRelease) → DELETE /api/chats/:id
 // (ADMIN ONLY di backend — role cs ditolak 403). Sukses → toast + clear
 // selection/navigasi; chat row hilang dari list via event 'chat_deleted'
 // (handler onChatDeleted — defense-in-depth kalau user lain yang ngehapus).
-async function confirmDeleteChat() {
+// v3.7 — payload flag deleteContact: false = kontak DIPERTAHANKAN (detach,
+// re-link otomatis kalau dia chat lagi); true = kontak ikut terhapus (v3.6).
+async function confirmDeleteChat(deleteContact = false) {
   if (!currentChat.value) return
   const nama = currentChat.value.contactName || currentChat.value.contactPhone || 'chat ini'
-  const ok = await confirmAction({
-    title: 'Hapus permanen chat ini?',
-    message: `Semua pesan, media, catatan, dan riwayat chat ${nama} akan dihapus PERMANEN dan tidak bisa dikembalikan.`,
-    confirmText: 'Hapus Permanen',
-    danger: true,
-  })
+  const keepContact = !deleteContact
+  const ok = await confirmAction(keepContact
+    ? {
+        title: 'Hapus riwayat chat ini?',
+        message: `Riwayat chat ${nama} akan dihapus permanen. Kontaknya tetap tersimpan — kalau dia chat lagi, riwayat baru mulai dari nol.`,
+        confirmText: 'Hapus Chat',
+        danger: true,
+      }
+    : {
+        title: 'Hapus permanen chat ini?',
+        message: `Semua pesan, media, catatan, dan riwayat chat ${nama} beserta datanya (nama, nomor, tag) akan dihapus PERMANEN dan tidak bisa dikembalikan.`,
+        confirmText: 'Hapus Permanen',
+        danger: true,
+      })
   if (!ok) return
   const chatId = currentChat.value.id
   try {
-    await axios.delete(`${API}/api/chats/${chatId}`)
-    toastStore.show({ icon: '🗑️', title: 'Chat dihapus permanen' })
+    await axios.delete(`${API}/api/chats/${chatId}?deleteContact=${deleteContact}`)
+    toastStore.show({ icon: '🗑️', title: keepContact ? 'Riwayat chat dihapus' : 'Chat dihapus permanen' })
     // Clear selection + navigasi (pola onChatsPurged — close detail aktif)
     if (currentChat.value && currentChat.value.id === chatId) {
       const wasMobileDetail = isMobileDetail.value
