@@ -409,11 +409,18 @@ async function logout() {
   })
   if (!ok) return
   try {
-    await axios.post(`${API}/api/wa/logout`)
+    // v3.7.1 fix: backend butuh guard ?confirm=true (v3.2) — POST telanjang
+    // balik 400 'Konfirmasi diperlukan' senyap → tombol keliatan 'gak bisa'.
+    // Dialog M3 di atas SUDAH konfirmasi user → teruskan ke API.
+    await axios.post(`${API}/api/wa/logout?confirm=true`)
     waStatus.value = { connected: false, state: 'close' }
     qrDataUrl.value = null
+    toast.show({ icon: '🚪', title: 'Logout WhatsApp', message: 'Session dihapus — scan QR ulang untuk connect.' })
     setTimeout(fetchStatus, 3000)
-  } catch (e) { console.error(e) }
+  } catch (e) {
+    console.error(e)
+    toast.show({ icon: '⚠️', title: 'Gagal logout', message: e.response?.data?.error || 'Coba lagi' })
+  }
 }
 
 function onWaStatus(data) {
