@@ -315,12 +315,33 @@ router.post('/', ...rt, featBlastGate, async (req, res) => {
     const uniqueChatIds = [...allChatIds]
     const chats = await prisma.chat.findMany({
       where: { tenantId: req.tenantId, id: { in: uniqueChatIds } },
-      select: { id: true, contactName: true, contactPhone: true },
+      select: { id: true, contactName: true, contactPhone: true, lastMessageAt: true },
     })
+
+    // v3.9.3 fix MEDIUM-1 (K1-A) — dedup by phone antar chatIds: kontak sama yang
+    // punya ≥2 chat (slot beda) HANYA dikirim SEKALI (chat lastMessageAt terbaru;
+    // tie → id terkecil, deterministik). Cegah pelanggan kena blast dobel lintas nomor.
+    const chatPhoneMap = new Map() // normalizedPhone → chat terpilih
+    const dedupedChats = []
+    for (const c of chats) {
+      if (!c.contactPhone) { dedupedChats.push(c); continue } // LID-only → unik
+      const norm = normalizePhone(c.contactPhone)
+      if (!norm.valid) { dedupedChats.push(c); continue }
+      const prev = chatPhoneMap.get(norm.normalized)
+      if (!prev) { chatPhoneMap.set(norm.normalized, c); dedupedChats.push(c); continue }
+      const prevTs = (prev.lastMessageAt instanceof Date ? prev.lastMessageAt.getTime() : 0)
+      const curTs = (c.lastMessageAt instanceof Date ? c.lastMessageAt.getTime() : 0)
+      const curWins = curTs > prevTs || (curTs === prevTs && c.id < prev.id)
+      if (curWins) {
+        dedupedChats.splice(dedupedChats.indexOf(prev), 1, c)
+        chatPhoneMap.set(norm.normalized, c)
+      }
+      // chat kalah → skip (dedup lintas slot)
+    }
 
     // Build a set of normalized phones from existing chats for dedup
     const existingChatPhones = new Map() // normalizedPhone → chat
-    for (const c of chats) {
+    for (const c of dedupedChats) {
       if (c.contactPhone) {
         const norm = normalizePhone(c.contactPhone)
         if (norm.valid) existingChatPhones.set(norm.normalized, c)
@@ -339,7 +360,7 @@ router.post('/', ...rt, featBlastGate, async (req, res) => {
       csvRecipients.push({ phoneNumber: csv.normalized, contactName: csv.name || null })
     }
 
-    const totalRecipients = chats.length + csvRecipients.length
+    const totalRecipients = dedupedChats.length + csvRecipients.length
     if (totalRecipients === 0) {
       return res.status(400).json({ error: 'No recipients selected' })
     }
@@ -377,8 +398,8 @@ router.post('/', ...rt, featBlastGate, async (req, res) => {
         createdBy: req.user.id,
         logs: {
           create: [
-            // Chat-based recipients
-            ...chats.map(c => ({
+            // Chat-based recipients (v3.9.3: pakai dedupedChats — dedup by phone lintas slot)
+            ...dedupedChats.map(c => ({
               chatId: c.id,
               phoneNumber: c.contactPhone,
               contactName: c.contactName,

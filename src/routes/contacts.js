@@ -762,7 +762,11 @@ router.post('/:id/open', ...rt, async (req, res) => {
     }
 
     // v3.9.2 K1-A (D.10) — target slot: body.numberSlot (0..2) atau default slot-0.
+    // v3.9.3 fix LOW-1 — numberSlot invalid eksplisit → 400 (bukan silent-fallback slot-0).
     const reqSlotRaw = Number(req.body?.numberSlot)
+    if (req.body?.numberSlot !== undefined && req.body?.numberSlot !== null && (!Number.isFinite(reqSlotRaw) || reqSlotRaw < 0 || reqSlotRaw > 2)) {
+      return res.status(400).json({ error: 'numberSlot harus 0..2 (atau kosong utk default slot-0)' })
+    }
     const openSlot = Number.isFinite(reqSlotRaw) && reqSlotRaw >= 0 && reqSlotRaw <= 2 ? Math.trunc(reqSlotRaw) : 0
 
     // Existing linked chat

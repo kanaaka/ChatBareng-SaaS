@@ -2338,3 +2338,11 @@ All notable changes to this project will be documented in this file.
 - **BUG-6:** reply gagal → response API + broadcast membawa `waError` (CS tau slot mana mati)
 - **BUG-14:** GET numbers `used` konsisten hitung dari DB
 - Verified runtime: `getConfig(4)` OK untuk kedua model (smoke test), 12 file syntax OK, build sukses, app restarted by-PID (54240→56509), health 200, QR siap scan
+
+
+## v3.9.3 — 2026-09-23 (hotfix re-audit K3)
+### 3 catatan dari re-audit Kimi-K3 (verdict GO) difix
+- **MEDIUM-1:** blast dedup by phone antar chatIds — kontak sama dengan ≥2 chat (slot beda) kini HANYA dikirim sekali (chat lastMessageAt terbaru; tie → id terkecil). Cegah pelanggan kena blast dobel lintas nomor
+- **MEDIUM-2 (carry-over v3.9):** PUT /api/wa/numbers/:slot kini guard kuota plan.maxNumbers saat upsert-create (403) — tutup bypass via API langsung
+- **LOW-1:** /open dengan numberSlot invalid eksplisit → 400 (bukan silent-fallback slot-0)
+- Unit test dedup PASS (chat dobel 628111 → 1 terpilih, LID-only & phone unik tetap masuk); restart by-PID (61483→62374), health 200

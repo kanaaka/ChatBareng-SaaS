@@ -190,6 +190,19 @@ router.put('/numbers/:slot', ...rt, requireAdmin, async (req, res) => {
     if (!Number.isFinite(slot) || slot < 0 || slot > wa.MAX_SLOT) {
       return res.status(400).json({ error: `Slot tidak valid (0..${wa.MAX_SLOT})` })
     }
+    // v3.9.3 fix MEDIUM-2 — guard kuota saat upsert-CREATE (row belum ada):
+    // cegah bypass plan.maxNumbers via PUT langsung (carry-over audit v3.9 BUG-13).
+    const existingRow = await prisma.tenantNumber.findUnique({ where: { tenantId_slot: { tenantId: req.tenantId, slot } } })
+    if (!existingRow) {
+      const plans = require('../services/plans')
+      const plan = await plans.getPlan(req.tenantId)
+      const maxN = (plan?.maxNumbers == null || !Number.isFinite(Number(plan.maxNumbers))) ? 1 : Math.max(0, Math.trunc(Number(plan.maxNumbers)))
+      const effMax = Math.min(maxN, wa.MAX_SLOT + 1)
+      const used = await prisma.tenantNumber.count({ where: { tenantId: req.tenantId } })
+      if (used >= effMax) {
+        return res.status(403).json({ error: `Kuota nomor penuh (${used}/${effMax}). Hubungi superadmin untuk upgrade plan.` })
+      }
+    }
     const data = {}
     if (req.body.label !== undefined) {
       const label = String(req.body.label || '').trim()
