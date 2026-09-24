@@ -11,7 +11,7 @@ const broadcast = require('../socket/broadcast')
 const queue = require('../socket/queue')
 const presence = require('../socket/presence')
 const push = require('../push')
-const { saveMedia, loadMedia } = require('../wa/media')
+const { saveMedia, loadMedia, resolveMediaFilePath } = require('../wa/media')
 // v0.11.0 — enkripsi at-rest isi pesan (AES-256-GCM via textCrypto)
 const { encryptText, decryptTextSafe, decryptText } = require('../services/textCrypto')
 // v0.10.0 — CSAT + rate limit catatan internal
@@ -1469,9 +1469,10 @@ router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
     // 6) File media di-disk SETELAH transaksi sukses (transaksi gagal → file utuh)
     let filesRemoved = 0
     for (const fp of mediaFiles) {
+      const abs = resolveMediaFilePath(fp) // v3.9.12 — relatif/absolut lintas-host
       try {
-        if (fs.existsSync(fp)) {
-          fs.unlinkSync(fp)
+        if (abs && fs.existsSync(abs)) {
+          fs.unlinkSync(abs)
           filesRemoved++
         }
       } catch {}

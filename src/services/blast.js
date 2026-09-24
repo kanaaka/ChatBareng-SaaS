@@ -9,7 +9,7 @@
 const prisma = require('../prisma')
 const broadcast = require('../socket/broadcast')
 const wa = require('../wa/pool')
-const { loadMedia } = require('../wa/media')
+const { loadMedia, resolveMediaFilePath } = require('../wa/media')
 const { decryptTextSafe } = require('./textCrypto') // v0.12.4 — enkripsi scope 2: Blast.message
 const fs = require('fs')
 
@@ -146,7 +146,8 @@ async function runBlast(blastId) {
     const total = blast.totalRecipients
 
     // Check if media file exists (for media blasts)
-    const hasMedia = blast.mediaPath && fs.existsSync(blast.mediaPath)
+    const blastMediaAbs = resolveMediaFilePath(blast.mediaPath) // v3.9.12c (audit L1) — resolve sekali
+    const hasMedia = !!(blastMediaAbs && fs.existsSync(blastMediaAbs))
 
     for (let g = 0; g < groups.length; g++) {
       const group = groups[g]

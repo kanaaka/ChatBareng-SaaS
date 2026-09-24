@@ -55,14 +55,17 @@ void BATCH
 /** Kumpulkan path file media dari row yang relevan (spec §7). */
 function collectFilePaths(tenant, tables) {
   const paths = new Set()
+  // v3.9.12 — resolveMediaFilePath: relatif/absolut lintas-host (paket hosting)
+  const { resolveMediaFilePath } = require('../wa/media')
   const add = (p) => {
-    if (p && typeof p === 'string') paths.add(p)
+    const abs = resolveMediaFilePath(p)
+    if (abs && fs.existsSync(abs)) paths.add(abs)
   }
   for (const m of tables.messages || []) add(m.mediaPath)
   for (const f of tables.sharedFiles || []) add(f.storagePath)
   for (const b of tables.blasts || []) add(b.mediaPath)
   if (tenant.logoPath) add(tenant.logoPath)
-  return [...paths].filter((p) => fs.existsSync(p))
+  return [...paths]
 }
 
 function slugify(name) {

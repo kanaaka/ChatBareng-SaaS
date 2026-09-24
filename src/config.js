@@ -8,6 +8,12 @@ const fs = require('fs')
 // Load .env
 dotenv.config()
 
+// v3.9.12c (audit I3) — path RELATIF di env di-anchor ke ROOT APP (src/..),
+// bukan CWD — supaya `node /path/app/src/server.js` dari folder manapun tetap
+// benar (paket hosting). Path absolut (dev .env) tak terpengaruh.
+const APP_ROOT = path.resolve(__dirname, '..')
+const resolveFromAppRoot = (p) => (path.isAbsolute(p) ? p : path.resolve(APP_ROOT, p))
+
 const config = {
   port: parseInt(process.env.PORT || '5047', 10),
   nodeEnv: process.env.NODE_ENV || 'development',
@@ -17,13 +23,13 @@ const config = {
   jwtSecret: process.env.JWT_SECRET || 'dev-secret-change-me',
   jwtExpiry: '24h',
 
-  mediaDir: path.resolve(process.env.MEDIA_DIR || './data/media'),
+  mediaDir: resolveFromAppRoot(process.env.MEDIA_DIR || './data/media'),
   mediaEncryptionKey: process.env.MEDIA_ENCRYPTION_KEY || '0000000000000000000000000000000000000000000000000000000000000000',
   maxMediaSizeMb: parseInt(process.env.MAX_MEDIA_SIZE_MB || '10', 10),
 
   corsOrigin: process.env.CORS_ORIGIN || '*',
 
-  waSessionDir: path.resolve(process.env.WA_SESSION_DIR || './data/wa-session'),
+  waSessionDir: resolveFromAppRoot(process.env.WA_SESSION_DIR || './data/wa-session'),
   waReconnectIntervalMs: parseInt(process.env.WA_RECONNECT_INTERVAL_MS || '5000', 10),
   waQrTimeoutMs: parseInt(process.env.WA_QR_TIMEOUT_MS || '60000', 10),
 
@@ -52,7 +58,7 @@ const config = {
 // Ensure directories exist
 function ensureDirs() {
   const dirs = [
-    path.resolve('./data'),
+    resolveFromAppRoot('./data'),
     config.mediaDir,
   ]
   // Session dir global hanya dibuat kalau WA aktif (fase 2: per-tenant via pool)

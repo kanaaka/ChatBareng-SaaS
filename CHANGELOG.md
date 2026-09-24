@@ -1,3 +1,37 @@
+## v3.9.12 — Hardening path media portabel (persiapan deploy hosting, 2026-09-24)
+
+**Konteks:** Kanaka mau deploy ke hosting asli (pakai besok). Inventori paket
+ketahuan: DB nyimpan path media/sesi **absolut** host dev (`/home/kanakxxx/...`)
+— 13 sel (Message.mediaPath 3, Blast.mediaPath 2, SharedFile.storagePath 7,
+SaAuditLog 1) + Tenant.waSessionDir/TenantNumber.waSessionDir. Di server lain
+semua itu mati. Kunci enkripsi (MSG/MEDIA_ENCRYPTION_KEY) = data-bound — pindah
+host TANPA kunci sama = semua chat lama gak kebaca.
+
+**Fix (5 file):**
+- `src/wa/media.js` — `resolveMediaFilePath(p)`: absolut (file ada → pakai; gak
+  ada → fallback mediaDir by basename) ATAU relatif (join mediaDir) + **containment**
+  (hasil wajib di dalam mediaDir — blok `../` & absolut di luar = path-traversal
+  guard). `saveMedia` kini simpan **RELATIF** (basename) — data baru portabel
+  lintas host. `loadMedia` pakai resolver.
+- `chats.js` (hapus chat → unlink loop), `tanganKanan.js` (delete file),
+  `blast.js` (hasMedia check), `tenantBackup.js` (collectFilePaths) — semua
+  akses disk pakai resolver, bukan path mentah.
+
+**Verifikasi:** unit test resolver (relatif OK, fallback absolut-lama OK,
+containment `../`+`/etc`→null, absolut-dalam-mediaDir→lolos) + regresi penuh
+E2E hijau (v3.9.11 10/10, v3.9.4 21/21, v3.9.5 13/13, v3.9.6 15/15, v3.9.9 PASS).
+- `package.json` postinstall → `scripts/postinstall-frontend.js` (toleran: frontend/ gak ada di paket hosting → lewati build; repo dev tetap install+build).
+- v3.9.12c (tambalan audit Kimi-K3 — GO, 0 CRITICAL/HIGH/MEDIUM): (L1) blast
+  hasMedia resolve sekali; (L2) unit test resolver diabadikan
+  `scripts/test-media-resolver.js` (9/9 PASS); (I3) path RELATIF di env
+  (MEDIA_DIR/WA_SESSION_DIR) di-anchor ke ROOT APP di config.js — kebal
+  salah-CWD saat boot di hosting.
+- v3.9.12d (hasil test paket eksak): `src/prisma.js` — DATABASE_URL `file:` relatif
+  di-anchor ABSOLUT ke root app (Prisma resolve relatif ambigu: schema-dir vs CWD
+  beda lingkungan — 2 boot test gagal beda cara sebagai bukti); DB paket kini di
+  `data/wa-cs-hub.db`; postinstall jalur hosting kini juga `npx prisma generate`
+  (fresh npm ci belum punya Prisma client).
+
 ## v3.9.11b — Tambalan audit Kimi-K3 v3.9.11 (GO) (2026-09-24)
 
 **Verdict: 0 CRITICAL, 0 HIGH, 0 MEDIUM, 1 LOW (kosmetik), 6 INFO.** Akar fix

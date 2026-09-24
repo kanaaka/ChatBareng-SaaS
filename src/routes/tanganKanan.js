@@ -8,7 +8,7 @@ const prisma = require('../prisma')
 const { requireAuth, requireAdmin, requireTenant, verifyToken, resolveTenant } = require('../auth')
 // v3.4 — kuota Tangan Kanan per-tenant (spec §4: hanya TK; media chat/blast tidak ikut)
 const plans = require('../services/plans')
-const { saveMedia, loadMedia } = require('../wa/media')
+const { saveMedia, loadMedia, resolveMediaFilePath } = require('../wa/media')
 const broadcast = require('../socket/broadcast')
 
 // v3.0 — Isolasi tenant: folder/file Tangan Kanan = tenant-scoped. Download flexible
@@ -359,9 +359,10 @@ router.delete('/files/:id', ...rt, async (req, res) => {
     }
 
     // Delete encrypted file from disk if it exists
-    if (file.storagePath && fs.existsSync(file.storagePath)) {
+    const abs = resolveMediaFilePath(file.storagePath) // v3.9.12 — relatif/absolut lintas-host
+    if (abs && fs.existsSync(abs)) {
       try {
-        fs.unlinkSync(file.storagePath)
+        fs.unlinkSync(abs)
       } catch (e) {
         console.error('TK delete file from disk error:', e)
       }

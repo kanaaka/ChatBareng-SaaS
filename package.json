@@ -1,7 +1,7 @@
 {
   "name": "wa-cs-hub",
   "version": "1.0.0",
-  "description": "WhatsApp CS Hub — multi-agent WhatsApp customer service interface",
+  "description": "WhatsApp CS Hub \u2014 multi-agent WhatsApp customer service interface",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -9,7 +9,7 @@
     "seed": "node prisma/seed.js",
     "migrate": "npx prisma migrate dev",
     "build:frontend": "cd frontend && npm run build",
-    "postinstall": "cd frontend && npm install"
+    "postinstall": "node scripts/postinstall-frontend.js"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
