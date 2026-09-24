@@ -2384,3 +2384,10 @@ All notable changes to this project will be documented in this file.
 - **MEDIUM-2 (carry-over v3.9):** PUT /api/wa/numbers/:slot kini guard kuota plan.maxNumbers saat upsert-create (403) — tutup bypass via API langsung
 - **LOW-1:** /open dengan numberSlot invalid eksplisit → 400 (bukan silent-fallback slot-0)
 - Unit test dedup PASS (chat dobel 628111 → 1 terpilih, LID-only & phone unik tetap masuk); restart by-PID (61483→62374), health 200
+
+**Tambalan audit Kimi-K3 (GO-WITH-NOTES → GO, commit v3.9.4b):**
+- HIGH-1: neutralisasi shared MenuGatewayConfig saat mode menu per-slot dari Auto Reply
+  (slot tak dicentang tidak bocor dapat menu via fallback shared).
+- MEDIUM-1: proteksi 409 link-all — aktifkan menu "Semua nomor" saat shared AR teks aktif → 409.
+- MEDIUM-2: guard save-tanpa-centangan MenuGateway (frontend toast + backend 400 array kosong).
+- LOW-2 (XFF spoof smoke-test) = follow-up ops, tidak mengubah kode.

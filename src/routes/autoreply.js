@@ -272,6 +272,12 @@ router.put('/', ...rt, async (req, res) => {
               create: { tenantId: req.tenantId, numberSlot: s, enabled: true, updatedById: req.user.id },
             })
           }
+          // v3.9.4 fix audit HIGH-1 (Kimi-K3): neutralisasi shared MG — slot DI LUAR
+          // centangan tidak boleh dapat menu via fallback shared (mirror jalur text).
+          await prisma.menuGatewayConfig.updateMany({
+            where: { tenantId: req.tenantId, numberSlot: null, enabled: true },
+            data: { enabled: false, updatedById: req.user.id },
+          })
         }
       } else {
         // Matikan menu SCOPED: link-all → shared row saja; per-slot → row slot tsb.

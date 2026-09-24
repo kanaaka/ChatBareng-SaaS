@@ -312,6 +312,11 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
         if (parsed.some((s) => !Number.isFinite(s) || s < 0 || s > 2)) {
           return res.status(400).json({ error: 'numberSlots berisi slot tidak valid (harus 0..2)' })
         }
+        // v3.9.4 fix audit MEDIUM-2 — array KOSONG = niat "tidak ada tercentang",
+        // BUKAN link-all; tulis shared row justru kebalik. Tolak 400 (mirror autoreply).
+        if (parsed.length === 0) {
+          return res.status(400).json({ error: 'Centang minimal satu nomor (atau Semua nomor)' })
+        }
         targetSlots = [...new Set(parsed)].sort((a, b) => a - b)
       } else {
         return res.status(400).json({ error: 'numberSlots harus null/all atau array slot 0..2' })
@@ -324,6 +329,21 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
       targetSlots = [s]
     }
     const targetList = Array.isArray(targetSlots) && targetSlots.length > 0 ? targetSlots : null
+
+    // v3.9.4 fix audit MEDIUM-1 — proteksi link-all: enabled=true via link-all memindahkan
+    // SEMUA slot "pengikut shared" ke mode menu. Bila shared AR masih punya trigger teks
+    // aktif → 409 (hormati transisi sadar via halaman Auto Reply dulu).
+    if (!targetList && body.enabled === true) {
+      const sharedAR = await prisma.autoReplyConfig.findFirst({
+        where: { tenantId: req.tenantId, numberSlot: null },
+        select: { greetEnabled: true, outsideHoursEnabled: true },
+      })
+      if (sharedAR && (sharedAR.greetEnabled || sharedAR.outsideHoursEnabled)) {
+        return res.status(409).json({
+          error: "Auto Reply 'Semua nomor' masih aktif (greeting/outside-hours). Matikan dulu di halaman Auto Reply (atau matikan menunya per-slot di sini), lalu aktifkan link-all di sini. Aktifkan per-slot via tick-box kalau mau hybrid.",
+        })
+      }
+    }
 
     const { data } = (await validatePayload(body, errors)) || {}
     if (!data) {

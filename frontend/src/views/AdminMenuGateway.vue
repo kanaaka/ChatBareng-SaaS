@@ -423,6 +423,11 @@ async function fetchAll() {
 }
 
 async function save() {
+  // v3.9.4 fix audit MEDIUM-2 — guard sama dgn AutoReply: uncheck semua = tolak dini
+  if (waSlots.value.length > 0 && !applyAll.value && selectedSlots.value.size === 0) {
+    toast.show({ icon: '⚠️', title: 'Belum ada nomor dipilih', message: 'Centang minimal satu nomor (atau Semua nomor).' })
+    return
+  }
   const err = validateClient()
   if (err) {
     toast.show({ icon: '⚠️', title: 'Belum valid', message: err })
