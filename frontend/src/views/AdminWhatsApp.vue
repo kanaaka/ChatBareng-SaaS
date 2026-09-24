@@ -18,7 +18,16 @@
             <p class="text-sm text-gray-500">Setiap nomor punya sesi sendiri — connect/QR/pairing/logout per nomor. Slot-0 = nomor utama.</p>
           </div>
           <div class="flex items-center gap-2">
-            <span v-if="waMode" class="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Mode: {{ waMode }}</span>
+            <!-- v3.9.4 — selector mode routing tenant (QA #2): pool / assigned / mix -->
+            <label v-if="slots.length > 1" class="flex items-center gap-1.5 text-xs text-gray-600">
+              Routing:
+              <select :value="waMode" @change="setWaMode($event.target.value)" class="px-2 py-1 border border-gray-300 rounded-lg text-xs bg-white">
+                <option value="pool">Pool</option>
+                <option value="assigned">Assigned</option>
+                <option value="mix">Mix (per slot)</option>
+              </select>
+            </label>
+            <span v-else-if="waMode" class="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Mode: {{ waMode }}</span>
             <button @click="addSlot" :disabled="addingSlot" class="px-3 py-1.5 bg-blue-100 text-blue-700 rounded-lg text-sm hover:bg-blue-200 disabled:opacity-50">
               {{ addingSlot ? 'Menambah…' : '+ Tambah Nomor' }}
             </button>
@@ -50,6 +59,26 @@
                 class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg w-56"
               />
               <button @click="saveLabel(s)" class="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200">Simpan Label</button>
+            </div>
+
+            <!-- v3.9.4 — Routing per-slot (QA #2): assigned agent + reassign-offline.
+                 Muncul saat mode tenant 'assigned' atau 'mix' (di mix per slot bisa pool). -->
+            <div v-if="waMode !== 'pool'" class="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-2">
+              <select v-if="waMode === 'mix'" v-model="s._routeMode" class="px-2 py-1.5 border border-gray-300 rounded-lg text-sm bg-white">
+                <option value="pool">Pool (antrean umum)</option>
+                <option value="assigned">Assigned ke agent</option>
+              </select>
+              <template v-if="waMode === 'assigned' || s._routeMode === 'assigned'">
+                <select v-model="s._assignedAgentId" class="px-2 py-1.5 border border-gray-300 rounded-lg text-sm bg-white">
+                  <option :value="null">— pilih agent —</option>
+                  <option v-for="u in agents" :key="u.id" :value="u.id">{{ u.username }} ({{ u.role }})</option>
+                </select>
+                <label v-if="s._assignedAgentId" class="flex items-center gap-1.5 text-xs text-gray-600">
+                  <input type="checkbox" v-model="s._reassignOffline" class="w-4 h-4 accent-purple-600" />
+                  reassign ke CS lain kalau offline
+                </label>
+                <button @click="saveRouting(s)" class="px-3 py-1.5 bg-purple-100 text-purple-700 rounded-lg text-sm hover:bg-purple-200">Simpan Routing</button>
+              </template>
             </div>
 
             <!-- QR per-slot (hanya slot ini butuh scan) -->
@@ -93,6 +122,9 @@
                 {{ s.status?.connected ? 'Reconnect' : 'Connect' }}
               </button>
               <button v-if="s.status?.qrNeeded" @click="fetchQRSlot(s)" class="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200">Refresh QR</button>
+              <!-- v3.9.4 — tombol logout per nomor kembali (QA #1): POST /api/wa/logout
+                   per-slot — beda dgn reconnect (reconnect TIDAK menghapus sesi) -->
+              <button v-if="s.status?.connected" @click="logoutSlot(s)" class="px-3 py-1.5 bg-orange-100 text-orange-700 rounded-lg text-sm hover:bg-orange-200">Logout WA</button>
               <button
                 v-if="s.slot !== 0"
                 @click="removeSlot(s)"
@@ -175,6 +207,7 @@ async function toggleReceipts(v) {
 const slots = ref([])
 const waMode = ref('pool')
 const addingSlot = ref(false)
+const agents = ref([]) // v3.9.4 — utk dropdown assigned per slot
 let pollTimer = null
 
 function formatCode(code) {
@@ -199,6 +232,10 @@ async function fetchStatus() {
         _pairingCode: old._pairingCode || null,
         _pairError: old._pairError || null,
         _pairPhone: old._pairPhone || '',
+        // v3.9.4 — state routing per-slot (QA #2)
+        _routeMode: old._routeMode ?? (n.routeMode || 'pool'),
+        _assignedAgentId: old._assignedAgentId ?? (n.assignedAgentId ?? null),
+        _reassignOffline: old._reassignOffline ?? !!n.reassignOffline,
       }
     })
     // Auto-fetch QR bila slot butuh scan dan QR belum tampil
@@ -291,6 +328,64 @@ async function removeSlot(s) {
   }
 }
 
+async function saveRouting(s) {
+  try {
+    const body = {}
+    if (waMode.value === 'mix') body.routeMode = s._routeMode || 'pool'
+    if (waMode.value === 'assigned' || s._routeMode === 'assigned') {
+      body.assignedAgentId = s._assignedAgentId || null
+      body.reassignOffline = !!s._reassignOffline
+    }
+    const res = await axios.put(`${API}/api/wa/numbers/${s.slot}`, body)
+    s.routeMode = res.data.number.routeMode
+    s.assignedAgentId = res.data.number.assignedAgentId
+    s.reassignOffline = !!res.data.number.reassignOffline
+    toast.show({ icon: '🎯', title: 'Routing disimpan', message: `Slot ${s.slot}: ${s.routeMode === 'assigned' ? 'assigned → agent #' + s.assignedAgentId : 'pool'}` })
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal simpan routing', message: e.response?.data?.error || 'Coba lagi' })
+  }
+}
+
+async function setWaMode(mode) {
+  const prev = waMode.value
+  waMode.value = mode
+  try {
+    await axios.put(`${API}/api/wa/mode`, { mode })
+    toast.show({ icon: '🔀', title: 'Mode routing diubah', message: mode === 'pool' ? 'Pool — semua chat masuk antrean umum' : mode === 'assigned' ? 'Assigned — chat langsung ke agent slot' : 'Mix — per slot (pool/assigned)' })
+    await fetchStatus()
+  } catch (e) {
+    waMode.value = prev
+    toast.show({ icon: '⚠️', title: 'Gagal ubah mode', message: e.response?.data?.error || 'Coba lagi' })
+  }
+}
+
+// v3.9.4 — logout WhatsApp per slot (QA #1): hapus sesi nomor itu (QR rescan),
+// slot & kuota TETAP ADA — beda dgn "Hapus Nomor" (slot ikut dilepas).
+async function logoutSlot(s) {
+  const ok = await confirmAction({
+    title: `Logout WhatsApp Slot ${s.slot}?`,
+    message: 'Sesi WhatsApp nomor ini dihapus — harus scan QR/pairing ulang untuk connect lagi. Slot & label tetap ada.',
+    confirmText: 'Logout WA',
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await axios.post(`${API}/api/wa/logout`, { slot: s.slot, confirm: true })
+    toast.show({ icon: '🚪', title: 'Logout WhatsApp', message: `Slot ${s.slot} — sesi dihapus. Scan QR untuk connect ulang.` })
+    await fetchStatus()
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal logout', message: e.response?.data?.error || 'Coba lagi' })
+  }
+}
+
+async function fetchAgents() {
+  // v3.9.4 — daftar agent tenant utk dropdown assigned (QA #2)
+  try {
+    const res = await axios.get(`${API}/api/users`)
+    agents.value = (res.data.users || []).filter((u) => u.status === 'active' && ['cs', 'admin'].includes(u.role))
+  } catch (e) { console.error('Fetch agents error:', e) }
+}
+
 // socket broadcast: refresh slot saat status WA berubah
 function onWaStatus() {
   // debounced refresh
@@ -305,6 +400,7 @@ function handleLogout() {
 
 onMounted(() => {
   fetchStatus()
+  fetchAgents()
   loadAppConfig()
   socketStore.on('wa_status', onWaStatus)
   pollTimer = setInterval(fetchStatus, 10000)

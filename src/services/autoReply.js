@@ -63,6 +63,10 @@ async function getConfigForSlot(tenantId, slot = 0) {
   const s = Number(slot) || 0
   const key = `${tid}:${s}`
   if (configCache.has(key)) return configCache.get(key)
+  // v3.9.4 — semantik tick-box: slot dgn row sendiri → pakai row itu; tanpa row →
+  // fallback shared (numberSlot null). Mode per-slot aktif dinetralkan lewat shared
+  // row (trigger OFF) oleh PUT — bukan lewat proto OFF di sini, supaya slot yang
+  // sengaja tidak dicentang tetap mengikuti baseline "Semua nomor" yang berlaku.
   let cfg = await prisma.autoReplyConfig.findFirst({
     where: { tenantId: tid, OR: [{ numberSlot: s }, { numberSlot: null }] },
     orderBy: [{ numberSlot: 'desc' }], // slot-spesifik (non-null) menang di atas null
@@ -70,6 +74,30 @@ async function getConfigForSlot(tenantId, slot = 0) {
   if (!cfg) cfg = await getConfig(tid) // fallback seed/compat
   configCache.set(key, cfg)
   return cfg
+}
+
+/**
+ * v3.9.4 — daftar slot yang PUNYA row config sendiri (utk UI tick-box).
+ * scoped      = slot dgn row mode text (dikelola halaman Auto Reply).
+ * menuManaged = slot dgn row mode menu (dikelola halaman Menu Gateway — dilindungi
+ *               dari save Auto Reply supaya rules menu tidak menabrak rules teks).
+ */
+async function listSlotsWithConfig(tenantId) {
+  const rows = await prisma.autoReplyConfig.findMany({
+    where: { tenantId: Number(tenantId), numberSlot: { not: null } },
+    select: { numberSlot: true, greetMode: true },
+  })
+  const scoped = []
+  const menuManaged = []
+  for (const r of rows) {
+    const s = Number(r.numberSlot)
+    if (r.greetMode === 'menu') menuManaged.push(s)
+    else scoped.push(s)
+  }
+  return {
+    scoped: scoped.sort((a, b) => a - b),
+    menuManaged: menuManaged.sort((a, b) => a - b),
+  }
 }
 
 function invalidateConfig(tenantId) {
@@ -517,9 +545,85 @@ async function maybeAutoReply(chat, msg) {
   }
 }
 
+// ─── v3.9.4 — Sync saklar greeting SCOPED (dipakai routes/menuGateway.js) ───
+/**
+ * v3.9.4 — enableGreetForScope(tenantId, slots, userId):
+ *   slots = null → link-all: HANYA shared row → greetEnabled=true, greetMode='menu'
+ *   (row per-slot TIDAK disentuh — konfigurasi eksplisit slot lain dilindungi).
+ *   slots = [0,1] → row per-slot tsb → menu; row belum ada → dibuat MINIMAL
+ *   (default schema + greet fields) — BUKAN clone shared, supaya slot menu murni
+ *   tidak ikut mewarisi rules teks tenant.
+ */
+async function enableGreetForScope(tenantId, slots, userId = null) {
+  const tid = Number(tenantId)
+  const data = { greetEnabled: true, greetMode: 'menu', updatedById: userId }
+  if (slots == null) {
+    const shared = await prisma.autoReplyConfig.findFirst({ where: { tenantId: tid, numberSlot: null }, select: { id: true } })
+    if (shared) {
+      await prisma.autoReplyConfig.update({ where: { id: shared.id }, data })
+    } else {
+      await prisma.autoReplyConfig.create({ data: { tenantId: tid, numberSlot: null, ...data } }).catch(async (e) => {
+        if (e.code !== 'P2002') throw e
+        const again = await prisma.autoReplyConfig.findFirst({ where: { tenantId: tid, numberSlot: null }, select: { id: true } })
+        if (again) await prisma.autoReplyConfig.update({ where: { id: again.id }, data })
+      })
+    }
+    invalidateConfig(tid)
+    return
+  }
+  for (const s of slots) {
+    const existing = await prisma.autoReplyConfig.findUnique({ where: { tenantId_numberSlot: { tenantId: tid, numberSlot: s } } })
+    if (existing) {
+      await prisma.autoReplyConfig.update({ where: { id: existing.id }, data })
+      continue
+    }
+    // v3.9.4 — row MINIMAL untuk slot menu: jam operasional 24/7 (menu hanya jalan
+    // "dalam jam kerja" — F2; row tanpa jam aktif = selalu outside = menu tak pernah
+    // terkirim). Trigger teks OFF — slot murni menu.
+    await prisma.autoReplyConfig.create({
+      data: {
+        tenantId: tid, numberSlot: s,
+        greetEnabled: true, greetMode: 'menu', updatedById: userId,
+        outsideHoursEnabled: false, outsideHoursText: '',
+        monFriEnabled: true, monFriStart: '00:00', monFriEnd: '23:59',
+        satEnabled: true, satStart: '00:00', satEnd: '23:59',
+        sunEnabled: true, sunStart: '00:00', sunEnd: '23:59',
+      },
+    }).catch(async (e) => {
+      if (e.code !== 'P2002') throw e
+      await prisma.autoReplyConfig.update({ where: { tenantId_numberSlot: { tenantId: tid, numberSlot: s } }, data })
+    })
+  }
+  invalidateConfig(tid)
+}
+
+/**
+ * v3.9.4 — disableGreetForScope(tenantId, slots, userId): set greetMode='text'
+ * pada row scope (shared bila link-all; row per-slot HANYA bila ada — tidak
+ * create row baru supaya slot yang memang tanpa config tidak ikut hidup).
+ */
+async function disableGreetForScope(tenantId, slots, userId = null) {
+  const tid = Number(tenantId)
+  // v3.9.4 — greetEnabled ikut OFF: tanpa ini, slot bekas menu langsung menyapa
+  // pakai greetText default (surprise message) — lebih aman mati total; admin
+  // tinggal centang ulang greeting di halaman Auto Reply kalau mau teks.
+  const data = { greetEnabled: false, greetMode: 'text', updatedById: userId }
+  if (slots == null) {
+    await prisma.autoReplyConfig.updateMany({ where: { tenantId: tid, numberSlot: null }, data })
+  } else {
+    for (const s of slots) {
+      await prisma.autoReplyConfig.updateMany({ where: { tenantId: tid, numberSlot: s }, data })
+    }
+  }
+  invalidateConfig(tid)
+}
+
 module.exports = {
   getConfig,
   getConfigForSlot, // v3.9.2 K1-A — dipakai menuGateway.startFlow (resolve per-slot)
+  listSlotsWithConfig, // v3.9.4 — UI tick-box
+  enableGreetForScope, // v3.9.4 — sync saklar scoped
+  disableGreetForScope, // v3.9.4 — sync saklar scoped
   invalidateConfig,
   isOutsideHours,
   personalizeText,

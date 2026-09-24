@@ -47,6 +47,10 @@ const superadminRoutes = require('./routes/superadmin') // v3.0 — Platform own
 const brandingRoutes = require('./routes/branding') // v3.4 — Branding per-tenant (logo)
 
 const app = express()
+// v3.9.4 — trust proxy 'loopback': server di belakang cloudflared tunnel (127.0.0.1)
+// → req.ip = IP klien asli dari X-Forwarded-For, BUKAN 127.0.0.1. Tanpa ini SEMUA
+// klien dianggap satu IP → rate limit global gampang kembang oleh polling UI.
+app.set('trust proxy', 'loopback')
 const server = http.createServer(app)
 const io = new Server(server, {
   cors: { origin: config.corsOrigin },
@@ -63,12 +67,24 @@ app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
 
 // Rate limiting
-const apiLimiter = rateLimit({
+// v3.9.4 — SPLIT limiter READ vs WRITE. Bug fatal lama: SATU bucket 100/min per-IP
+// untuk SEMUA request → polling dashboard (GET) + take chat beruntun (POST) + halaman
+// admin paralel menghabiskan jatah → 429 "Too many requests, slow down" massal →// diperparah frontend logout paksa saat 429 (fetchMe) → user terlempar ke login,
+// login pun kena limit = lingkaran setan. Sekarang: GET/HEAD bucket lega terpisah,
+// WRITE bucket naik, dan login punya limiter sendiri (lihat routes/auth.js).
+const apiReadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: config.rateLimitReadPerMin,
+  skip: (req) => req.method !== 'GET' && req.method !== 'HEAD',
+  message: { error: 'Terlalu banyak permintaan — tunggu sebentar lalu coba lagi.' },
+})
+const apiWriteLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: config.rateLimitPerMin,
-  message: { error: 'Too many requests, slow down.' },
+  skip: (req) => req.method === 'GET' || req.method === 'HEAD',
+  message: { error: 'Terlalu banyak aksi sekaligus — pelan-pelan, coba lagi sebentar.' },
 })
-app.use('/api/', apiLimiter)
+app.use('/api/', apiReadLimiter, apiWriteLimiter)
 
 // ═══ v3.8 — Global WRITE-GUARD masa aktif tenant (READ-ONLY enforcement) ═══
 // Keputusan owner 15:30: tenant expired TETAP bisa login + GET/read (lihat chat,

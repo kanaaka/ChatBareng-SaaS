@@ -19,8 +19,17 @@ const changePasswordValidation = [
   body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 chars'),
 ]
 
+// v3.9.4 — login limiter TERPISAH dari bucket write global (QA Kanaka 24 Sep: login
+// ikut kena "Too many requests" global saat traffic tinggi → gak bisa login sama
+// sekali). 15/menit per-IP: brute-force tetap terhalang, user sah gak ikut gosong.
+const loginLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 15,
+  message: { error: 'Terlalu banyak percobaan login — tunggu ±1 menit lalu coba lagi.' },
+})
+
 // POST /api/auth/login
-router.post('/login', loginValidation, async (req, res) => {
+router.post('/login', loginLimiter, loginValidation, async (req, res) => {
   try {
     const errors = req.validationErrors
     if (errors && errors.length > 0) {

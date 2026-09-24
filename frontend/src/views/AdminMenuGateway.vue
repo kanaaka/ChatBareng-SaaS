@@ -208,16 +208,32 @@
 
       <!-- Simpan -->
       <div class="flex justify-end items-center gap-3 flex-wrap">
-        <!-- v3.9 — Terapkan ke: Semua nomor (linked, default) / Nomor ini saja -->
-        <label v-if="waSlots.length > 0" class="flex items-center gap-2 text-sm">
-          <span class="text-gray-600">Terapkan ke:</span>
-          <select v-model="applySlot" class="px-3 py-2 border border-gray-300 rounded-lg text-sm">
-            <option value="all">Semua nomor (linked)</option>
-            <option v-for="s in waSlots" :key="s.slot" :value="String(s.slot)">
-              Nomor ini saja — slot {{ s.slot }}{{ s.label ? ' · ' + s.label : '' }}
-            </option>
-          </select>
-        </label>
+        <!-- v3.9.4 — TICK-BOX (QA #4/#5): pilih nomor mana yang kena menu ini.
+             Slot yang punya auto-reply teks aktif dilindungi (disabled + badge). -->
+        <div v-if="waSlots.length > 0" class="flex items-center gap-3 flex-wrap">
+          <span class="text-sm text-gray-600">Terapkan ke:</span>
+          <label class="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input type="checkbox" :checked="applyAll" @change="toggleAll" class="w-4 h-4 accent-green-600" />
+            Semua nomor
+          </label>
+          <label
+            v-for="s in waSlots"
+            :key="s.slot"
+            class="flex items-center gap-1.5 text-sm"
+            :class="arManagedSet.has(s.slot) ? 'opacity-50' : 'cursor-pointer'"
+            :title="arManagedSet.has(s.slot) ? 'Nomor ini punya auto-reply teks aktif — matikan dulu di halaman Auto Reply' : ''"
+          >
+            <input
+              type="checkbox"
+              :checked="selectedSlots.has(s.slot)"
+              :disabled="arManagedSet.has(s.slot)"
+              @change="toggleSlot(s.slot)"
+              class="w-4 h-4 accent-green-600"
+            />
+            Slot {{ s.slot }}{{ s.label ? ' · ' + s.label : '' }}
+            <span v-if="arManagedSet.has(s.slot)" class="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">auto-reply</span>
+          </label>
+        </div>
         <button
           @click="save"
           :disabled="saving"
@@ -370,6 +386,33 @@ async function fetchAll() {
       // Config default baru → sediakan 2 opsi kosong sebagai titik mulai
       form.value.options = [emptyOption(1), emptyOption(2)]
     }
+    // v3.9.4 — state tick-box dari server (persist) + slot dilindungi auto-reply
+    arManagedSet.value = new Set(res.data.arManagedSlots || [])
+    const mgSlots = (res.data.menuManagedSlots || []).map(Number)
+    if (mgSlots.length > 0) {
+      applyAll.value = false
+      selectedSlots.value = new Set(mgSlots)
+      // overlay form dari config slot tercentang pertama (scoped yang AKTIF)
+      try {
+        const sc = await axios.get(`${API}/api/menu-gateway?slot=${mgSlots[0]}`)
+        const sCfg = sc.data.config
+        form.value.enabled = !!sCfg.enabled
+        if (sCfg.introText) form.value.introText = sCfg.introText
+        if (sCfg.fallbackText) form.value.fallbackText = sCfg.fallbackText
+        form.value.fallbackTagId = sCfg.fallbackTagId ?? form.value.fallbackTagId
+        form.value.timeoutValue = sCfg.timeoutValue ?? form.value.timeoutValue
+        form.value.timeoutUnit = sCfg.timeoutUnit || form.value.timeoutUnit
+        form.value.repeatFrequency = sCfg.repeatFrequency || form.value.repeatFrequency
+        if ((sCfg.options || []).length > 0) {
+          form.value.options = sCfg.options.map(o => ({
+            position: o.position, label: o.label || '', aliases: o.aliases || '', replyText: o.replyText || '', tagId: o.tagId ?? null,
+          }))
+        }
+      } catch {}
+    } else {
+      applyAll.value = true
+      selectedSlots.value = new Set()
+    }
   } catch (e) {
     toast.show({ icon: '⚠️', title: 'Gagal memuat', message: e.response?.data?.error || 'Config tidak bisa dimuat' })
   }
@@ -395,8 +438,8 @@ async function save() {
       timeoutValue: form.value.timeoutValue,
       timeoutUnit: form.value.timeoutUnit,
       repeatFrequency: form.value.repeatFrequency,
-      // v3.9 — target slot (all = shared/link-all; angka = Nomor ini saja)
-      numberSlot: applySlot.value === 'all' ? null : Number(applySlot.value),
+      // v3.9.4 — tick-box scope (legacy numberSlot tetap didukung backend)
+      numberSlots: applyAll.value ? null : [...selectedSlots.value],
       options: form.value.options.map(o => ({
         position: o.position,
         label: o.label,
@@ -422,16 +465,35 @@ async function save() {
     }))
     toast.show({ icon: '✅', title: 'Tersimpan', message: 'Config Menu Gateway berhasil disimpan' })
   } catch (e) {
-    toast.show({ icon: '⚠️', title: 'Gagal simpan', message: e.response?.data?.error || 'Terjadi kesalahan' })
+    // v3.9.4 — 409 = slot dilindungi Auto Reply (proteksi hybrid dua arah)
+    toast.show({ icon: '⚠️', title: e?.response?.status === 409 ? 'Slot punya auto-reply aktif' : 'Gagal simpan', message: e.response?.data?.error || 'Terjadi kesalahan' })
   } finally {
     saving.value = false
   }
 }
 
-// v3.9 — Terapkan ke: 'all' (link-all, default) | slot 0..2 (fix BUG-7: deklarasi hilang)
+// v3.9.4 — TICK-BOX scope (QA #4/#5): applyAll = 'Semua nomor'; selectedSlots =
+// slot tercentang (persist via numberSlot config — pilihan tidak hilang lagi).
+// arManagedSet = slot dgn auto-reply teks aktif → dilindungi dari save menu.
 const waSlots = ref([])
-const applySlot = ref('all')
-const applyingToSlot = computed(() => (applySlot.value === 'all' ? null : Number(applySlot.value)))
+const applyAll = ref(true)
+const selectedSlots = ref(new Set())
+const arManagedSet = ref(new Set())
+
+function toggleAll() {
+  applyAll.value = !applyAll.value
+  if (applyAll.value) selectedSlots.value = new Set()
+}
+function toggleSlot(slot) {
+  const next = new Set(selectedSlots.value)
+  if (next.has(slot)) {
+    next.delete(slot)
+  } else {
+    next.add(slot)
+    applyAll.value = false
+  }
+  selectedSlots.value = next
+}
 
 onMounted(fetchAll)
 </script>

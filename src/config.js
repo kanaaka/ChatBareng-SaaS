@@ -36,7 +36,11 @@ const config = {
   superadminUsername: process.env.SUPERADMIN_USERNAME || 'superadmin',
   superadminPassword: process.env.SUPERADMIN_PASSWORD || 'superadmin123',
 
-  rateLimitPerMin: parseInt(process.env.RATE_LIMIT_PER_MIN || '100', 10),
+  // v3.9.4 — rate limit split READ/WRITE (lihat server.js). Default write 300/min
+  // (naik dari 100), read default = 6× write (polling dashboard lega). .env produksi
+  // dioverride eksplisit.
+  rateLimitPerMin: parseInt(process.env.RATE_LIMIT_PER_MIN || '300', 10),
+  rateLimitReadPerMin: parseInt(process.env.RATE_LIMIT_READ_PER_MIN || String(parseInt(process.env.RATE_LIMIT_PER_MIN || '300', 10) * 6), 10),
   waSendRatePerSec: parseInt(process.env.WA_SEND_RATE_PER_SEC || '10', 10),
 
   // v0.4.0 — Web Push (VAPID)

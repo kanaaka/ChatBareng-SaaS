@@ -71,8 +71,12 @@ export const useAuthStore = defineStore('auth', {
         localStorage.setItem('user', JSON.stringify(this.user))
         // v3.8 — subscription state selalu sinkron dengan /auth/me
         setSubscription(this.user?.subscription)
-      } catch {
-        this.logout()
+      } catch (e) {
+        // v3.9.4 — logout HANYA saat token benar-benar invalid (401). Bug fatal QA #3:
+        // dulu SEMUA error (termasuk 429 rate limit & 5xx) → logout paksa → sesi
+        // terhapus → halaman kosong → login pun kena limiter (lingkaran setan).
+        const status = e?.response?.status
+        if (status === 401) this.logout()
       }
     },
     logout() {

@@ -1,3 +1,41 @@
+## v3.9.4 — 6 fix QA Kanaka 24 Sep 05:41 (rate-limit fatal + hybrid AR/MG + UI slot) (2026-09-24)
+
+**Tembakan:** QA report Kanaka 06 poin (05:41). Fix penuh + E2E 21/21 PASS di DB copy (port 5099, WA disabled).
+
+1. **Tombol logout WA per nomor kembali (QA #1)** — AdminWhatsApp: tombol "Logout WA" per slot
+   (orange, konfirmasi) → POST /api/wa/logout {slot, confirm:true}. Beda dgn Reconnect (yang TIDAK
+   menghapus sesi) dan Hapus Nomor (yang melepas slot/kuota). Sesi dihapus → scan QR ulang; slot & label tetap ada.
+2. **UI routing pool/assigned/mix (QA #2)** — dropdown "Routing:" di header (muncul bila >1 slot)
+   + per-slot: pilih agent (cs/admin aktif) + checkbox "reassign ke CS lain kalau offline" +
+   Simpan Routing. Backend sudah ada sejak v3.9 (resolveRouteForSlot + born-assigned) — ini UI-nya.
+3. **Rate limit fatal (QA #3)** — 3 lapis fix:
+   - server.js: `app.set('trust proxy','loopback')` → di balik cloudflared tunnel, req.ip = IP klien
+     asli (bukan semua dihitung 127.0.0.1 satu bucket).
+   - Limiter SPLIT READ/WRITE: GET/HEAD bucket terpisah 1800/min (polling dashboard tidak lagi
+     makan jatah aksi tulis), write 300/min (naik dari 100). Env: RATE_LIMIT_PER_MIN /
+     RATE_LIMIT_READ_PER_MIN.
+   - **Akar fatal:** auth store `fetchMe()` dulu logout paksa untuk SEMUA error (termasuk 429) →
+     429 = sesi dihapus = halaman kosong = login juga kena limit (lingkaran setan QA). Sekarang
+     logout HANYA saat 401. Plus login limiter terpisah 15/menit (brute-force guard tetap).
+4. **Tick-box multi-nomor (QA #4)** — halaman Auto Reply & Menu Gateway: checkbox "Semua nomor" +
+   per-slot (badge "menu"/"auto-reply" utk slot dilindungi). Backend: numberSlots (array) +
+   numberAll (legacy numberSlot tetap didukung).
+5. **Pilihan persist (QA #5)** — dua bug root: (a) `numberSlot` tidak ada di ALLOWED_TOP_FIELDS
+   route menu-gateway → save per-slot selalu 400 "Field tidak dikenal" diam-diam; (b) GET tidak
+   balikin scope terpilih. Fix: whitelist + GET numberSlots/menuManagedSlots/arManagedSlots.
+6. **Hybrid independen (QA #6)** — sinkronisasi saklar Auto Reply ↔ Menu Gateway kini SCOPED per
+   slot (bukan updateMany SEMUA row): enableGreetForScope/disableGreetForScope. Sweep timeout &
+   releaseAwaiting slot-aware (param slot). Proteksi 2 arah 409: save Auto Reply ke slot menu-managed
+   ditolak, dan sebaliknya. Shared/legacy rows dinetralkan saat tick-box eksplisit supaya tidak bocor
+   ke slot lain via fallback.
+
+**Bug bonus ketahuan E2E:** PUT autoreply selalu memaksa greetEnabled=true saat greetMode dikirim —
+user uncheck greeting = nyala lagi sendiri. Fix: hanya mode 'menu' yang memaksa ON.
+
+**E2E:** 21/21 PASS (login/impersonate, tick-box validasi & persist, proteksi 409 dua arah,
+menu-gw per-slot, logout guard, routing assigned + validasi agent, release awaiting SLOT-SCOPED
+(slot-0 tetap awaiting saat slot-1 di-disable), login limiter 429). Server produksi restart sehat.
+
 ## v3.4.1 — Username unik GLOBAL lintas tenant + case-insensitive (2026-09-22)
 
 - **Request owner (18:50):** tiap tenant bisa bikin user sendiri, tapi login pakai

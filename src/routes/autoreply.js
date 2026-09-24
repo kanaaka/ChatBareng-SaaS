@@ -14,6 +14,7 @@ const rt = [requireAuth, requireTenant, requireAdmin]  // requireTenant dulu —
 const {
   getConfig,
   invalidateConfig,
+  listSlotsWithConfig, // v3.9.4 — info tick-box (scoped vs menu-managed)
   stripUnknownPlaceholders,
   TIME_RE,
   MAX_TEXT_LEN,
@@ -80,7 +81,10 @@ router.get('/', ...rt, async (req, res) => {
       return res.json({ config: cfg, numberSlot: cfg.numberSlot ?? null })
     }
     const cfg = await getConfig(req.tenantId)
-    res.json({ config: cfg })
+    // v3.9.4 — info tick-box utk UI: slot dgn row sendiri mode text (dikelola halaman
+    // ini) + slot menu-managed (dikelola Menu Gateway — dilindungi dari save di sini).
+    const scopedInfo = await listSlotsWithConfig(req.tenantId)
+    res.json({ config: cfg, numberSlots: scopedInfo.scoped, menuManagedSlots: scopedInfo.menuManaged })
   } catch (e) {
     console.error('AutoReply GET error:', e)
     res.status(500).json({ error: 'Internal server error' })
@@ -97,20 +101,63 @@ router.put('/', ...rt, async (req, res) => {
 
     const data = {}
 
-    // v3.9 — numberSlot: null/undefined = tetap; null = link-all (Semua nomor);
-    // 0..2 = config Nomor ini saja. Row per-slot dibuat on-demand (upsert).
-    let numberSlotSpecified = false
-    let numberSlotValue = null
-    if (body.numberSlot !== undefined) {
-      numberSlotSpecified = true
-      if (body.numberSlot === null || body.numberSlot === '' || body.numberSlot === 'all') {
-        numberSlotValue = null // link-all
+    // v3.9.4 — target scope TICK-BOX: numberAll (bool) + numberSlots (array slot
+    // tercentang). ATAU legacy numberSlot (null | 0..2). Mixed (all + slot) → 400.
+    let slotFieldsProvided = false
+    let numberAll = body.numberAll === true
+    let targets = null // null = link-all (Semua nomor)
+    const parseSlot = (v) => {
+      const s = parseInt(v, 10)
+      return Number.isFinite(s) && s >= 0 && s <= 2 ? s : null
+    }
+    if (body.numberSlots !== undefined) {
+      slotFieldsProvided = true
+      if (body.numberSlots === null || body.numberSlots === 'all' || body.numberSlots === '') {
+        targets = null
+        numberAll = true
+      } else if (Array.isArray(body.numberSlots)) {
+        const parsed = body.numberSlots.map(parseSlot)
+        if (parsed.includes(null)) {
+          return res.status(400).json({ error: 'numberSlots berisi slot tidak valid (harus 0..2)' })
+        }
+        targets = [...new Set(parsed)].sort((a, b) => a - b)
       } else {
-        const s = parseInt(body.numberSlot, 10)
-        if (!Number.isFinite(s) || s < 0 || s > 2) {
+        return res.status(400).json({ error: 'numberSlots harus null/all atau array slot 0..2' })
+      }
+    } else if (body.numberSlot !== undefined) {
+      slotFieldsProvided = true
+      if (body.numberSlot === null || body.numberSlot === '' || body.numberSlot === 'all') {
+        targets = null
+        numberAll = true
+      } else {
+        const s = parseSlot(body.numberSlot)
+        if (s === null) {
           return res.status(400).json({ error: 'numberSlot tidak valid (null / 0..2)' })
         }
-        numberSlotValue = s
+        targets = [s]
+      }
+    }
+    if (numberAll && Array.isArray(targets) && targets.length > 0) {
+      return res.status(400).json({ error: "Pilih 'Semua nomor (linked)' ATAU slot tertentu — tidak keduanya" })
+    }
+    if (slotFieldsProvided && !numberAll && (!Array.isArray(targets) || targets.length === 0)) {
+      return res.status(400).json({ error: 'Centang minimal satu nomor (atau Semua nomor)' })
+    }
+
+    // v3.9.4 — PROTEKSI slot menu-managed: row dgn greetMode 'menu' dikelola halaman
+    // Menu Gateway — save di sini tidak boleh menimpa rules menu-nya (akar bug hybrid
+    // QA #6: sinkronisasi lama menimpa SEMUA row).
+    if (targets && targets.length > 0) {
+      const menuRows = await prisma.autoReplyConfig.findMany({
+        where: { tenantId: req.tenantId, numberSlot: { in: targets }, greetMode: 'menu' },
+        select: { numberSlot: true },
+      })
+      if (menuRows.length > 0) {
+        const slots = menuRows.map((r) => r.numberSlot).sort((a, b) => a - b).join(', ')
+        return res.status(409).json({
+          error: `Slot ${slots} sedang dikelola Menu Gateway — matikan menu untuk slot itu di halaman Menu Gateway dulu, lalu simpan ulang di sini.`,
+          slots: menuRows.map((r) => r.numberSlot),
+        })
       }
     }
 
@@ -124,8 +171,11 @@ router.put('/', ...rt, async (req, res) => {
         return res.status(400).json({ error: 'greetMode harus "text" atau "menu"' })
       }
       data.greetMode = body.greetMode
-      // v0.13.2 — menu hanya jalan lewat First-of-Day Greeting → mode menu = greeting nyala
-      data.greetEnabled = true
+      // v0.13.2 — mode menu = greeting nyala (menu hanya jalan lewat greeting).
+      // v3.9.4 fix — HANYA menu yang memaksa ON; mode 'text' HORMAT ke checkbox
+      // (bug lama: selalu dipaksa true → user uncheck greeting = nyala lagi sendiri,
+      // ketahuan di E2E T3: greetEnabled:false terkirim tapi tersimpan true).
+      if (body.greetMode === 'menu') data.greetEnabled = true
     }
 
     // Teks (≤1000 char, placeholder hanya {name})
@@ -144,63 +194,111 @@ router.put('/', ...rt, async (req, res) => {
       return res.status(400).json({ error: errors[0], errors })
     }
 
-    // v3.9 — numberSlot mode: tulis ke row slot-spesifik (create on-demand) —
-    // JANGAN menimpa config shared. Tanpa mode itu → update config shared (compat).
+    // v3.9.4 — tulis scope:
+    // - Per-slot: baseline shared DINETRALKAN (trigger OFF) → slot tanpa centang gak
+    //   dapat auto-reply. MENU-PRESERVING: bila shared sedang menu-managed (legacy
+    //   link-all menu), greet fields shared DIPERTAHANKAN supaya menu slot lain
+    //   tidak ikut mati. Slot tercentang punya row sendiri (upsert).
+    // - Link-all eksplisit: row standard-scoped dihapus (slot kembali ikut shared);
+    //   row menu-managed DIPERTAHANKAN (proteksi).
     let cfg
-    if (numberSlotSpecified && numberSlotValue !== null) {
-      // v3.9 fix BUG-1 (+compound-NULL): shared row via findFirst + update/create
-      cfg = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null } })
-      if (!cfg) {
-        cfg = await prisma.autoReplyConfig.create({ data: { tenantId: req.tenantId, numberSlot: null } }).catch(async (e) => {
-          if (e.code === 'P2002') return prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null } })
-          throw e
+    if (Array.isArray(targets) && targets.length > 0) {
+      const sharedRow = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null } })
+      const keepMenu = !!(sharedRow && sharedRow.greetMode === 'menu' && sharedRow.greetEnabled)
+      if (sharedRow) {
+        await prisma.autoReplyConfig.update({
+          where: { id: sharedRow.id },
+          data: keepMenu
+            ? { outsideHoursEnabled: false, updatedById: req.user.id }
+            : { outsideHoursEnabled: false, greetEnabled: false, greetMode: 'text', updatedById: req.user.id },
         })
       }
-      // Bila row shared JUGA belum ada → salin nilai lama dulu (clone), lalu update
-      cfg = await prisma.autoReplyConfig.create({
-        data: { tenantId: req.tenantId, numberSlot: numberSlotValue, ...data, updatedById: req.user.id },
-      }).catch(async (e) => {
-        if (e.code !== 'P2002') throw e
-        // row per-slot sudah ada → update dia
-        return prisma.autoReplyConfig.update({
-          where: { tenantId_numberSlot: { tenantId: req.tenantId, numberSlot: numberSlotValue } },
-          data: { ...data, updatedById: req.user.id },
-        })
+      // v3.9.4 — slot yang di-UNCHECK: row scoped-nya dihapus (kembali fallback ke
+      // shared baseline) — tanpa ini, slot lama yang pernah dicentang tetap aktif.
+      await prisma.autoReplyConfig.deleteMany({
+        where: { tenantId: req.tenantId, numberSlot: { not: null, notIn: targets }, NOT: { greetMode: 'menu' } },
       })
+      cfg = null
+      for (const s of targets) {
+        cfg = await prisma.autoReplyConfig.upsert({
+          where: { tenantId_numberSlot: { tenantId: req.tenantId, numberSlot: s } },
+          update: { ...data, updatedById: req.user.id },
+          create: { tenantId: req.tenantId, numberSlot: s, ...data, updatedById: req.user.id },
+        })
+      }
     } else {
-      if (numberSlotSpecified) data.numberSlot = null // eksplisit link-all
+      if (slotFieldsProvided) {
+        await prisma.autoReplyConfig.deleteMany({
+          where: { tenantId: req.tenantId, numberSlot: { not: null }, NOT: { greetMode: 'menu' } },
+        })
+      }
+      const shared = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
       cfg = await prisma.autoReplyConfig.update({
-        where: { id: (await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } }))?.id },
+        where: { id: shared?.id },
         data: { ...data, updatedById: req.user.id },
       })
     }
 
     invalidateConfig(req.tenantId) // cache service invalid → config baru aktif
 
-    // v0.13.2 — SINKRON 2 ARAH (feedback Kanaka 02:44): radio greeting = satu saklar
-    // efektif bersama toggle di Menu Gateway. mode menu → gateway ON; mode text →
-    // gateway OFF + release chat yang masih menunggu menu (konsisten D12).
+    // v0.13.2 sync — v3.9.4 SCOPED (bug lama: updateMany SEMUA row → config slot
+    // lain ketimpa, hybrid mustahil). Jalur 'menu' = legacy (UI baru tidak mengirim;
+    // mode menu kini dimiliki halaman Menu Gateway).
     let menuGatewayEnabled = null
     if (data.greetMode !== undefined) {
       const menuGatewaySvc = require('../services/menuGateway')
       if (data.greetMode === 'menu') {
-        // v3.9 fix: shared row via findFirst (compound-NULL ditolak Prisma)
-        const mgShared = await prisma.menuGatewayConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
-        if (mgShared) {
-          await prisma.menuGatewayConfig.update({ where: { id: mgShared.id }, data: { enabled: true, updatedById: req.user.id } })
-        } else {
-          await prisma.menuGatewayConfig.create({ data: { tenantId: req.tenantId, numberSlot: null, enabled: true, updatedById: req.user.id } }).catch(async (e) => {
-            if (e.code !== 'P2002') throw e
-            const again = await prisma.menuGatewayConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
-            if (again) await prisma.menuGatewayConfig.update({ where: { id: again.id }, data: { enabled: true, updatedById: req.user.id } })
-          })
+        // v3.9.4 — shared-row enable HANYA saat link-all; mode per-slot → row slot
+        // saja (shared yang enabled akan bocor ke slot lain via fallback).
+        if (!Array.isArray(targets)) {
+          const mgShared = await prisma.menuGatewayConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
+          if (mgShared) {
+            await prisma.menuGatewayConfig.update({ where: { id: mgShared.id }, data: { enabled: true, updatedById: req.user.id } })
+          } else {
+            await prisma.menuGatewayConfig.create({ data: { tenantId: req.tenantId, numberSlot: null, enabled: true, updatedById: req.user.id } }).catch(async (e) => {
+              if (e.code !== 'P2002') throw e
+              const again = await prisma.menuGatewayConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
+              if (again) await prisma.menuGatewayConfig.update({ where: { id: again.id }, data: { enabled: true, updatedById: req.user.id } })
+            })
+          }
         }
         menuGatewayEnabled = true
+        // v3.9.4 — per-slot tick-box: enable row MenuGateway PER SLOT (bukan cuma shared)
+        if (Array.isArray(targets) && targets.length > 0) {
+          for (const s of targets) {
+            await prisma.menuGatewayConfig.upsert({
+              where: { tenantId_numberSlot: { tenantId: req.tenantId, numberSlot: s } },
+              update: { enabled: true, updatedById: req.user.id },
+              create: { tenantId: req.tenantId, numberSlot: s, enabled: true, updatedById: req.user.id },
+            })
+          }
+        }
       } else {
-        const off = await prisma.menuGatewayConfig.updateMany({ where: { tenantId: req.tenantId }, data: { enabled: false } })
+        // Matikan menu SCOPED: link-all → shared row saja; per-slot → row slot tsb.
+        if (targets == null) {
+          await prisma.menuGatewayConfig.updateMany({ where: { tenantId: req.tenantId, numberSlot: null }, data: { enabled: false, updatedById: req.user.id } })
+        } else {
+          for (const s of targets) {
+            await prisma.menuGatewayConfig.updateMany({ where: { tenantId: req.tenantId, numberSlot: s }, data: { enabled: false, updatedById: req.user.id } })
+          }
+        }
+        // v3.9.4 — per-slot save: legacy shared menu (link-all) dinetralkan supaya
+        // tidak bocor ke slot di luar centangan (tick-box = scope eksplisit).
+        if (Array.isArray(targets) && targets.length > 0) {
+          await prisma.menuGatewayConfig.updateMany({ where: { tenantId: req.tenantId, numberSlot: null, enabled: true }, data: { enabled: false, updatedById: req.user.id } })
+        }
         menuGatewayEnabled = false
-        if (off.count > 0) {
-          await menuGatewaySvc.releaseAwaiting(req.tenantId, false).catch(e => console.error('[AutoReply] releaseAwaiting:', e.message))
+        // Release awaiting HANYA slot yang efektif tidak lagi menu-enabled (slot
+        // menu-managed lain tidak disentuh — QA #6).
+        try {
+          const groups = await prisma.chat.groupBy({ by: ['numberSlot'], where: { tenantId: req.tenantId, menuState: 'awaiting' } })
+          for (const g of groups) {
+            const s = Number(g.numberSlot) || 0
+            const eff = await menuGatewaySvc.getConfigForSlot(req.tenantId, s)
+            if (!eff || !eff.enabled) await menuGatewaySvc.releaseAwaiting(req.tenantId, false, null, s)
+          }
+        } catch (e) {
+          console.error('[AutoReply] releaseAwaiting scoped error (non-fatal):', e.message)
         }
       }
       menuGatewaySvc.invalidateConfig(req.tenantId)

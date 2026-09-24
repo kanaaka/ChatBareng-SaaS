@@ -103,16 +103,32 @@
 
       <!-- Save -->
       <div class="flex justify-end items-center gap-3 flex-wrap">
-        <!-- v3.9 — Terapkan ke: Semua nomor (linked, default) / Nomor ini saja -->
-        <label v-if="waSlots.length > 0" class="flex items-center gap-2 text-sm">
-          <span class="text-gray-600">Terapkan ke:</span>
-          <select v-model="applySlot" class="px-3 py-2 border border-gray-300 rounded-lg text-sm">
-            <option value="all">Semua nomor (linked)</option>
-            <option v-for="s in waSlots" :key="s.slot" :value="String(s.slot)">
-              Nomor ini saja — slot {{ s.slot }}{{ s.label ? ' · ' + s.label : '' }}
-            </option>
-          </select>
-        </label>
+        <!-- v3.9.4 — TICK-BOX (QA #4/#5): pilih nomor mana yang kena rules ini.
+             'Semua nomor' + slot tick-box; slot menu-managed dilindungi (disabled + badge). -->
+        <div v-if="waSlots.length > 0" class="flex items-center gap-3 flex-wrap">
+          <span class="text-sm text-gray-600">Terapkan ke:</span>
+          <label class="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input type="checkbox" :checked="applyAll" @change="toggleAll" class="w-4 h-4 accent-green-600" />
+            Semua nomor
+          </label>
+          <label
+            v-for="s in waSlots"
+            :key="s.slot"
+            class="flex items-center gap-1.5 text-sm"
+            :class="menuManagedSet.has(s.slot) ? 'opacity-50' : 'cursor-pointer'"
+            :title="menuManagedSet.has(s.slot) ? 'Nomor ini dikelola Menu Gateway — matikan menunya dulu di halaman Menu Gateway' : ''"
+          >
+            <input
+              type="checkbox"
+              :checked="selectedSlots.has(s.slot)"
+              :disabled="menuManagedSet.has(s.slot)"
+              @change="toggleSlot(s.slot)"
+              class="w-4 h-4 accent-green-600"
+            />
+            Slot {{ s.slot }}{{ s.label ? ' · ' + s.label : '' }}
+            <span v-if="menuManagedSet.has(s.slot)" class="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700">menu</span>
+          </label>
+        </div>
         <button
           @click="save"
           :disabled="saving"
@@ -156,9 +172,28 @@ const form = ref({
   sunEnabled: true, sunStart: '08:00', sunEnd: '17:00',
 })
 
-// v3.9 — Terapkan ke: 'all' (link-all, default) | slot 0..2
+// v3.9.4 — TICK-BOX scope (QA #4/#5): applyAll = 'Semua nomor'; selectedSlots =
+// slot tercentang. Persist via GET numberSlots/menuManagedSlots — pilihan tidak
+// hilang lagi saat reload (bug lama: dropdown reset + save per-slot 400 diam).
 const waSlots = ref([])
-const applySlot = ref('all')
+const applyAll = ref(true)
+const selectedSlots = ref(new Set())
+const menuManagedSet = ref(new Set())
+
+function toggleAll() {
+  applyAll.value = !applyAll.value
+  if (applyAll.value) selectedSlots.value = new Set()
+}
+function toggleSlot(slot) {
+  const next = new Set(selectedSlots.value)
+  if (next.has(slot)) {
+    next.delete(slot)
+  } else {
+    next.add(slot)
+    applyAll.value = false
+  }
+  selectedSlots.value = next
+}
 
 // Badge status ringkas di atas
 const statusBadge = computed(() => {
@@ -191,9 +226,26 @@ async function fetchConfig() {
     }
     // v0.13.0 — greetMode default "text" bila backend belum punya kolom
     if (!form.value.greetMode) form.value.greetMode = 'text'
-    // v3.9 — daftar slot (untuk dropdown Terapkan ke); hidden bila 0
+    // v3.9.4 — daftar slot + state tick-box dari server (persist!)
     const st = await axios.get(`${API}/api/wa/status`)
     waSlots.value = st.data.slots || []
+    const scoped = res.data.numberSlots || []
+    menuManagedSet.value = new Set(res.data.menuManagedSlots || [])
+    if (scoped.length > 0) {
+      applyAll.value = false
+      selectedSlots.value = new Set(scoped)
+      // v3.9.4 — form menampilkan rules scoped yang AKTIF (ambil dari slot pertama
+      // tercentang — baseline shared sengaja dinetralkan server saat mode per-slot)
+      try {
+        const sc = await axios.get(`${API}/api/autoreply?slot=${scoped[0]}`)
+        for (const key of Object.keys(form.value)) {
+          if (sc.data.config[key] !== undefined) form.value[key] = sc.data.config[key]
+        }
+      } catch {}
+    } else {
+      applyAll.value = true
+      selectedSlots.value = new Set()
+    }
   } catch (e) {
     toast.show({ icon: '⚠️', title: 'Gagal memuat', message: e.response?.data?.error || 'Config tidak bisa dimuat' })
   } finally {
@@ -202,6 +254,11 @@ async function fetchConfig() {
 }
 
 async function save() {
+  // v3.9.4 — guard: mode per-slot tanpa satu pun centangan → tolak (jangan kirim 400)
+  if (waSlots.value.length > 0 && !applyAll.value && selectedSlots.value.size === 0) {
+    toast.show({ icon: '⚠️', title: 'Belum ada nomor dipilih', message: 'Centang minimal satu nomor (atau Semua nomor).' })
+    return
+  }
   // Validasi ringan di client sebelum PUT
   for (const row of hourRows) {
     if (form.value[row.prefix + 'Enabled'] && form.value[row.prefix + 'Start'] >= form.value[row.prefix + 'End']) {
@@ -211,8 +268,18 @@ async function save() {
   }
   saving.value = true
   try {
-    // v3.9 — numberSlot: 'all' = link-all (shared); slot-nya = config Nomor ini saja
-    const body = { ...form.value, numberSlot: applySlot.value === 'all' ? null : Number(applySlot.value) }
+    // v3.9.4 — numberAll + numberSlots (tick-box); legacy numberSlot tidak lagi
+    // dikirim dari UI baru
+    const body = { ...form.value }
+    if (waSlots.value.length > 0) {
+      if (applyAll.value) {
+        body.numberAll = true
+        body.numberSlots = null
+      } else {
+        body.numberAll = false
+        body.numberSlots = [...selectedSlots.value]
+      }
+    }
     const res = await axios.put(`${API}/api/autoreply`, body)
     const cfg = res.data.config
     // v0.13.2 — sinkron otomatis: mode menu → gateway ON; mode text → gateway OFF
@@ -224,7 +291,8 @@ async function save() {
     }
     toast.show({ icon: '✅', title: 'Tersimpan', message: 'Config Auto Reply berhasil disimpan' })
   } catch (e) {
-    toast.show({ icon: '⚠️', title: 'Gagal simpan', message: e.response?.data?.error || 'Terjadi kesalahan' })
+    // v3.9.4 — 409 = slot dilindungi Menu Gateway (proteksi hybrid)
+    toast.show({ icon: '⚠️', title: e?.response?.status === 409 ? 'Slot dikelola Menu Gateway' : 'Gagal simpan', message: e.response?.data?.error || 'Terjadi kesalahan' })
   } finally {
     saving.value = false
   }

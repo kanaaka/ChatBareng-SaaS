@@ -460,10 +460,14 @@ async function listWaiting(tenantId) {
 /**
  * Dipanggil: (1) sweep timeout, (2) admin PUT enabled=false (D12).
  * Transisi SELALU updateMany berkondisi menuState:"awaiting" (race-safe, idempoten).
- * Timeout → queue TANPA tag (D11). return { released, ids }
+ * Timeout → queue TANPA tag (D11).
+ * v3.9.4 — slot opsional: null = semua slot (compat); 0..2 = HANYA chat dari slot
+ * itu (independensi hybrid QA #6 — release slot A tidak boleh nyenggol awaiting
+ * milik slot B yang menunya masih aktif). return { released, ids }
  */
-async function releaseAwaiting(tenantId, timeoutOnly = false, timeoutSeconds = null) {
+async function releaseAwaiting(tenantId, timeoutOnly = false, timeoutSeconds = null, slot = null) {
   const where = { tenantId, menuState: 'awaiting' }
+  if (slot !== null && slot !== undefined) where.numberSlot = Number(slot) || 0
   if (timeoutOnly && timeoutSeconds) {
     where.menuRequestedAt = { lt: new Date(Date.now() - timeoutSeconds * 1000) }
   }
@@ -491,20 +495,26 @@ async function releaseAwaiting(tenantId, timeoutOnly = false, timeoutSeconds = n
   return { released: result.count, ids }
 }
 
-// ─── Sweep timeout PER-TENANT (interval 30 dtk, mulai post-WA-connect) ────
+// ─── Sweep timeout PER-TENANT PER-SLOT (interval 30 dtk, mulai post-WA-connect) ──
 let sweepTimer = null
 
 async function sweepOnce() {
   try {
-    // v3 — semua tenant aktif di-sweep (config per tenant). Tenant suspended
-    // tetap di-sweep bila chat awaiting-nya ada (aman: release ke queue tenant-nya).
-    const configs = await prisma.menuGatewayConfig.findMany({
+    // v3.9.4 — per-tenant PER-SLOT: efektif config tiap slot di-resolve (row
+    // slot-spesifik menang, fallback shared link-all), lalu release awaiting
+    // milik slot itu saja — timeout slot A gak ikut melepas chat slot B.
+    const tenants = await prisma.menuGatewayConfig.findMany({
       where: { enabled: true },
-      select: { tenantId: true, timeoutValue: true, timeoutUnit: true },
+      select: { tenantId: true },
+      distinct: ['tenantId'],
     })
-    for (const cfg of configs) {
-      const eff = effectiveTimeoutSeconds(cfg)
-      await releaseAwaiting(cfg.tenantId, true, eff)
+    for (const { tenantId } of tenants) {
+      for (let slot = 0; slot <= 2; slot++) {
+        const cfg = await getConfigForSlot(tenantId, slot)
+        if (!cfg || !cfg.enabled) continue
+        const eff = effectiveTimeoutSeconds(cfg)
+        await releaseAwaiting(tenantId, true, eff, slot)
+      }
     }
   } catch (e) {
     console.error('[MenuGateway] sweep error:', e.message)
