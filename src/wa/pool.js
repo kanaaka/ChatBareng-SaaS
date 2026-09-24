@@ -1168,7 +1168,7 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
           tenantId: tid,
           waJid: chatId,
           contactPhone: phone,
-          contactName: msg.pushName || null,
+          contactName: msg.key.fromMe ? null : (msg.pushName || null), // v3.9.10 — pushName di pesan keluar = NAMA OWNER sendiri; jangan dipakai sbg nama kontak (kasus Nurhayati)
           phoneJid: mappingPhoneJid,
           lidJid: mappingLidJid,
           numberSlot: inboxSlot, // v3.9.2 K1-A — slot asal pesan masuk (reply via nomor yang sama; chat per-slot)
@@ -1266,6 +1266,19 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
   }
 
   if (!msg.key.fromMe) {
+    // v3.9.10 — backfill nama kontak: chat yang lahir dari pesan keluar owner
+    // dibuat TANPA nama (pushName owner ≠ nama kontak). PushName pelanggan dari
+    // pesan masuk = sumber kebenaran → isi bila masih kosong (kondisional, anti
+    // timpa rename manual CS). Sumber: kasus Nurhayati (7717) 24 Sep.
+    if (msg.pushName && !chat.contactName) {
+      try {
+        const bf = await prisma.chat.updateMany({ where: { id: chat.id, contactName: null }, data: { contactName: String(msg.pushName) } })
+        if (bf.count) chat = { ...chat, contactName: String(msg.pushName) }
+      } catch (e) {
+        logErr(tid, inboxSlot, 'backfill contactName error (non-fatal):', e.message)
+      }
+    }
+
     // First incoming
     if (!chat.firstIncomingAt) {
       await prisma.chat.update({ where: { id: chat.id }, data: { firstIncomingAt: dbTimestamp } })

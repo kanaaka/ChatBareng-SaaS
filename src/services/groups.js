@@ -1113,7 +1113,7 @@ async function handleIncomingGroupMessage(tenantId, msg, ctx) {
     if (!chat) {
       // Grup yatim belum di-adopt → TIDAK dibuatkan row (row tanpa PIC akan
       // bocor ke queueWhere()/list 1:1 — queueWhere tidak boleh disentuh).
-      console.log(`[Groups] Pesan grup dilewati (belum di-adopt / tanpa PIC): ${chatId}`)
+      console.log(`[Groups] Pesan grup dilewati (belum di-adopt / tanpa PIC): ${ctx.waJid}`) // v3.9.10 — TDZ fix: chatId dideklarasi di bawah
       return
     }
 

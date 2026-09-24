@@ -649,6 +649,9 @@ router.post('/take-next', ...rt, async (req, res) => {
 router.get('/:id', ...rt, async (req, res) => {
   try {
     const chatId = req.params.id
+    // v3.9.10 — id non-numerik (mis. JID grup yatim @g.us) → 404 bersih, bukan
+    // 500 dari Number(chatId)=NaN masuk Prisma (lapor Kanaka 24 Sep).
+    if (!/^\d+$/.test(String(chatId))) return res.status(404).json({ error: 'Chat tidak ditemukan' })
     const page = parseInt(req.query.page || '1', 10)
     const limit = parseInt(req.query.limit || '50', 10)
     const skip = (page - 1) * limit

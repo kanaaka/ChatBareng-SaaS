@@ -37,23 +37,21 @@
 
     <!-- List grup -->
     <div v-else class="space-y-2">
+      <!-- v3.9.10b — kartu stack vertikal selalu: dulu sm:flex-row bikin badge+tombol berebut baris dgn nama di pane w-96 → nama kepress 1-2 huruf -->
       <div
         v-for="g in groups"
         :key="g.id"
-        class="bg-white rounded-lg shadow-sm p-4 flex flex-col sm:flex-row sm:items-center gap-3 hover:bg-gray-50 transition-colors"
+        class="bg-white rounded-lg shadow-sm p-4 flex flex-col gap-3 hover:bg-gray-50 transition-colors"
       >
-        <button class="flex items-center gap-3 min-w-0 flex-1 text-left" @click="$emit('open', g)">
+        <!-- v3.9.10 — nama grup = baris sendiri full-width; badge yatim + tombol aksi
+             pindah ke baris bawah (pane w-96 memeras nama jadi 1-2 huruf — lapor
+             Kanaka 24 Sep: "nama grup nggak kebaca, atur pemosisian"). -->
+        <button class="flex items-center gap-3 min-w-0 flex-1 text-left" @click="handleOpen(g)">
           <div class="w-11 h-11 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-lg flex-shrink-0">
             👥
           </div>
-          <div class="min-w-0">
-            <div class="flex items-center gap-2">
-              <span class="font-medium truncate">{{ g.name }}</span>
-              <!-- v0.14.0 — grup yatim: badge "belum ada PIC" (admin only view) -->
-              <span v-if="g.orphan" class="inline-flex items-center bg-amber-100 text-amber-700 text-[10px] px-2 py-0.5 rounded-full font-medium uppercase flex-shrink-0">
-                belum ada PIC
-              </span>
-            </div>
+          <div class="min-w-0 flex-1">
+            <div class="font-medium truncate">{{ g.name }}</div>
             <div class="text-xs text-gray-500 truncate">
               <span v-if="g.memberCount">👥 {{ g.memberCount }} member · </span>
               <span v-if="g.pic">@{{ g.pic.username }} · </span>
@@ -62,7 +60,12 @@
             </div>
           </div>
         </button>
-        <div class="flex items-center gap-2 flex-shrink-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <!-- v0.14.0 — grup yatim: badge "belum ada PIC" (admin only view) -->
+          <span v-if="g.orphan" class="inline-flex items-center bg-amber-100 text-amber-700 text-[10px] px-2 py-0.5 rounded-full font-medium uppercase">
+            belum ada PIC
+          </span>
+          <span class="flex-1"></span>
           <!-- Assign PIC (admin only — yatim ATAU ganti PIC) -->
           <button
             v-if="auth.isAdmin"
@@ -72,7 +75,7 @@
             {{ g.orphan ? 'Assign PIC' : 'Ganti PIC' }}
           </button>
           <button
-            @click="$emit('open', g)"
+            @click="handleOpen(g)"
             class="text-xs px-3 py-1.5 rounded bg-blue-100 text-blue-700 hover:bg-blue-200"
           >
             Buka
@@ -352,6 +355,14 @@ function openAssignPic(g) {
   assignError.value = null
   assignTarget.value = g
   assignPicUserId.value = g.picUserId ?? (picCandidates.value[0]?.id ?? null)
+}
+
+// v3.9.10 — Buka grup yatim = belum ada thread chat (belum di-adopt) → arahkan
+// ke dialog Assign PIC dulu. Dulu: GET /api/chats/<jid-grup> → Number(NaN) →
+// 500 "internal server error" (lapor Kanaka 24 Sep).
+function handleOpen(g) {
+  if (g.orphan) { openAssignPic(g); return }
+  emit('open', g)
 }
 
 async function submitAssignPic() {

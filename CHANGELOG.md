@@ -1,3 +1,30 @@
+## v3.9.10 — QA Kanaka 24 Sep 13:25: 3 temuan grup + 1 TDZ dari log (2026-09-24)
+
+**Temuan (screenshot halaman Grup + halaman utama):**
+
+1. **Nama grup yatim gak kebaca** — di pane w-96, nama & badge & tombol berebut
+   satu baris flex-row → `truncate` memeras nama jadi 1-2 huruf (visual: "C").
+   **Fix:** nama grup = baris sendiri full-width; badge "BELUM ADA PIC" +
+   tombol Assign PIC/Buka pindah ke baris kedua (pola kartu 2 baris).
+2. **Tombol "Buka" grup yatim → 500** — id item yatim = JID @g.us; GET
+   /api/chats/:id lempar Number(NaN) ke Prisma → 500 "internal server error".
+   **Fix:** GET /api/chats/:id non-numerik → 404 bersih; UI: Buka grup yatim
+   dialihkan ke dialog Assign PIC (grup belum di-adopt = belum ada thread).
+3. **Chat baru dari pesan keluar owner: nama = pushName OWNER** (kasus Nurhayati
+   6281331370730: chat 7717 lahir dari pesan keluar 05:31 → contactName
+   "Kanaka Prabhata"; pushName balasan Nurhayati tak pernah meng-update).
+   **Fix:** (a) create-from-incoming dgn msg.key.fromMe → contactName null
+   (pushName owner bukan nama kontak); (b) backfill pushName pelanggan dari
+   pesan masuk pertama bila contactName masih kosong (updateMany kondisional,
+   anti timpa rename manual CS). Data Nurhayati (chat 7717 + contact 7699)
+   di-rename manual ke "Nurhayati".
+4. **Bonus dari log prod:** TDZ `Cannot access 'chatId' before initialization`
+   di handleIncomingGroupMessage (log skip-adopt pakai chatId sebelum
+   deklarasi) — log kini pakai ctx.waJid.
+
+**E2E:** regresi penuh PASS (v3.9.4 21/21 + v3.9.5 13/13 + v3.9.6 15/15 +
+v3.9.9 PASS). Frontend build ulang (public/assets).
+
 ## v3.9.9b — Tambalan audit Kimi-K3 v3.9.9 (GO-WITH-NOTES) (2026-09-24)
 
 **Verdict: 0 CRITICAL, 0 HIGH, 1 MEDIUM, 3 LOW, 5 INFO.** Semua fokus A–H PASS
