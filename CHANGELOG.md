@@ -1,3 +1,32 @@
+## v3.9.5 — Fix QA round-2 Kanaka 09:38: gateway runtime mati + UX master-toggle (2026-09-24)
+
+**Hasil QA round-2 (09:38):** assigned per-agent ✅, rate limit ✅ (take banyak chat lancar), isolasi auto-reply ✅.
+2 fail: gateway tak pernah muncul (bahkan saat di-tick semua nomor) + tick-box masih aktif/dipaksa saat master toggle OFF.
+
+**Bug 1 (utama) — runtime baca config SHARED, menu per-slot tak pernah terbaca:**
+`menuGatewayConfigSafe()` di autoReply.js (jalur runtime (b) & freq jalur (c)) selalu
+`menuGateway.getConfig(shared)` — row shared disabled → `gatewayOn=false` → intro tak
+terkirim walau MG slot enabled. Lolos E2E v3.9.4 karena test API-level tidak menyentuh
+jalur runtime ini. Fix: helper jadi slot-aware `menuGatewayConfigSafe(tenantId, chat.numberSlot)`
+→ `getConfigForSlot` (row slot menang, fallback shared).
+
+**Bug 2 — "Tick gateway semua nomor" gak jalan:** UI kirim numberSlots=null (Semua nomor)
+→ link-all/shared row. Slot dgn row scoped lama (mis. AR teks yang sudah dimatikan) TIDAK
+kena fallback shared → tak dapat menu. Fix: `numberSlots===null` eksplisit + `enabled!==false`
+→ EXPAND ke semua slot terdaftar sebagai row per-slot eksplisit (bukan fallback). Shared MG
+row tetap dinetralkan (anti-bocor, mirror audit HIGH-1).
+
+**Bug 3 — master toggle OFF = full-off + tick-box disabled:**
+- Backend: `enabled=false` → SEMUA row MenuGatewayConfig tenant OFF + AR rows mode-menu
+  dimatikan (greetEnabled=false, mode text) + release awaiting semua slot. Payload tanpa
+  numberSlots valid (tidak dipaksa pilih).
+- Frontend: tick-box "Semua nomor" + per-slot `:disabled="!form.enabled"` + hint
+  "Nyalakan saklar utama dulu". Guard "centang minimal satu" hanya saat master ON.
+
+**E2E v3.9.5: 13/13 PASS** (expand semua-nomor → row eksplisit per slot + shared tetap off;
+configSafe(slot) enabled per slot; master-off full-off; save master-off tanpa tick-box valid).
+Satu false-negative test diperbaiki (Number(null)===0 vs shared row).
+
 ## v3.9.4 — 6 fix QA Kanaka 24 Sep 05:41 (rate-limit fatal + hybrid AR/MG + UI slot) (2026-09-24)
 
 **Tembakan:** QA report Kanaka 06 poin (05:41). Fix penuh + E2E 21/21 PASS di DB copy (port 5099, WA disabled).

@@ -212,21 +212,21 @@
              Slot yang punya auto-reply teks aktif dilindungi (disabled + badge). -->
         <div v-if="waSlots.length > 0" class="flex items-center gap-3 flex-wrap">
           <span class="text-sm text-gray-600">Terapkan ke:</span>
-          <label class="flex items-center gap-1.5 text-sm cursor-pointer">
-            <input type="checkbox" :checked="applyAll" @change="toggleAll" class="w-4 h-4 accent-green-600" />
+          <label class="flex items-center gap-1.5 text-sm" :class="!form.enabled ? 'opacity-50' : 'cursor-pointer'">
+            <input type="checkbox" :checked="applyAll" :disabled="!form.enabled" @change="toggleAll" class="w-4 h-4 accent-green-600" />
             Semua nomor
           </label>
           <label
             v-for="s in waSlots"
             :key="s.slot"
             class="flex items-center gap-1.5 text-sm"
-            :class="arManagedSet.has(s.slot) ? 'opacity-50' : 'cursor-pointer'"
-            :title="arManagedSet.has(s.slot) ? 'Nomor ini punya auto-reply teks aktif — matikan dulu di halaman Auto Reply' : ''"
+            :class="(!form.enabled || arManagedSet.has(s.slot)) ? 'opacity-50' : 'cursor-pointer'"
+            :title="arManagedSet.has(s.slot) ? 'Nomor ini punya auto-reply teks aktif — matikan dulu di halaman Auto Reply' : (!form.enabled ? 'Nyalakan saklar utama dulu' : '')"
           >
             <input
               type="checkbox"
               :checked="selectedSlots.has(s.slot)"
-              :disabled="arManagedSet.has(s.slot)"
+              :disabled="!form.enabled || arManagedSet.has(s.slot)"
               @change="toggleSlot(s.slot)"
               class="w-4 h-4 accent-green-600"
             />
@@ -234,6 +234,7 @@
             <span v-if="arManagedSet.has(s.slot)" class="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">auto-reply</span>
           </label>
         </div>
+        <p v-if="waSlots.length > 0 && !form.enabled" class="text-xs text-gray-400 w-full">Saklar utama mati — nyalakan dulu untuk memilih nomor.</p>
         <button
           @click="save"
           :disabled="saving"
@@ -423,8 +424,9 @@ async function fetchAll() {
 }
 
 async function save() {
-  // v3.9.4 fix audit MEDIUM-2 — guard sama dgn AutoReply: uncheck semua = tolak dini
-  if (waSlots.value.length > 0 && !applyAll.value && selectedSlots.value.size === 0) {
+  // v3.9.5 fix audit MEDIUM-2 — guard sama dgn AutoReply: uncheck semua = tolak dini
+  // (hanya saat master ON — toggle OFF = full-off, tick-box tidak dipaksa)
+  if (form.value.enabled && waSlots.value.length > 0 && !applyAll.value && selectedSlots.value.size === 0) {
     toast.show({ icon: '⚠️', title: 'Belum ada nomor dipilih', message: 'Centang minimal satu nomor (atau Semua nomor).' })
     return
   }

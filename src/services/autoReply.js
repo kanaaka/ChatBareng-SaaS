@@ -219,9 +219,14 @@ function repeatAllows(contact, repeatFrequency, now = new Date()) {
  * menuGateway.js require autoReply.js di top-level). Null bila gagal → pemanggil
  * memperlakukan frekuensi sebagai permissive (repeatAllows(null-freq) = true).
  */
-async function menuGatewayConfigSafe(tenantId) {
+async function menuGatewayConfigSafe(tenantId, slot = null) {
   try {
     const menuGateway = require('./menuGateway') // lazy — hindari circular require
+    // v3.9.5 fix QA-2 — slot-aware: menu per-slot (tick-box) dibaca per slot asal chat.
+    // Bug lama: selalu getConfig(shared) → gateway per-slot TIDAK PERNAH terbaca
+    // (shared disabled) → intro tak terkirim walau MG slot enabled. Jalur (c) freq
+    // juga ikut config efektif slot.
+    if (slot !== null && slot !== undefined) return await menuGateway.getConfigForSlot(tenantId, slot)
     return await menuGateway.getConfig(tenantId)
   } catch (e) {
     console.error('[AutoReply] menuGateway.getConfig error (non-fatal):', e.message)
@@ -478,7 +483,8 @@ async function maybeAutoReply(chat, msg) {
     // ── (b) Dalam jam + greetMode 'menu' → startFlow (intro + awaiting) ──
     // v0.13.3 (F2): menu HANYA dalam jam kerja (di luar jam = jalur (a)/(d) saja).
     if (!outside && cfg.greetEnabled && cfg.greetMode === 'menu') {
-      const menuGW = await menuGatewayConfigSafe(tenantId)
+      // v3.9.5 — config MG EFEKTIF utk slot asal chat (per-slot tick-box), bukan shared
+      const menuGW = await menuGatewayConfigSafe(tenantId, chat.numberSlot)
       const gatewayOn = !!(menuGW && menuGW.enabled)
       if (gatewayOn && repeatAllows(contact, menuGW.repeatFrequency, dbTimestamp)) {
         let handled = false
@@ -516,7 +522,8 @@ async function maybeAutoReply(chat, msg) {
     // v0.13.3 (F4): frekuensi ikut MenuGatewayConfig.repeatFrequency (disatukan),
     // marker = Contact.lastMenuShownAt (sama dgn menu).
     if (!outside && cfg.greetEnabled && cfg.greetMode === 'text') {
-      const menuGW = await menuGatewayConfigSafe(tenantId)
+      // v3.9.5 — freq ikut config MG efektif slot (per-slot repeatFrequency)
+      const menuGW = await menuGatewayConfigSafe(tenantId, chat.numberSlot)
       const freq = menuGW ? menuGW.repeatFrequency : null
       if (!repeatAllows(contact, freq, dbTimestamp)) {
         // Repeat blocked → skip total (tanpa fallback greet).

@@ -328,7 +328,18 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
       }
       targetSlots = [s]
     }
-    const targetList = Array.isArray(targetSlots) && targetSlots.length > 0 ? targetSlots : null
+    let targetList = Array.isArray(targetSlots) && targetSlots.length > 0 ? targetSlots : null
+
+    // v3.9.5 QA-2 — "Semua nomor" dari UI (numberSlots eksplisit null) + enabled !== false
+    // → EXPAND ke semua slot terdaftar (row per-slot eksplisit, bukan fallback shared).
+    // Akar QA-2: slot dgn row scoped lama (mis. AR teks yang sudah dimatikan) TIDAK
+    // pernah dapat menu via fallback shared → "tick gateway semua nomor" gak jalan.
+    if (targetList === null && body.numberSlots !== undefined && body.enabled !== false) {
+      const nums = await prisma.tenantNumber.findMany({ where: { tenantId: req.tenantId }, select: { slot: true }, orderBy: { slot: 'asc' } })
+      targetSlots = nums.map(n => Number(n.slot))
+      if (targetSlots.length === 0) targetSlots = [0] // tenant fresh (slot-0 sintetis)
+      targetList = targetSlots
+    }
 
     // v3.9.4 fix audit MEDIUM-1 — proteksi link-all: enabled=true via link-all memindahkan
     // SEMUA slot "pengikut shared" ke mode menu. Bila shared AR masih punya trigger teks
@@ -444,23 +455,23 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
       }
       greetSync = 'menu'
     } else if (body.enabled === false) {
-      await autoSvc.disableGreetForScope(req.tenantId, targetList ? [...targetList] : null, req.user.id)
+      // v3.9.5 QA-UX — master OFF = MATI TOTAL (tidak tergantung tick-box):
+      // semua row MenuGatewayConfig tenant OFF + AR rows mode-menu dimatikan
+      // (mode text, greeting off). Tick-box UI di-disable saat toggle OFF.
+      await prisma.menuGatewayConfig.updateMany({ where: { tenantId: req.tenantId }, data: { enabled: false, updatedById: req.user.id } })
+      await prisma.autoReplyConfig.updateMany({ where: { tenantId: req.tenantId, greetMode: 'menu' }, data: { greetEnabled: false, greetMode: 'text', updatedById: req.user.id } })
       greetSync = 'text'
     }
     if (greetSync) {
       autoSvc.invalidateConfig(req.tenantId)
+      menuGateway.invalidateConfig(req.tenantId)
     }
 
-    // D12: enabled=false → release awaiting milik slot scope saja (idempoten)
+    // D12 (v3.9.5) — enabled=false = master-off → release awaiting SEMUA slot
+    // (semua row menu sudah dimatikan di atas, tidak ada slot yang masih menu-enabled)
     if (body.enabled === false) {
       try {
-        if (targetList) {
-          for (const s of targetList) {
-            await menuGateway.releaseAwaiting(req.tenantId, false, null, s)
-          }
-        } else {
-          await menuGateway.releaseAwaiting(req.tenantId, false)
-        }
+        await menuGateway.releaseAwaiting(req.tenantId, false)
       } catch (relErr) {
         console.error('MenuGateway releaseAwaiting error (non-fatal):', relErr)
       }
