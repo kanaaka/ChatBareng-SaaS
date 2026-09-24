@@ -1,3 +1,14 @@
+## v3.9.11b — Tambalan audit Kimi-K3 v3.9.11 (GO) (2026-09-24)
+
+**Verdict: 0 CRITICAL, 0 HIGH, 0 MEDIUM, 1 LOW (kosmetik), 6 INFO.** Akar fix
+dinilai akurat; jalur adopt yatim utuh; anti-hang 404 cepat terbukti; cross-tenant
+mustahil (filter tenantId + 404 non-bocor).
+
+- **LOW-1 (ditambal):** `leaveGroup` emit `group_update` kini pakai `leaveJid`
+  (konsisten dgn 7 fungsi lain yang emit JID asli) — dampak praktis nol karena
+  handler frontend mengabaikan payload, tapi payload kini seragam.
+- E2E ulang dgn kode final: v3.9.11 10/10 + regresi penuh PASS.
+
 ## v3.9.11 — Fix bug "Ganti PIC" macet + Search & Tab filter di Grup List (2026-09-24)
 
 **QA verified v3.9.10 (13:56)** → push + release v3.9.10 (id 395415793).

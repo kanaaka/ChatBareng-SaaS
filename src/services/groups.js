@@ -1518,7 +1518,7 @@ async function leaveGroup(user, tenantId, chatId) {
     throw mapWaError(e, 'groupLeave')
   }
   await logAction(user.id, tenantId, 0, 'leave', `bot keluar dari grup (ops cleanup) jid=${leaveJid} slot=${slot}`)
-  emitGroupUpdate(tenantId, chatId)
+  emitGroupUpdate(tenantId, leaveJid) // v3.9.11b (audit LOW-1) — konsisten: emit JID asli seperti 7 fungsi lain
   return { ok: true }
 }
 
