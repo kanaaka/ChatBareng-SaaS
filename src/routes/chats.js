@@ -23,6 +23,14 @@ const menuGateway = require('../services/menuGateway') // v3.9.8 — clear limbo
 // v3.0 — Isolasi tenant: SEMUA endpoint chats = tenant-scoped.
 const rt = [requireAuth, requireTenant]
 
+// v3.9.10b (audit LOW-2) — guard :id numerik untuk SEMUA route /:id (GET/POST/
+// PUT/PATCH/DELETE): JID @g.us masuk ke sini → 404 bersih, bukan 500 dari
+// Number(NaN) Prisma. Sebelumnya guard hanya di GET /:id.
+router.param('id', (req, res, next, id) => {
+  if (!/^\d+$/.test(String(id))) return res.status(404).json({ error: 'Chat tidak ditemukan' })
+  next()
+})
+
 // v0.10.0 — Rate limit sederhana 1 note / 5 detik / user (in-memory)
 const noteLastAt = new Map() // userId → timestamp ms
 function assertNoteRate(user) {
@@ -649,9 +657,6 @@ router.post('/take-next', ...rt, async (req, res) => {
 router.get('/:id', ...rt, async (req, res) => {
   try {
     const chatId = req.params.id
-    // v3.9.10 — id non-numerik (mis. JID grup yatim @g.us) → 404 bersih, bukan
-    // 500 dari Number(chatId)=NaN masuk Prisma (lapor Kanaka 24 Sep).
-    if (!/^\d+$/.test(String(chatId))) return res.status(404).json({ error: 'Chat tidak ditemukan' })
     const page = parseInt(req.query.page || '1', 10)
     const limit = parseInt(req.query.limit || '50', 10)
     const skip = (page - 1) * limit

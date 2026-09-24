@@ -1195,6 +1195,17 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
   // sudah unik per slot — pesan masuk slot N gak nyentuh chat slot lain).
   // Reply tetap ikut numberSlot chat (tidak pernah fallback — owner 18:24 #3).
   if (!msg.key.fromMe) {
+    // v3.9.10b (audit LOW-1) — backfill SEBELUM routing born-assigned: push
+    // pertama ke agent sudah pakai nama kontak (pushName pelanggan), bukan
+    // fallback nomor/JID. Kondisional contactName:null — anti timpa rename CS.
+    if (msg.pushName && !chat.contactName) {
+      try {
+        const bf = await prisma.chat.updateMany({ where: { id: chat.id, contactName: null }, data: { contactName: String(msg.pushName) } })
+        if (bf.count) chat = { ...chat, contactName: String(msg.pushName) }
+      } catch (e) {
+        logErr(tid, inboxSlot, 'backfill contactName error (non-fatal):', e.message)
+      }
+    }
     try {
       const route = await resolveRouteForSlot(tid, inboxSlot)
       // v3.9.2 K1-A: chat sudah di-scope ke inboxSlot (find-or-create by slot) —
@@ -1266,19 +1277,6 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
   }
 
   if (!msg.key.fromMe) {
-    // v3.9.10 — backfill nama kontak: chat yang lahir dari pesan keluar owner
-    // dibuat TANPA nama (pushName owner ≠ nama kontak). PushName pelanggan dari
-    // pesan masuk = sumber kebenaran → isi bila masih kosong (kondisional, anti
-    // timpa rename manual CS). Sumber: kasus Nurhayati (7717) 24 Sep.
-    if (msg.pushName && !chat.contactName) {
-      try {
-        const bf = await prisma.chat.updateMany({ where: { id: chat.id, contactName: null }, data: { contactName: String(msg.pushName) } })
-        if (bf.count) chat = { ...chat, contactName: String(msg.pushName) }
-      } catch (e) {
-        logErr(tid, inboxSlot, 'backfill contactName error (non-fatal):', e.message)
-      }
-    }
-
     // First incoming
     if (!chat.firstIncomingAt) {
       await prisma.chat.update({ where: { id: chat.id }, data: { firstIncomingAt: dbTimestamp } })

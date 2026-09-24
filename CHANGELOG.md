@@ -1,3 +1,16 @@
+## v3.9.10b — Tambalan audit Kimi-K3 v3.9.10 (GO) (2026-09-24)
+
+**Verdict: 0 CRITICAL, 0 HIGH, 0 MEDIUM, 2 LOW, 2 INFO.** Semua fokus A–F PASS
+(backfill race-safe + null-safe di semua konsumen, konvergensi Contact tanpa
+deadlock, deep-link JID → toast ramah, orphan intercept konsisten, TDZ fix valid).
+
+- **LOW-1 (ditambal):** backfill pushName dipindah SEBELUM routing born-assigned
+  — push pertama ke agent sudah pakai nama kontak (dulu fallback nomor/JID).
+- **LOW-2 (ditambal):** guard `:id` numerik diangkat ke `router.param` — berlaku
+  untuk SEMUA metode (GET/POST/PUT/PATCH/DELETE), bukan cuma GET.
+- INFO-4: komentar v3.9.10b → v3.9.10.
+- E2E ulang dgn kode final: 21/21 + 13/13 + 15/15 + v3.9.9 PASS.
+
 ## v3.9.10 — QA Kanaka 24 Sep 13:25: 3 temuan grup + 1 TDZ dari log (2026-09-24)
 
 **Temuan (screenshot halaman Grup + halaman utama):**

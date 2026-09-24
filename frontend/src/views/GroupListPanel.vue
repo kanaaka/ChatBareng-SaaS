@@ -37,7 +37,7 @@
 
     <!-- List grup -->
     <div v-else class="space-y-2">
-      <!-- v3.9.10b — kartu stack vertikal selalu: dulu sm:flex-row bikin badge+tombol berebut baris dgn nama di pane w-96 → nama kepress 1-2 huruf -->
+      <!-- v3.9.10 — kartu stack vertikal selalu: dulu sm:flex-row bikin badge+tombol berebut baris dgn nama di pane w-96 → nama kepress 1-2 huruf -->
       <div
         v-for="g in groups"
         :key="g.id"
