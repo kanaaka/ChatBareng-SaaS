@@ -63,6 +63,7 @@ const modules = [
   { icon: '⭐', title: 'CSAT Survey', desc: 'Survey kepuasan rating 1–5 pasca-resolve', to: '/admin/csat' },
   { icon: '☁️', title: 'Backup Drive', desc: 'Backup otomatis chat ke Google Drive', to: '/admin/backup' },
   { icon: '🎨', title: 'Tampilan', desc: 'Warna aksen aplikasi (accent)', to: '/admin/appearance' },
+  { icon: '🔑', title: 'API Keys', desc: 'Integrasi aplikasi eksternal (Public API v1)', to: '/admin/api-keys' },
   { icon: '📖', title: 'Panduan', desc: 'Panduan penggunaan untuk semua peran', to: '/guidebook' },
 ]
 

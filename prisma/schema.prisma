@@ -43,6 +43,8 @@ model Tenant {
   // sisanya pool). Tenant 1 nomor = zero behavior change (spec §0 HARD RULE).
   waMode       String   @default("pool")
   numbers      TenantNumber[]
+  // v3.9.13 — Public API v1: API keys milik tenant (additive)
+  apiKeys      ApiKey[]
 
   // v3.4 — branding per-tenant (header "<brandName> by ChatBareng")
   brandName    String? // kosong/null = tampil "ChatBareng" polos
@@ -90,6 +92,8 @@ model User {
   csatSurveys       CsatSurvey[]
   // v0.14.0 — Manajemen Grup (PIC Model): grup yang jadi tanggung jawab user ini
   groupsAsPic       Chat[]             @relation("groupPics")
+  // v3.9.13 — Public API v1: key yang dibuat user ini (audit pembuat)
+  createdApiKeys    ApiKey[]
 
   @@index([tenantId])
 }
@@ -329,6 +333,8 @@ model ChatEvent {
   userId    Int?
   user      User?    @relation(fields: [userId], references: [id])
   type      String
+  // v3.9.13 — sumber event: null (UI lama) | 'api' (Public API v1) — additive
+  source    String?
   createdAt DateTime @default(now())
 
   @@index([tenantId])
@@ -686,6 +692,8 @@ model TenantPlan {
   featHistoryExport Boolean  @default(false)
   featCsat          Boolean  @default(false)
   featGdriveBackup  Boolean  @default(false)
+  // v3.9.13 — Public API v1: plan gate (max=true, lite/pro=false). Kolom ADDITIVE.
+  featApiAccess     Boolean  @default(false)
   updatedAt         DateTime @updatedAt
   updatedBy         Int? // plain Int, TANPA FK (hindari urutan purge)
 
@@ -730,4 +738,30 @@ model SaAuditLog {
 
   @@index([tenantId], map: "SaAuditLog_tenantId_idx")
   @@index([createdAt])
+}
+
+// ═════════════════════════════════════════════════════════════
+// v3.9.13 — Public API v1: API key per-tenant (spec docs/spec-api-keys-v1.md).
+// Raw key TIDAK PERNAH disimpan — hanya sha256(key). prefix 12 char pertama
+// raw key utk tampilan UI. scopes = CSV subset dgn "send,read" (P1).
+// Model ADDITIVE — tidak ada tabel/kolom lama yang disentuh.
+// ═════════════════════════════════════════════════════════════
+model ApiKey {
+  id              Int       @id @default(autoincrement())
+  tenantId        Int
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name            String // "Queue App", "CRM Import"
+  keyHash         String    @unique // sha256(raw key) — raw key NEVER stored
+  prefix          String // 12 char pertama raw key (UI identifikasi)
+  scopes          String // CSV: "send,read" (P1); P2: groups, webhook
+  planGated       Boolean   @default(true) // requires TenantPlan.featApiAccess
+  ratePerMin      Int       @default(60) // per-key rate limiter
+  lastUsedAt      DateTime?
+  expiresAt       DateTime? // optional
+  revokedAt       DateTime?
+  createdByUserId Int
+  createdByUser   User      @relation(fields: [createdByUserId], references: [id])
+  createdAt       DateTime  @default(now())
+
+  @@index([tenantId])
 }

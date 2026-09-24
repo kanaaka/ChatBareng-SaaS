@@ -131,6 +131,8 @@ const modules = [
   { icon: '⭐', title: 'CSAT', desc: 'Survey kepuasan', to: '/admin/csat', feature: 'csat' },
   { icon: '☁️', title: 'Backup Drive', desc: 'Google Drive otomatis', to: '/admin/backup', feature: 'gdriveBackup' },
   { icon: '🎨', title: 'Tampilan', desc: 'Warna aksen aplikasi', to: '/admin/appearance' },
+  // v3.9.13 — Public API v1: key mgmt (gated featApiAccess, plan max)
+  { icon: '🔑', title: 'API Keys', desc: 'Integrasi aplikasi eksternal', to: '/admin/api-keys', feature: 'apiAccess' },
   { icon: '📖', title: 'Panduan', desc: 'Panduan semua peran', to: '/guidebook' },
 ]
 
@@ -151,6 +153,7 @@ const SEARCH_INDEX = [
   { label: 'Pengumuman', keywords: 'pengumuman, broadcast, announce, kabar tim', path: '/announcements', sectionHint: 'Admin Panel', icon: '📢' },
   { label: 'Backup & Restore', keywords: 'export, import, restore, history, riwayat chat', path: '/admin/history', sectionHint: 'Admin Panel', icon: '🗂️' },
   { label: 'Tampilan', keywords: 'tema, warna, accent, dark mode, appearance', path: '/admin/appearance', sectionHint: 'Admin Panel', icon: '🎨' },
+  { label: 'API Keys', keywords: 'api, key, integrasi, eksternal, token, antrean, webhook', path: '/admin/api-keys', sectionHint: 'Admin Panel', icon: '🔑' },
   { label: 'Panduan', keywords: 'panduan, guidebook, tutorial, bantuan, cara pakai', path: '/guidebook', sectionHint: 'Dokumentasi', icon: '📖' },
 ]
 

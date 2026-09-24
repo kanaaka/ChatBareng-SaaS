@@ -183,6 +183,7 @@ router.get('/me', requireAuth, async (req, res) => {
             historyExport: plan?.featHistoryExport ?? false,
             csat: plan?.featCsat ?? false,
             gdriveBackup: plan?.featGdriveBackup ?? false,
+            apiAccess: plan?.featApiAccess ?? false, // v3.9.13 — Public API v1
           },
           maxAgents: plan?.maxAgents ?? null,
           maxContacts: plan?.maxContacts ?? null,

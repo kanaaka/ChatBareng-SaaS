@@ -148,6 +148,50 @@ Login as admin → `/admin` (launcher ikon, satu halaman per modul):
 
 Spesifikasi lengkap per-versi ada di root repo (`wa-cs-hub-v0.*-spec.md`) dan riwayat perubahan di [CHANGELOG.md](CHANGELOG.md).
 
+## Public API v1 (API Keys) — v3.9.13
+
+Aplikasi eksternal (mis. program antrean) kirim pesan WA & baca chat via ChatBareng
+memakai API key per-tenant. Trial = produksi (same code path).
+Dokumen konsumen lengkap: `docs/API-CONSUMER-QUICKSTART.md`.
+
+**Autentikasi:** setiap request bawa header `Authorization: Bearer cbk_live_…`
+(juga diterima `X-API-Key: cbk_live_…`). Raw key hanya tampil sekali saat dibuat
+(halaman admin **🔑 API Keys** atau via superadmin) — simpan seperti password.
+
+```bash
+BASE=https://<domain-atau-tunnel>
+KEY=cbk_live_xxxx…
+
+# Liveness (tanpa key)
+curl "$BASE/api/v1/health"
+
+# Kirim pesan ke nomor (08…/62… otomatis dinormalisasi ke 62…@s.whatsapp.net)
+curl -X POST "$BASE/api/v1/messages" \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"target": "081234567890", "text": "Antrian #12, silakan datang"}'
+# → 200 {"ok":true,"waMessageId":"…"} · WA belum connect → 503 WA_BELUM_TERHUBUNG
+
+# Kirim ke grup — JID @g.us ATAU nama grup eksak milik tenant
+curl -X POST "$BASE/api/v1/messages" \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"target": "Nama Grup Eksak", "text": "Pengumuman…"}'
+
+# List chat (pagination cursor sederhana)
+curl "$BASE/api/v1/chats?limit=20" -H "Authorization: Bearer $KEY"
+# → {"chats":[…],"nextCursor":"1695…|42"} — halaman berikut: ?limit=20&cursor=<nextCursor>
+```
+
+**Kode error:** `401 UNAUTHORIZED` (key salah/absent) · `401 KEY_REVOKED/KEY_EXPIRED`
+· `403 SCOPE_MISSING` (key tanpa scope endpoint tsb) · `403 UPGRADE_REQUIRED`
+(plan tenant belum featApiAccess — aktifkan via superadmin/plan max) ·
+`429 RATE_LIMITED` (+`Retry-After`, default 60 req/menit per key) ·
+`503 WA_BELUM_TERHUBUNG` (QR slot belum discan).
+
+**Kelola key (UI tenant-admin):** halaman `/admin/api-keys` — list (prefix,
+scopes, lastUsedAt, badge revoked), create (raw key show-once + copy), revoke
+(instan). Superadmin: `GET/POST/DELETE /api/sa/tenants/:id/api-keys` + field
+`featApiAccess` di `PUT /api/sa/tenants/:id/plan`.
+
 ## License
 
 Private project.

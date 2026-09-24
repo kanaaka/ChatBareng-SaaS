@@ -1,3 +1,62 @@
+## v3.9.13 — FITUR: Public API v1 — API keys per-tenant (2026-09-24)
+
+**Konteks:** Aplikasi eksternal (mis. program antrean) kini bisa kirim pesan WA
+& baca chat via **ChatBareng Public API v1** memakai API key per-tenant.
+Trial = produksi (same code path). Spec: `docs/spec-api-keys-v1.md`;
+dokumen konsumen: `docs/API-CONSUMER-QUICKSTART.md`.
+
+**Backend:**
+- `prisma/schema.prisma` — model **ApiKey** (keyHash unique sha256, prefix 12
+  char, scopes CSV, planGated, ratePerMin, lastUsedAt, expiresAt, revokedAt,
+  createdByUserId) + kolom ADDITIVE `TenantPlan.featApiAccess` + kolom ADDITIVE
+  `ChatEvent.source` ('api' = dari Public API). Migration
+  `20260924190000_api_keys` (CREATE TABLE + 2×ALTER ADD COLUMN — tidak ada
+  kolom lama diubah). Seed idempoten `prisma/seed-api-access.js`
+  (preset max → featApiAccess=true).
+- `src/services/apiKeys.js` — generate (`cbk_live_` + 32-byte base64url;
+  **raw key NEVER stored/logged** — hanya sha256), verify (hash lookup),
+  revoke (idempoten), list, rowToPublic (hash never out), per-key rate limiter
+  (in-memory Map, window 60s).
+- `src/routes/apiV1.js` (BARU, mount `/api/v1`) — middleware `requireApiKey`
+  (Bearer `cbk_…` ATAU `X-API-Key`; urutan: 401 UNAUTHORIZED → 401
+  KEY_REVOKED/KEY_EXPIRED → 403 UPGRADE_REQUIRED (plan gate) → 429
+  RATE_LIMITED+Retry-After → scope per-endpoint 403 SCOPE_MISSING;
+  sukses → `req.tenantId` + `req.apiKey`). Endpoint P1:
+  `GET /api/v1/health` (public), `POST /api/v1/messages` (scope `send`;
+  target nomor 08/62 → JID, JID `@g.us`/`@s.whatsapp.net`, ATAU nama grup
+  eksak tenant; kirim via pool existing `sendMessageForTenant` slot
+  auto-resolve; WA off → 503 `WA_BELUM_TERHUBUNG` konsisten route CS;
+  audit ChatEvent source 'api'), `GET /api/v1/chats` (scope `read`;
+  list 1:1 + pagination cursor `limit`/`cursor`, preview dekrip on-the-fly).
+- `src/routes/apiKeys.js` (BARU, mount `/api/api-keys`, JWT admin tenant) —
+  list/create/revoke key; create → raw key di response **SEKALI**.
+- `src/routes/superadmin.js` — `GET/POST/DELETE /api/sa/tenants/:id/api-keys`
+  (onboarding oleh owner, audit `api_key_create`/`api_key_revoke`) + plan
+  update menerima field baru `featApiAccess`.
+- `src/services/plans.js` — `featApiAccess` masuk preset (**max=true**,
+  lite/pro=false) + FEATURE_KEYS + label upsell.
+- `src/routes/auth.js` — `/auth/me` features kini bawa `apiAccess`.
+
+**Frontend:**
+- Halaman admin **“🔑 API Keys”** (`/admin/api-keys`, gate plan `apiAccess`):
+  list keys (name, prefix, scopes, lastUsedAt, badge Revoked), Create modal
+  (name + scope checkboxes; raw key tampil SEKALI + copy + warning), Revoke
+  dengan konfirmasi (ConfirmDialog). Sidebar + launcher + settings search.
+- SuperAdmin plan modal: toggle “Akses API (v1)”.
+
+**E2E:** `scripts/e2e-v3913.cjs` di DB copy port 5099 (WA_DISABLED=1) —
+**39 PASS / 0 FAIL**: lifecycle (SA create → plan-gate 403 → featApiAccess on
+→ send 503 auth-PASS nomor/JID/nama-grup → scope-deny 403 → rate-limit 429
++Retry-After → revoke → 401 KEY_REVOKED → idempoten), auth deny paths
+(401 UNAUTHORIZED, health public 200, X-API-Key), tenant isolation (list t4
+tanpa row t8 — 404/empty, bukan 403 bocor), tenant-admin key mgmt + isolasi.
+**Regresi semua PASS:** v3.9.11 (10/10), v3.9.4 (SEMUA), v3.9.5 (SEMUA),
+v3.9.6 (15/15), v3.9.9 (SEMUA). Frontend build exit 0.
+
+**Deploy note:** migration ADDITIVE — `npx prisma migrate deploy` aman;
+lalu `node prisma/seed-api-access.js` (idempoten) untuk menyalakan
+featApiAccess di plan max existing.
+
 ## v3.9.12 — Hardening path media portabel (persiapan deploy hosting, 2026-09-24)
 
 **Konteks:** Kanaka mau deploy ke hosting asli (pakai besok). Inventori paket

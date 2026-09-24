@@ -29,6 +29,8 @@ const routes = [
       { path: '/admin/csat', name: 'AdminCsat', component: () => import('./views/AdminCsat.vue'), meta: { auth: true, admin: true, feature: 'csat' } },
       // v0.9.0 — Tampilan (accent color admin, M3 theme)
       { path: '/admin/appearance', name: 'AdminAppearance', component: () => import('./views/AdminAppearance.vue'), meta: { auth: true, admin: true } },
+      // v3.9.13 — Public API v1: API Keys (admin tenant, plan gate apiAccess)
+      { path: '/admin/api-keys', name: 'AdminApiKeys', component: () => import('./views/AdminApiKeys.vue'), meta: { auth: true, admin: true, feature: 'apiAccess' } },
       // v0.3.0 — halaman asli (bukan redirect ke tab yg gak ada)
       { path: '/admin/analytics', name: 'AdminAnalytics', component: () => import('./views/Analytics.vue'), meta: { auth: true, admin: true, feature: 'analytics' } },
       { path: '/admin/templates', name: 'AdminTemplates', component: () => import('./views/Templates.vue'), meta: { auth: true, admin: true } },

@@ -18,6 +18,7 @@ const PRESETS = {
     featHistoryExport: false,
     featCsat: false,
     featGdriveBackup: false,
+    featApiAccess: false, // v3.9.13 — Public API v1
   },
   pro: {
     maxAgents: 10,
@@ -29,6 +30,7 @@ const PRESETS = {
     featHistoryExport: true,
     featCsat: true,
     featGdriveBackup: false,
+    featApiAccess: false, // v3.9.13 — Public API v1 (pro belum)
   },
   max: {
     maxAgents: 50,
@@ -40,11 +42,12 @@ const PRESETS = {
     featHistoryExport: true,
     featCsat: true,
     featGdriveBackup: true,
+    featApiAccess: true, // v3.9.13 — Public API v1 (max dulu)
   },
 }
 
 // Field fitur (boolean) & kuota (angka/null) — dipakai apply preset + compare custom
-const FEATURE_KEYS = ['featAnalytics', 'featBlast', 'featMenuGateway', 'featHistoryExport', 'featCsat', 'featGdriveBackup']
+const FEATURE_KEYS = ['featAnalytics', 'featBlast', 'featMenuGateway', 'featHistoryExport', 'featCsat', 'featGdriveBackup', 'featApiAccess']
 const QUOTA_KEYS = ['maxAgents', 'maxContacts', 'tkQuotaBytes']
 
 /** applyPreset(name) → object field siap create/update TenantPlan. */
@@ -130,6 +133,7 @@ function requireFeature(featureKey) {
     featHistoryExport: 'Export/Import Riwayat',
     featCsat: 'CSAT',
     featGdriveBackup: 'Backup Google Drive',
+    featApiAccess: 'Akses API (Public API v1)',
   }
   return async (req, res, next) => {
     try {

@@ -477,12 +477,14 @@ const FEATURE_DEFS = [
   { key: 'featHistoryExport', label: 'Export/Import Riwayat' },
   { key: 'featCsat', label: 'CSAT' },
   { key: 'featGdriveBackup', label: 'Backup GDrive' },
+  { key: 'featApiAccess', label: 'Akses API (v1)' }, // v3.9.13 — Public API v1
 ]
 const FEATURE_LABELS = Object.fromEntries(FEATURE_DEFS.map((f) => [f.key, f.label]))
 const AUDIT_ACTIONS = [
   'tenant_create', 'tenant_update', 'tenant_delete', 'tenant_purge',
   'validity_update', // v3.8 — masa aktif tenant
   'plan_update', 'branding_update', 'backup_download', 'impersonate', 'admin_create',
+  'api_key_create', 'api_key_revoke', // v3.9.13 — Public API v1
 ]
 const backingUp = ref(null)
 
@@ -772,6 +774,7 @@ function openPlanModal(t) {
     featHistoryExport: !!t.plan?.featHistoryExport,
     featCsat: !!t.plan?.featCsat,
     featGdriveBackup: !!t.plan?.featGdriveBackup,
+    featApiAccess: !!t.plan?.featApiAccess, // v3.9.13
   }
   planError.value = ''
 }

@@ -45,6 +45,8 @@ const menuGatewayRoutes = require('./routes/menuGateway') // v0.13.0 — Menu Ga
 const groupRoutes = require('./routes/groups') // v0.14.0 — Manajemen Grup (PIC Model)
 const superadminRoutes = require('./routes/superadmin') // v3.0 — Platform owner API
 const brandingRoutes = require('./routes/branding') // v3.4 — Branding per-tenant (logo)
+const apiKeysRoutes = require('./routes/apiKeys') // v3.9.13 — Tenant-admin API keys mgmt
+const apiV1Routes = require('./routes/apiV1') // v3.9.13 — Public API v1 (API key auth)
 
 const app = express()
 // v3.9.4 — trust proxy 'loopback': server di belakang cloudflared tunnel (127.0.0.1)
@@ -156,6 +158,11 @@ app.use('/api/scheduled', scheduledRoutes) // v0.10.0 — Pesan Terjadwal
 app.use('/api/menu-gateway', menuGatewayRoutes) // v0.13.0 — Menu Gateway (admin). Sweep di-init saat boot sejak v3.9.8.
 app.use('/api/groups', groupRoutes) // v0.14.0 — Manajemen Grup (PIC Model)
 app.use('/api/branding', brandingRoutes) // v3.4 — Branding per-tenant (logo, auth flexible)
+// v3.9.13 — Public API v1: autentikasi API KEY (bukan JWT) — router sendiri, TIDAK
+// menyentuh route lama. Health endpoint publik di dalam router; sisanya requireApiKey.
+app.use('/api/v1', apiV1Routes.router)
+// v3.9.13 — Tenant-admin API keys management (JWT admin, requireTenant scope)
+app.use('/api/api-keys', apiKeysRoutes)
 // Public, no-auth: dipakai index.html SEBELUM bundle app (fallback aman kalau DB error)
 app.get('/theme.css', appearanceRoutes.themeCssHandler)
 // v0.12.7 — PUBLIC, no-auth: manifest dinamis (theme_color = accentSeed aktif).

@@ -22,6 +22,7 @@ const saAudit = require('../services/saAudit')
 const tenantBackup = require('../services/tenantBackup')
 const usernameGuard = require('../utils/usernameGuard') // v3.4.1 — username unik global lintas tenant
 const validity = require('../services/validity') // v3.8 — masa aktif tenant
+const apiKeys = require('../services/apiKeys') // v3.9.13 — Public API v1 keys
 const multer = require('multer')
 
 // Middleware chain: auth + superadmin
@@ -76,6 +77,7 @@ function planToJson(plan) {
     featHistoryExport: plan.featHistoryExport,
     featCsat: plan.featCsat,
     featGdriveBackup: plan.featGdriveBackup,
+    featApiAccess: plan.featApiAccess, // v3.9.13 — plan gate Public API
   }
 }
 
@@ -730,6 +732,7 @@ router.put(
           featHistoryExport: tenant.plan.featHistoryExport,
           featCsat: tenant.plan.featCsat,
           featGdriveBackup: tenant.plan.featGdriveBackup,
+          featApiAccess: tenant.plan.featApiAccess, // v3.9.13
         }
       } else {
         fields = plans.applyPreset('max')
@@ -956,6 +959,92 @@ router.get('/audit', ...sa, async (req, res) => {
     res.json({ items, nextBefore })
   } catch (e) {
     console.error('[SA] Audit list error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ═══════════════════════ v3.9.13 — PUBLIC API KEYS (superadmin onboarding) ═══
+
+// GET /api/sa/tenants/:id/api-keys — list keys tenant (owner bantu onboarding)
+router.get('/tenants/:id/api-keys', ...sa, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid tenant id' })
+    const tenant = await prisma.tenant.findUnique({ where: { id }, select: { id: true, name: true } })
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
+    const rows = await apiKeys.listByTenant(id, true)
+    res.json({ keys: rows.map(apiKeys.rowToPublic) })
+  } catch (e) {
+    console.error('[SA] ApiKeys list error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/sa/tenants/:id/api-keys { name, scopes, ratePerMin?, planGated? }
+// → 201 { apiKey, key: RAW (SEKALI), warning } — onboarding help oleh owner platform
+router.post(
+  '/tenants/:id/api-keys',
+  ...sa,
+  [],
+  async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10)
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid tenant id' })
+      const tenant = await prisma.tenant.findUnique({ where: { id } })
+      if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
+
+      let created
+      try {
+        created = await apiKeys.generate({
+          tenantId: id,
+          name: req.body?.name,
+          scopes: apiKeys.parseScopes(req.body?.scopes),
+          ratePerMin: req.body?.ratePerMin,
+          planGated: req.body?.planGated === undefined ? true : Boolean(req.body.planGated),
+          expiresAt: req.body?.expiresAt || null,
+          createdByUserId: req.user.id,
+        })
+      } catch (e) {
+        if (e?.code === 'VALIDATION') return res.status(400).json({ error: e.message, code: 'VALIDATION' })
+        throw e
+      }
+
+      console.log(`[SA] API key dibuat utk tenant #${id} (${tenant.name}) id=${created.apiKey.id} scopes="${created.apiKey.scopes}" by @${req.user.username} (raw TIDAK di-log)`)
+      await saAudit.audit(req.user, 'api_key_create', id, tenant.name, {
+        keyId: created.apiKey.id,
+        name: created.apiKey.name,
+        scopes: created.apiKey.scopes,
+        prefix: created.apiKey.prefix,
+      })
+      res.status(201).json({
+        apiKey: apiKeys.rowToPublic(created.apiKey),
+        key: created.rawKey, // SEKALI ini — raw tidak tersimpan/log
+        warning: 'Simpan key ini SEKARANG — hanya ditampilkan sekali dan tidak bisa dilihat lagi.',
+      })
+    } catch (e) {
+      console.error('[SA] ApiKeys create error:', e)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  }
+)
+
+// DELETE /api/sa/tenants/:id/api-keys/:keyId — revoke (idempoten, tenant-scoped)
+router.delete('/tenants/:id/api-keys/:keyId', ...sa, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const keyId = parseInt(req.params.keyId, 10)
+    if (!Number.isFinite(id) || !Number.isFinite(keyId)) return res.status(404).json({ error: 'Key tidak ditemukan' })
+    const tenant = await prisma.tenant.findUnique({ where: { id }, select: { id: true, name: true } })
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' })
+    const row = await prisma.apiKey.findFirst({ where: { id: keyId, tenantId: id } })
+    if (!row) return res.status(404).json({ error: 'Key tidak ditemukan' })
+    if (row.revokedAt) return res.json({ ok: true, alreadyRevoked: true })
+    await apiKeys.revoke(row.id)
+    console.log(`[SA] API key #${row.id} tenant #${id} (${tenant.name}) di-revoke by @${req.user.username}`)
+    await saAudit.audit(req.user, 'api_key_revoke', id, tenant.name, { keyId: row.id, name: row.name, prefix: row.prefix })
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('[SA] ApiKeys revoke error:', e)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
