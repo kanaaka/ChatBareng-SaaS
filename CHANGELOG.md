@@ -1,3 +1,14 @@
+## v3.9.7 — Hotfix: search mati di Blast → Select recipients → tab Chat List (2026-09-24)
+
+**Lapor Kanaka 11:32:** search box di tab Chat List gak berfungsi; tab Kontak normal.
+
+- **Akar:** `fetchChatsForPicker` frontend filter `c.id.toLowerCase()` — di SaaS v3
+  `Chat.id` bertipe **Int** (autoincrement) → TypeError → ketangkap catch diam-diam →
+  `availableChats` tak pernah ke-update → search tampak mati. Hub non-SaaS lolos karena
+  id-nya String (waJid). Satu-satunya pattern `.id.toLowerCase()` di seluruh frontend.
+- **Fix:** `String(c.id).toLowerCase()` (BlastComposer.vue). Frontend build ulang +
+  restart produksi (2 slot WA connected).
+
 ## v3.9.6b — Tambalan audit Kimi-K3 v3.9.6 (GO-WITH-NOTES) + build frontend (2026-09-24)
 
 **Verdict audit 0fea995: GO-WITH-NOTES — 0 CRITICAL, 1 HIGH, 1 MEDIUM, 2 LOW, 4 INFO.**

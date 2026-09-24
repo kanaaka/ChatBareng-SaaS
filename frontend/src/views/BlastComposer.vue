@@ -706,7 +706,7 @@ async function fetchChatsForPicker() {
       chats = chats.filter(c => 
         (c.contactName || '').toLowerCase().includes(q) || 
         (c.contactPhone || '').toLowerCase().includes(q) ||
-        c.id.toLowerCase().includes(q)
+        String(c.id).toLowerCase().includes(q) // v3.9.7 — Chat.id Int di SaaS (TypeError → filter mati)
       )
     }
     availableChats.value = chats
