@@ -249,11 +249,22 @@ function assertCanSee(user, chat) {
 }
 
 // ─── DB helpers ───────────────────────────────────────────────────────
+// v3.9.11 — resolve id ATAU JID: frontend SaaS ngirim row-id numerik (Chat.id Int),
+// porting hub non-SaaS nyocokin waJid → match gagal → jatuh ke jalur adopt dgn
+// "JID" sampah (angka) → groupMetadata() gantung tanpa timeout → "Menyimpan…"
+// abadi di Ganti PIC (lapor Kanaka 24 Sep). Angka → by id (wajib grup, bukan →
+// 404, JANGAN pernah adopt dgn id numerik); selain itu → by waJid (null = yatim).
 async function findGroupChat(tenantId, chatId) {
-  const chat = await prisma.chat.findFirst({
-    where: { tenantId, waJid: String(chatId) },
-    include: { assignedTo: { select: { id: true, username: true, role: true } } },
-  })
+  const raw = String(chatId)
+  const include = { assignedTo: { select: { id: true, username: true, role: true } } }
+  if (/^\d+$/.test(raw)) {
+    const byId = await prisma.chat.findFirst({ where: { tenantId, id: Number(raw) }, include })
+    if (!byId || (!isGroupJid(byId.waJid) && !(byId.phoneJid && isGroupJid(byId.phoneJid)))) {
+      throw new GroupServiceError('NOT_FOUND', 404, 'Grup tidak ditemukan')
+    }
+    return byId
+  }
+  const chat = await prisma.chat.findFirst({ where: { tenantId, waJid: raw }, include })
   if (!chat) return null
   if (!isGroupJid(chat.waJid) && !(chat.phoneJid && isGroupJid(chat.phoneJid))) return null
   return chat
@@ -385,6 +396,7 @@ async function getGroupDetail(user, tenantId, chatId) {
     const { metadata, slot: orphanSlot } = await fetchGroupMetadataAnySlot(tenantId, chatId)
     return buildDetailPayload(tenantId, null, metadata, orphanSlot)
   }
+  chatId = row.waJid // v3.9.11 — WA call pakai JID asli row (input bisa id numerik)
   assertCanSee(user, row)
   assertWaReadyForRow(tenantId, row)
   const metadata = await fetchGroupMetadata(tenantId, chatId, slotOfRow(row))
@@ -739,6 +751,7 @@ async function updateMembers(user, tenantId, chatId, body) {
     throw new GroupServiceError('VALIDATION', 400, 'phones[] atau lids[] wajib diisi')
   }
 
+  chatId = row.waJid // v3.9.11 — WA call pakai JID asli row (input bisa id numerik)
   assertWaReadyForRow(tenantId, row)
   const gslot = slotOfRow(row)
   const sock = wa.getSocketForTenant(tenantId, gslot)
@@ -804,6 +817,7 @@ async function updateMembers(user, tenantId, chatId, body) {
 async function sendGroupInviteLinks(user, tenantId, chatId, lidJids, groupName) {
   const row = await findGroupChat(tenantId, chatId)
   if (!row) throw new GroupServiceError('NOT_FOUND', 404, 'Grup tidak ditemukan')
+  chatId = row.waJid // v3.9.11 — WA call pakai JID asli row (input bisa id numerik)
   assertCanSee(user, row)
   // v3.9.6 — PM/invite-link ke chat 1:1 TETAP slot-0 (isolasi 1:1 status quo) —
   // tapi kode invite diambil via slot PEMILIK grup (yang mungkin admin WA).
@@ -958,6 +972,7 @@ async function updateGroupInfo(user, tenantId, chatId, body) {
   if (name != null && !name) throw new GroupServiceError('VALIDATION', 400, 'Nama grup tidak boleh kosong')
   if (name == null && description == null) throw new GroupServiceError('VALIDATION', 400, 'Tidak ada perubahan (name/description)')
 
+  chatId = row.waJid // v3.9.11 — WA call pakai JID asli row (input bisa id numerik)
   // v3.9.6 — rename/description via slot PEMILIK grup
   assertWaReadyForRow(tenantId, row)
   const sock = wa.getSocketForTenant(tenantId, slotOfRow(row))
@@ -989,6 +1004,7 @@ async function updateSettings(user, tenantId, chatId, body) {
   const row = await findGroupChat(tenantId, chatId)
   if (!row) throw new GroupServiceError('NOT_FOUND', 404, 'Grup tidak ditemukan')
   assertCanSee(user, row)
+  chatId = row.waJid // v3.9.11 — WA call pakai JID asli row (input bisa id numerik)
   // v3.9.6 — settings via slot PEMILIK grup
   assertWaReadyForRow(tenantId, row)
 
@@ -1031,6 +1047,7 @@ async function resetInvite(user, tenantId, chatId) {
   const row = await findGroupChat(tenantId, chatId)
   if (!row) throw new GroupServiceError('NOT_FOUND', 404, 'Grup tidak ditemukan')
   assertCanSee(user, row)
+  chatId = row.waJid // v3.9.11 — WA call pakai JID asli row (input bisa id numerik)
   // v3.9.6 — revoke invite via slot PEMILIK grup
   assertWaReadyForRow(tenantId, row)
   const sock = wa.getSocketForTenant(tenantId, slotOfRow(row))
@@ -1310,6 +1327,7 @@ function findParticipantInMetadata(metadata, pj) {
 async function saveParticipantContact(user, tenantId, chatId, pmJidRaw) {
   const row = await findGroupChat(tenantId, chatId)
   if (!row) throw new GroupServiceError('NOT_FOUND', 404, 'Grup tidak ditemukan')
+  chatId = row.waJid // v3.9.11 — WA call pakai JID asli row (input bisa id numerik)
   assertCanSee(user, row)
   const pj = validateParticipantJid(pmJidRaw)
   // v3.9.6 — metadata utk cari participant via slot PEMILIK grup (row pasti ada di caller ini)
@@ -1352,6 +1370,7 @@ async function saveParticipantContact(user, tenantId, chatId, pmJidRaw) {
 async function pmParticipant(user, tenantId, chatId, pmJidRaw, body) {
   const row = await findGroupChat(tenantId, chatId)
   if (!row) throw new GroupServiceError('NOT_FOUND', 404, 'Grup tidak ditemukan')
+  chatId = row.waJid // v3.9.11 — WA call pakai JID asli row (input bisa id numerik)
   assertCanSee(user, row)
 
   const content = typeof body?.content === 'string' ? body.content.trim() : ''
@@ -1487,15 +1506,18 @@ async function pmParticipant(user, tenantId, chatId, pmJidRaw, body) {
 /** Bot keluar dari grup (admin-only) — cleanup grup uji/orphan. */
 async function leaveGroup(user, tenantId, chatId) {
   if (!isAdmin(user)) throw new GroupServiceError('FORBIDDEN', 403, 'Hanya admin yang dapat mengeluarkan bot dari grup')
+  // v3.9.11 — resolve id/JID: numeric → row.waJid; JID (yatim/ops cleanup) → apa adanya
+  const lgRow = await findGroupChat(tenantId, chatId)
+  const leaveJid = lgRow ? lgRow.waJid : chatId
   // v3.9.6 — leave via slot manapun yang anggota (ops cleanup; row mungkin tidak ada)
-  const { slot } = await fetchGroupMetadataAnySlot(tenantId, chatId)
+  const { slot } = await fetchGroupMetadataAnySlot(tenantId, leaveJid)
   const sock = wa.getSocketForTenant(tenantId, slot)
   try {
-    await sock.groupLeave(chatId)
+    await sock.groupLeave(leaveJid)
   } catch (e) {
     throw mapWaError(e, 'groupLeave')
   }
-  await logAction(user.id, tenantId, 0, 'leave', `bot keluar dari grup (ops cleanup) jid=${chatId} slot=${slot}`)
+  await logAction(user.id, tenantId, 0, 'leave', `bot keluar dari grup (ops cleanup) jid=${leaveJid} slot=${slot}`)
   emitGroupUpdate(tenantId, chatId)
   return { ok: true }
 }

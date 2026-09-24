@@ -8,17 +8,32 @@
   -->
   <div class="space-y-4">
     <!-- Toolbar: header + tombol buat (hidden utk relay) -->
-    <div class="bg-white rounded-lg shadow-sm p-4 flex items-center justify-between gap-3">
-      <div class="min-w-0">
-        <p class="text-sm text-gray-600">{{ listSubtitle }}</p>
+    <div class="bg-white rounded-lg shadow-sm p-4 space-y-3">
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="text-sm text-gray-600">{{ listSubtitle }}</p>
+        </div>
+        <button
+          v-if="!isRelay"
+          @click="openCreate"
+          class="m3-btn m3-btn--filled !min-h-[44px] !px-5 text-sm whitespace-nowrap"
+        >
+          + Buat Grup
+        </button>
       </div>
-      <button
-        v-if="!isRelay"
-        @click="openCreate"
-        class="m3-btn m3-btn--filled !min-h-[44px] !px-5 text-sm whitespace-nowrap"
-      >
-        + Buat Grup
-      </button>
+      <!-- v3.9.11 — search box (paritas dgn chat list, lapor Kanaka 24 Sep) -->
+      <input
+        v-model="searchQuery"
+        type="search"
+        placeholder="Cari nama grup / PIC…"
+        class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-wa-green"
+      />
+      <!-- v3.9.11 — tab filter PIC (admin): Semua / Ada PIC / Belum ada PIC -->
+      <div v-if="auth.isAdmin" class="flex items-center gap-2">
+        <button @click="picFilter = 'all'" :class="['text-xs px-3 py-1.5 rounded-full font-medium', picFilter === 'all' ? 'bg-wa-green text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200']">Semua</button>
+        <button @click="picFilter = 'has'" :class="['text-xs px-3 py-1.5 rounded-full font-medium', picFilter === 'has' ? 'bg-wa-green text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200']">Ada PIC</button>
+        <button @click="picFilter = 'orphan'" :class="['text-xs px-3 py-1.5 rounded-full font-medium', picFilter === 'orphan' ? 'bg-wa-green text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200']">Belum Ada PIC</button>
+      </div>
     </div>
 
     <!-- Loading / empty -->
@@ -38,8 +53,12 @@
     <!-- List grup -->
     <div v-else class="space-y-2">
       <!-- v3.9.10 — kartu stack vertikal selalu: dulu sm:flex-row bikin badge+tombol berebut baris dgn nama di pane w-96 → nama kepress 1-2 huruf -->
+      <!-- v3.9.11 — hasil filter kosong (bukan list kosong) -->
+      <div v-if="!filteredGroups.length" class="bg-white rounded-lg shadow-sm p-8 text-center text-gray-400 text-sm">
+        Tidak ada grup yang cocok dengan pencarian/filter.
+      </div>
       <div
-        v-for="g in groups"
+        v-for="g in filteredGroups"
         :key="g.id"
         class="bg-white rounded-lg shadow-sm p-4 flex flex-col gap-3 hover:bg-gray-50 transition-colors"
       >
@@ -233,6 +252,20 @@ const picCandidates = ref([])
 const listSubtitle = computed(() => {
   if (auth.isAdmin) return 'Semua grup + grup yatim (tanpa PIC)'
   return 'Grup yang kamu jadi PIC'
+})
+
+// v3.9.11 — search + filter tab (lapor Kanaka 24 Sep): cari nama grup/PIC +
+// tab Semua / Ada PIC / Belum ada PIC (admin; non-admin hanya lihat miliknya).
+const searchQuery = ref('')
+const picFilter = ref('all')
+const filteredGroups = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  return groups.value.filter(g => {
+    if (picFilter.value === 'has' && g.orphan) return false
+    if (picFilter.value === 'orphan' && !g.orphan) return false
+    if (!q) return true
+    return String(g.name || '').toLowerCase().includes(q) || String(g.pic?.username || '').toLowerCase().includes(q)
+  })
 })
 
 const showCreate = ref(false)

@@ -1,3 +1,25 @@
+## v3.9.11 — Fix bug "Ganti PIC" macet + Search & Tab filter di Grup List (2026-09-24)
+
+**QA verified v3.9.10 (13:56)** → push + release v3.9.10 (id 395415793).
+
+**Bug Ganti PIC (lapor Kanaka):** dialog "Menyimpan…" abadi, PIC tak berganti.
+- **AKAR (latent sejak porting SaaS):** seluruh service grup nyocokin row by
+  `waJid` (JID), frontend SaaS ngirim row-id NUMERIK → `findGroupChat` selalu
+  null → jatuh ke jalur ADOPT dengan "JID" angka sampah → `groupMetadata("812")`
+  ke Baileys TANPA timeout → request gantung selamanya. Kena SEMUA aksi kelola
+  grup ter-adopt (rename, settings, add/remove member, invite reset, PM peserta,
+  Ganti PIC) — makanya Assign PIC yatim (JID) jalan, Ganti PIC (angka) macet.
+- **FIX:** `findGroupChat` resolve id ATAU JID (angka → by id, bukan grup → 404
+  bersih, JANGAN pernah adopt dgn id numerik); 8 titik panggilan WA kini pakai
+  `row.waJid` asli; `leaveGroup` resolve id/JID dulu.
+
+**Fitur Grup List (request Kanaka):** search box (nama grup/PIC) + tab filter
+admin: Semua / Ada PIC / Belum ada PIC.
+
+**E2E baru `scripts/e2e-v3911.cjs`** (10 check: assign-pic via id numerik 200 +
+DB ter-update, unknown-id 404 cepat 6ms, JID path tetap 200, yatim WA off 503
+cepat, detail id numerik 503 cepat) PASS + regresi penuh (21/21+13/13+15/15+v3.9.9).
+
 ## v3.9.10b — Tambalan audit Kimi-K3 v3.9.10 (GO) (2026-09-24)
 
 **Verdict: 0 CRITICAL, 0 HIGH, 0 MEDIUM, 2 LOW, 2 INFO.** Semua fokus A–F PASS
