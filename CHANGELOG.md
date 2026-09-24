@@ -1,3 +1,25 @@
+## v3.9.6b — Tambalan audit Kimi-K3 v3.9.6 (GO-WITH-NOTES) + build frontend (2026-09-24)
+
+**Verdict audit 0fea995: GO-WITH-NOTES — 0 CRITICAL, 1 HIGH, 1 MEDIUM, 2 LOW, 4 INFO.**
+Isolasi tenant/fallback/adopt-konsistensi/regresi/orphan/dropdown: PASS semua.
+
+- **HIGH-1 (ditambal):** `sendGroupInviteLinks` fallback invite-code memanggil method
+  pada socket yang bisa NULL (slot disconnect) → TypeError 500. Kini cek socket dulu.
+- **MEDIUM-1 (ditambal):** detail grup ORPHAN pakai slot-0 untuk botJids/botIsAdmin/
+  invite-code padahal metadata dari slot lain → slot temuan (`orphanSlot`) kini
+  diteruskan ke buildDetailPayload (effSlot).
+- **LOW-1 (ditambal):** adopt orphan (assignPic) kini anti-race P2002 (retry pola
+  createGroup) — dua admin adopt barengan gak lagi 500.
+- **LOW-2 (ditambal):** race-recovery createGroup insert langsung `numberSlot:
+  createSlot` (tidak hardcode 0).
+- INFO-1: komentar basi "create selalu numberSlot 0" diperbaiki. INFO-3 (resolveLid
+  slot-0 utk grup slot-1, non-fatal) diterima sbg follow-up ops. INFO-4: T8 X-FF
+  dummy = test hygiene valid, proteksi limiter tetap aktif.
+- **Frontend di-BUILD ke produksi** (`npm run build` → public/) — dropdown pilih nomor
+  pembuat grup kini live. (Miss: v3.9.6 lupa build — UI belum memuat dropdown.)
+- E2E ulang setelah tambalan: v3.9.6 15/15 + v3.9.5 13/13 + v3.9.4 21/21 PASS.
+  Prod restart sehat (2 slot WA connected).
+
 ## v3.9.6 — Grup slot-aware: pilih nomor admin grup + orphan multi-slot (2026-09-24)
 
 **Permintaan owner 10:47:** (1) bikin grup bisa PILIH nomor mana yang jadi admin WA;

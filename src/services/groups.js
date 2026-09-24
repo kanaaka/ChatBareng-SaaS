@@ -380,8 +380,10 @@ async function getGroupDetail(user, tenantId, chatId) {
   if (!row) {
     if (!isAdmin(user)) throw new GroupServiceError('FORBIDDEN', 403, 'Anda tidak memiliki akses ke grup ini')
     // v3.9.6 — orphan: coba SEMUA slot connected (grup mungkin cuma di-invite ke slot-1).
-    const { metadata } = await fetchGroupMetadataAnySlot(tenantId, chatId)
-    return buildDetailPayload(tenantId, null, metadata)
+    // v3.9.6b (audit MEDIUM-1) — orphan: slot hasil temuan diteruskan ke payload
+    // (botJids/botIsAdmin/invite-code via slot yang BENAR, bukan selalu slot-0).
+    const { metadata, slot: orphanSlot } = await fetchGroupMetadataAnySlot(tenantId, chatId)
+    return buildDetailPayload(tenantId, null, metadata, orphanSlot)
   }
   assertCanSee(user, row)
   assertWaReadyForRow(tenantId, row)
@@ -389,7 +391,9 @@ async function getGroupDetail(user, tenantId, chatId) {
   return buildDetailPayload(tenantId, row, metadata)
 }
 
-async function buildDetailPayload(tenantId, row, metadata) {
+async function buildDetailPayload(tenantId, row, metadata, orphanSlot = 0) {
+  // v3.9.6b — effSlot: row → slot pemilik; orphan → slot hasil fetchAnySlot.
+  const effSlot = row ? slotOfRow(row) : (Number(orphanSlot) || 0)
   // Nama member dari Contact bila ada (pola contacts.js: phone normalized 62…)
   // v0.14.3 — cari kontak by LID digits ATAU nomor asli (phoneNumber) sekaligus.
   const digits = (metadata.participants || []).flatMap(p => {
@@ -402,7 +406,7 @@ async function buildDetailPayload(tenantId, row, metadata) {
     const contacts = await prisma.contact.findMany({ where: { tenantId, phone: { in: digits } }, select: { phone: true, name: true } })
     contactMap = new Map(contacts.map(c => [c.phone, c.name]))
   }
-  const botJids = getBotJids(tenantId, row ? slotOfRow(row) : 0)
+  const botJids = getBotJids(tenantId, effSlot)
   const botDigits = new Set([...botJids].map(digitsOf))
 
   const members = (metadata.participants || []).map(p => {
@@ -422,12 +426,13 @@ async function buildDetailPayload(tenantId, row, metadata) {
     }
   })
 
-  const botIsAdmin = botIsAdminFromMetadata(tenantId, metadata, row ? slotOfRow(row) : 0)
+  const botIsAdmin = botIsAdminFromMetadata(tenantId, metadata, effSlot)
 
   let inviteCode = metadata.inviteCode || null
   if (!inviteCode && botIsAdmin) {
     try {
-      inviteCode = await wa.getSocketForTenant(tenantId, row ? slotOfRow(row) : 0).groupInviteCode(metadata.id) || null
+      const detailSock = wa.getSocketForTenant(tenantId, effSlot)
+      inviteCode = detailSock ? await detailSock.groupInviteCode(metadata.id) || null : null
     } catch (e) { /* non-fatal */ }
   }
 
@@ -530,10 +535,10 @@ async function createGroup(user, tenantId, body) {
   }
   const chatUpdate = { picUserId, assignedToId: picUserId, queuedAt: null, numberSlot: createSlot }
   // v3.9.2 K1-A — grup (@g.us) TIDAK dipisah per slot (1 grup = 1 baris): lookup
-  // by (tenantId, waJid) via findFirst; create selalu numberSlot 0 (slot grup).
+  // by (tenantId, waJid) via findFirst; numberSlot row = slot pemilik grup (v3.9.6).
   let chat
   try {
-    chat = await findGroupChatRowAnySlot(tenantId, gid) || await prisma.chat.create({ data: { ...chatData, numberSlot: 0 } })
+    chat = await findGroupChatRowAnySlot(tenantId, gid) || await prisma.chat.create({ data: { ...chatData, numberSlot: createSlot } })
     chat = await prisma.chat.update({ where: { id: chat.id }, data: chatUpdate })
   } catch (e) {
     if (e?.code !== 'P2002') throw e
@@ -816,8 +821,11 @@ async function sendGroupInviteLinks(user, tenantId, chatId, lidJids, groupName) 
   } catch (e) { /* non-fatal — fallback di bawah */ }
   if (!inviteCode) {
     // Fallback: coba slot pemilik dulu, lalu slot-0 (legacy).
-    inviteCode = await wa.getSocketForTenant(tenantId, slotOfRow(row)).groupInviteCode(chatId).catch(() => null)
-    if (!inviteCode) inviteCode = await sock.groupInviteCode(chatId).catch(() => null)
+    // v3.9.6b (audit HIGH-1) — socket slot bisa NULL saat disconnect: cek dulu
+    // SEBELUM .method() (TypeError sinkron tidak tertangkap .catch).
+    const ownerSock = wa.getSocketForTenant(tenantId, slotOfRow(row))
+    if (ownerSock) inviteCode = await ownerSock.groupInviteCode(chatId).catch(() => null)
+    if (!inviteCode && sock) inviteCode = await sock.groupInviteCode(chatId).catch(() => null)
   }
   if (!inviteCode) {
     throw new GroupServiceError('WA_GAGAL', 502, 'Gagal mengambil link undangan grup (pastikan bot masih anggota grup)')
@@ -1055,20 +1063,29 @@ async function assignPic(user, tenantId, chatId, picUserIdRaw) {
     // v3.9.6 — metadata via SEMUA slot (orphan bisa milik slot manapun);
     // slot hasil temuan disimpan sbg pemilik row.
     const { metadata, slot: foundSlot } = await fetchGroupMetadataAnySlot(tenantId, chatId)
-    row = await prisma.chat.create({
-      data: {
-        tenantId,
-        waJid: chatId,
-        contactPhone: chatId.split('@')[0],
-        contactName: metadata.subject || chatId,
-        phoneJid: chatId,
-        picUserId,
-        assignedToId: picUserId,
-        status: 'open',
-        unreadCount: 0,
-        numberSlot: foundSlot, // v3.9.6 — pemilik = slot yang punya grup di WA
-      },
-    })
+    // v3.9.6b (audit LOW-1) — anti-race P2002 (pola createGroup): dua admin adopt
+    // barengan → yang kalah findExisting lalu update PIC (bukan 500).
+    let row = null
+    try {
+      row = await prisma.chat.create({
+        data: {
+          tenantId,
+          waJid: chatId,
+          contactPhone: chatId.split('@')[0],
+          contactName: metadata.subject || chatId,
+          phoneJid: chatId,
+          picUserId,
+          assignedToId: picUserId,
+          status: 'open',
+          unreadCount: 0,
+          numberSlot: foundSlot, // v3.9.6 — pemilik = slot yang punya grup di WA
+        },
+      })
+    } catch (e) {
+      if (e?.code !== 'P2002') throw e
+      row = await findGroupChat(tenantId, chatId)
+      if (!row) throw e
+    }
     await logAction(user.id, tenantId, row.id, 'assign_pic', `adopt yatim → PIC @${pic.username} (subject="${metadata.subject}" slot=${foundSlot})`)
   } else {
     await prisma.chat.update({
