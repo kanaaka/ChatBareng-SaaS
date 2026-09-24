@@ -1,3 +1,19 @@
+## v3.9.8b — Tambalan audit Kimi-K3 v3.9.8 (GO-WITH-NOTES) (2026-09-24)
+
+**Verdict: 0 CRITICAL, 0 HIGH, 2 MEDIUM, 2 LOW, 3 INFO.** Semua fokus (boot-init
+aman WA-disabled, anti-abuse clear-limbo, resolve safety-net konsisten, TDZ bersih,
+regresi tenant disabled tercuci) PASS.
+
+- **MEDIUM-1 (ditambal):** anti-steal /assign — CS tidak lagi bisa merebut chat
+  milik agent lain tanpa user_id (gate 403; admin tetap boleh reassign paksa).
+- **LOW-1 (ditambal):** /resolve clear-limbo kini juga broadcast `menu_waiting_update`
+  (chip count realtime, sebelumnya nunggu sweep tick ≤30 dtk).
+- **INFO display:** flyout "sisa ? mnt" → "sisa — mnt" (slot disabled lebih halus).
+- MEDIUM-2 (edge: tenant disabled dgn sisa awaiting tak tersapu) diterima — mitigasi
+  take/resolve-clear sudah aktif, release-on-disable tetap lewat PUT.
+- E2E regresi full dengan kode baru: v3.9.4 21/21 + v3.9.5 13/13 + v3.9.6 15/15 PASS.
+  Prod restart sehat (sweep started, 2 slot WA connected).
+
 ## v3.9.8 — Hotfix: chip "⏳ Menunggu menu" nyangkut + timeout gak pernah jalan (2026-09-24)
 
 **Lapor Kanaka 11:39:** Khoiriyah kena gateway, gak bales, timeout-nya udah lewat

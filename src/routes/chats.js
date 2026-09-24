@@ -735,6 +735,13 @@ router.post('/:id/assign', ...rt, async (req, res) => {
       return res.status(403).json({ error: 'Gunakan tombol Take Next untuk mengambil chat dari antrean (FIFO). Ambil manual hanya untuk admin.' })
     }
 
+    // v3.9.8b (audit MEDIUM-1) — anti-steal: CS tidak boleh merebut chat milik
+    // agent lain (assign tanpa user_id pada chat assigned ke orang lain — dulu
+    // lolos gate cherry-picking, kini 403; admin tetap boleh reassign paksa).
+    if (existing.assignedToId !== null && existing.assignedToId !== req.user.id && !req.body.user_id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Chat ini milik agent lain. Admin dapat reassign lewat panel Assign.' })
+    }
+
     // CS trying to assign to someone else - check if they own the chat
     if (req.body.user_id && req.body.user_id !== req.user.id && req.user.role !== 'admin') {
       if (existing.assignedToId !== req.user.id) {
@@ -1219,6 +1226,11 @@ router.post('/:id/resolve', ...rt, async (req, res) => {
     await prisma.chatEvent.create({
       data: { tenantId: req.tenantId, chatId: chat.id, userId: req.user.id, type: 'resolved' },
     })
+
+    // v3.9.8b (audit LOW-1) — bila limbo ikut dibersihkan, refresh chip count realtime
+    if (limboClear && Object.keys(limboClear).length) {
+      broadcast.emitToTenant(req.tenantId, 'menu_waiting_update', { count: await menuGateway.countWaiting(req.tenantId) })
+    }
 
     // v0.10.0 — Fitur A: resolve chat yang sedang snooze → snooze ikut dibersihkan
     if (chat.snoozedUntil) {

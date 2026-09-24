@@ -114,7 +114,7 @@
             <div v-else>
               <div v-for="w in menuWaitingList" :key="w.id" class="px-2 py-1.5 border-b border-gray-100 last:border-0">
                 <div class="text-sm text-gray-800">{{ w.contactName || 'Tanpa nama' }}</div>
-                <div class="text-xs text-gray-400">{{ w.phone || '—' }} · menunggu {{ Math.max(1, Math.round((w.waitedSeconds || 0) / 60)) }} mnt · sisa {{ w.remainingSeconds != null ? Math.max(0, Math.round(w.remainingSeconds / 60)) : '?' }} mnt</div>
+                <div class="text-xs text-gray-400">{{ w.phone || '—' }} · menunggu {{ Math.max(1, Math.round((w.waitedSeconds || 0) / 60)) }} mnt · sisa {{ w.remainingSeconds != null ? Math.max(0, Math.round(w.remainingSeconds / 60)) : '—' }} mnt</div>
               </div>
             </div>
           </div>
