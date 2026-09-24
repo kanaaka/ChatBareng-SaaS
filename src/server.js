@@ -153,7 +153,7 @@ app.use('/api/appearance', appearanceRoutes.router)
 app.use('/api/csat', csatRoutes) // v0.10.0 — CSAT Survey (admin)
 app.use('/api/app-config', appConfigRoutes) // v0.12.9 — AppConfig global (admin)
 app.use('/api/scheduled', scheduledRoutes) // v0.10.0 — Pesan Terjadwal
-app.use('/api/menu-gateway', menuGatewayRoutes) // v0.13.0 — Menu Gateway (admin). Sweep di-init dari baileys connect — BUKAN di sini.
+app.use('/api/menu-gateway', menuGatewayRoutes) // v0.13.0 — Menu Gateway (admin). Sweep di-init saat boot sejak v3.9.8.
 app.use('/api/groups', groupRoutes) // v0.14.0 — Manajemen Grup (PIC Model)
 app.use('/api/branding', brandingRoutes) // v3.4 — Branding per-tenant (logo, auth flexible)
 // Public, no-auth: dipakai index.html SEBELUM bundle app (fallback aman kalau DB error)
@@ -236,6 +236,11 @@ async function start() {
     // v0.10.0 — Scheduler gabungan (snooze expiry + pesan terjadwal + CSAT pending)
     const v0100 = require('./services/v0100Scheduler')
     v0100.initV0100Scheduler()
+
+    // v3.9.8 — Menu Gateway sweep: init di BOOT (idempoten), BUKAN post-WA-connect.
+    // Bug: initMenuGatewaySweep gak pernah punya caller → timeout "Menunggu menu"
+    // gak pernah jalan di produksi (chat nyangkut selamanya).
+    require('./services/menuGateway').initMenuGatewaySweep()
 
     // Start Express
     server.listen(config.port, () => {

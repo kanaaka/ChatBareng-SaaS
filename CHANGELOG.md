@@ -1,3 +1,32 @@
+## v3.9.8 — Hotfix: chip "⏳ Menunggu menu" nyangkut + timeout gak pernah jalan (2026-09-24)
+
+**Lapor Kanaka 11:39:** Khoiriyah kena gateway, gak bales, timeout-nya udah lewat
+tapi masih "Menunggu menu", dan angkanya justru NAIK (10 → 34 menit).
+
+**Dua akar (keduanya pre-existing sejak v0.13.x/v3.9.x):**
+1. **Sweep timeout TIDAK PERNAH di-init di produksi** — rencananya "init dari
+   baileys connect" tapi `initMenuGatewaySweep()` gak pernah punya caller (log
+   "Sweep timeout started" = 0). Chat awaiting tidak pernah di-release.
+2. **Angka naik = ELAPSED, bukan countdown** — flyout menampilkan "menunggu X mnt"
+   (durasi sejak intro dikirim) dan Kanaka membacanya sbg sisa timeout. Semantik
+   lama memang benar (limbo TIDAK auto-release, hanya flag), tapi tanpa sweep
+   jalan, flag itu permanen.
+
+**Kasus Khoiriyah (chat 7709):** awaiting sejak 11:04, TAPI di-take admin (11:37)
++ di-resolve padahal limbo → residu `awaiting` nyangkut selamanya (take/resolve
+tidak membersihkan menuState).
+
+**Fix:**
+- Sweep di-init **saat boot** (idempoten) di server.js — bukan post-WA-connect.
+- `/assign` (take/transfer): bila chat limbo → sekalian `menuState='done'` +
+  broadcast `menu_waiting_update` (take admin = niat jelas meng-akhirkan alur menu).
+- `/resolve`: safety net sama (limbo → done + menuRequestedAt null).
+- `listWaiting` API kini mengembalikan `remainingSeconds` (timeout efektif per-slot)
+  + Dashboard flyout menampilkan "sisa X mnt" — hilang ambiguitas elapsed vs sisa.
+- E2E: v3.9.4 21/21 + v3.9.5 13/13 + v3.9.6 15/15 PASS (regresi full dengan kode baru).
+- Bukti produksi: tick sweep pertama me-release Khoiriyah (done + queued), chip count
+  0. Frontend build ulang + restart sehat.
+
 ## v3.9.7 — Hotfix: search mati di Blast → Select recipients → tab Chat List (2026-09-24)
 
 **Lapor Kanaka 11:32:** search box di tab Chat List gak berfungsi; tab Kontak normal.

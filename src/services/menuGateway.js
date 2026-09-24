@@ -443,17 +443,31 @@ async function countWaiting(tenantId) {
 async function listWaiting(tenantId) {
   const chats = await prisma.chat.findMany({
     where: { tenantId, menuState: 'awaiting' },
-    select: { id: true, contactName: true, contactPhone: true, menuRequestedAt: true },
+    select: { id: true, contactName: true, contactPhone: true, numberSlot: true, menuRequestedAt: true },
     orderBy: { menuRequestedAt: 'asc' },
     take: 200,
   })
+  // v3.9.8 — timeout efektif per-slot (angka "34 menit naik" = ELAPSED menunggu,
+  // bukan countdown; UI kini dapat remainingSeconds agar jelas sisa waktunya).
+  const slots = [...new Set(chats.map(c => Number(c.numberSlot) || 0))]
+  const timeoutBySlot = {}
+  for (const s of slots) {
+    const cfg = await getConfigForSlot(tenantId, s)
+    timeoutBySlot[s] = cfg && cfg.enabled ? effectiveTimeoutSeconds(cfg) : null
+  }
   const now = Date.now()
-  return chats.map(c => ({
-    id: c.id,
-    contactName: c.contactName,
-    phone: c.contactPhone,
-    waitedSeconds: c.menuRequestedAt ? Math.max(0, Math.floor((now - new Date(c.menuRequestedAt).getTime()) / 1000)) : 0,
-  }))
+  return chats.map(c => {
+    const slot = Number(c.numberSlot) || 0
+    const waitedSeconds = c.menuRequestedAt ? Math.max(0, Math.floor((now - new Date(c.menuRequestedAt).getTime()) / 1000)) : 0
+    const ts = timeoutBySlot[slot] ?? null
+    return {
+      id: c.id,
+      contactName: c.contactName,
+      phone: c.contactPhone,
+      waitedSeconds,
+      remainingSeconds: ts !== null ? Math.max(0, ts - waitedSeconds) : null,
+    }
+  })
 }
 
 // ─── Release semua awaiting → queue TANPA tag (idempoten) ───────────────
@@ -522,7 +536,8 @@ async function sweepOnce() {
 }
 
 /**
- * Boot sweep — dipanggil server.js SETELAH WA connect (spec §4: mulai post-connect).
+ * Boot sweep — dipanggil server.js SAAT BOOT sejak v3.9.8 (idempoten).
+ * Sebelumnya: rencana "post-WA-connect" tapi gak pernah ada caller → sweep mati.
  * Chat awaiting + server restart → state di DB, sweep lanjut; intro TIDAK dikirim ulang.
  */
 function initMenuGatewaySweep() {

@@ -18,6 +18,7 @@ const { encryptText, decryptTextSafe, decryptText } = require('../services/textC
 const csat = require('../services/csat')
 // v0.12.9 — Read receipts (blue tick, gate AppConfig admin default OFF)
 const receipts = require('../services/receipts')
+const menuGateway = require('../services/menuGateway') // v3.9.8 — clear limbo broadcast
 
 // v3.0 — Isolasi tenant: SEMUA endpoint chats = tenant-scoped.
 const rt = [requireAuth, requireTenant]
@@ -771,6 +772,11 @@ router.post('/:id/assign', ...rt, async (req, res) => {
 
     const wasInQueue = existing.assignedToId === null
 
+    // v3.9.8 — invariant §4.1 repair: admin take chat LIMBO (menuState='awaiting',
+    // intro terkirim tapi belum memilih) → sekalian clear limbo (done) supaya
+    // tidak nyangkut selamanya di chip "⏳ Menunggu menu" (kasus Khoiriyah).
+    const clearLimbo = existing.menuState === 'awaiting'
+
     // Determine timestamp and first/last assignment data
     const assignNow = new Date()
     const assignUpdateData = { assignedToId: userId, lastAssignedAt: assignNow }
@@ -779,6 +785,10 @@ router.post('/:id/assign', ...rt, async (req, res) => {
     }
     if (wasInQueue) {
       assignUpdateData.queuedAt = null // keluar dari antrean
+    }
+    // v3.9.8 — clear limbo saat take (SETELAH deklarasi assignUpdateData — anti TDZ)
+    if (clearLimbo) {
+      assignUpdateData.menuState = 'done'
     }
     // v0.5.1 — Transfer antar-agent (target ≠ actor) → tandai "transfer belum dibaca".
     // Take-next / self-assign TIDAK di-set (tetap false).
@@ -807,6 +817,11 @@ router.post('/:id/assign', ...rt, async (req, res) => {
 
     // v0.5.1 — flag transfer hanya utk transfer antar-agent (target ≠ actor)
     const isTransfer = !!(targetUserId && targetUserId !== req.user.id)
+
+    // v3.9.8 — limbo dibersihkan → refresh chip count realtime
+    if (clearLimbo) {
+      broadcast.emitToTenant(req.tenantId, 'menu_waiting_update', { count: await menuGateway.countWaiting(req.tenantId) })
+    }
 
     broadcast.emitToTenant(req.tenantId, 'chat_update', {
       chatId: Number(chatId),
@@ -1190,9 +1205,11 @@ router.post('/:id/resolve', ...rt, async (req, res) => {
       return res.status(403).json({ error: 'Only the assigned agent or admin can resolve this chat' })
     }
 
+    // v3.9.8 — safety net: chat LIMBO (awaiting) di-resolve → bersihkan state menu
+    const limboClear = chat.menuState === 'awaiting' ? { menuState: 'done', menuRequestedAt: null } : {}
     const updated = await prisma.chat.update({
       where: { id: chat.id },
-      data: { status: 'resolved', resolvedAt: new Date(), resolvedById: req.user.id, messagesBeforeResolve: chat.csMessagesSent || 0 },
+      data: { status: 'resolved', resolvedAt: new Date(), resolvedById: req.user.id, messagesBeforeResolve: chat.csMessagesSent || 0, ...limboClear },
       include: {
         assignedTo: { select: { id: true, username: true } },
         tags: { include: { tag: true } },
