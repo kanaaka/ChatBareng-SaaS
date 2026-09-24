@@ -1,3 +1,29 @@
+## v3.9.9 — Fitur: fallbackText terkirim saat TIMEOUT (lapor Kanaka 24 Sep 12:00)
+
+**Test Kanaka:** timeout 30 dtk → chat masuk Unassigned ✅ sesuai desain, TAPI
+fallback message TIDAK muncul.
+
+**Akar — gap desain sejak v0.13.0:** timeout release = SILENT (sweep melepas chat
+ke antrean tanpa pesan apa pun). fallbackText selama ini hanya kepakai di jalur
+D2 (pelanggan bales teks yang tidak cocok opsi menu). Pelanggan yang diam saja
+tidak pernah dapat kabar apa-apa sampai CS mengambil alih.
+
+**Fix (releaseAwaiting di menuGateway.js):**
+- Jalur TIMEOUT kini **klaim atomik per-chat** (`updateMany where
+  menuState='awaiting'`, pola handleChoice) — chat yang kejawab pelanggan tepat
+  sebelum sweep TIDAK ikut ke-release dobel; ids eksak → broadcast persis.
+- **fallbackText terkirim** ke setiap chat yang ke-claim oleh sweep timeout
+  (personalisasi {name}). Kirim gagal (WA mati/disconnect) = non-fatal: release
+  tetap jalan, TANPA row message palsu.
+- Jalur release manual (PUT enabled=false) tetap TIDAK mengirim — admin sadar
+  mematikan gateway; blast pesan ke semua awaiting justru membingungkan (D11).
+- Return kini { released, ids, sentFallback } + log jumlah terkirim.
+
+**E2E baru** `scripts/e2e-v399.cjs` (9/9 PASS: config per-slot timeout-10s, seed
+awaiting 90s, release done+queuedAt, jalur fallback diattempt di log, tanpa row
+message palsu saat WA_DISABLED) + regresi penuh: v3.9.4 21/21 + v3.9.5 13/13 +
+v3.9.6 15/15 PASS.
+
 ## v3.9.8b — Tambalan audit Kimi-K3 v3.9.8 (GO-WITH-NOTES) (2026-09-24)
 
 **Verdict: 0 CRITICAL, 0 HIGH, 2 MEDIUM, 2 LOW, 3 INFO.** Semua fokus (boot-init

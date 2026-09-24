@@ -485,28 +485,72 @@ async function releaseAwaiting(tenantId, timeoutOnly = false, timeoutSeconds = n
   if (timeoutOnly && timeoutSeconds) {
     where.menuRequestedAt = { lt: new Date(Date.now() - timeoutSeconds * 1000) }
   }
-  // Atomic transition — semua chat yang kena di sini = milik sweep/release ini
-  const result = await prisma.chat.updateMany({
-    where,
-    data: { menuState: 'done', queuedAt: new Date() },
-  })
-  if (result.count === 0) return { released: 0, ids: [] }
 
-  const released = await prisma.chat.findMany({
-    where: { tenantId, menuState: 'done', menuOptionId: null, menuRequestedAt: { not: null } },
-    select: { id: true },
-    orderBy: { menuRequestedAt: 'desc' },
-    take: result.count,
-  })
-  const ids = released.map(c => c.id)
+  // v3.9.9 — jalur TIMEOUT: klaim ATOMIK per-chat (pola updateMany berkondisi
+  // menuState:'awaiting', sama dgn handleChoice). Chat yang kejawab pelanggan
+  // tepat sebelum klaim TIDAK ikut ke-release & TIDAK dapat fallbackText; chat
+  // yang kita klaim dijamin dapat fallback. Ids eksak → broadcast persis.
+  let claimed = []
+  if (timeoutOnly) {
+    const candidates = await prisma.chat.findMany({
+      where,
+      select: { id: true, tenantId: true, waJid: true, numberSlot: true, contactName: true, contact: { select: { name: true } } },
+      orderBy: { menuRequestedAt: 'asc' },
+    })
+    for (const c of candidates) {
+      const r = await prisma.chat.updateMany({
+        where: { id: c.id, tenantId, menuState: 'awaiting' },
+        data: { menuState: 'done', queuedAt: new Date() },
+      })
+      if (r.count === 1) claimed.push(c)
+    }
+    if (!claimed.length) return { released: 0, ids: [] }
+  } else {
+    // Jalur manual (PUT enabled=false): bulk seperti semula (idempoten, race-safe).
+    const result = await prisma.chat.updateMany({
+      where,
+      data: { menuState: 'done', queuedAt: new Date() },
+    })
+    if (result.count === 0) return { released: 0, ids: [] }
+    const released = await prisma.chat.findMany({
+      where: { tenantId, menuState: 'done', menuOptionId: null, menuRequestedAt: { not: null } },
+      select: { id: true },
+      orderBy: { menuRequestedAt: 'desc' },
+      take: result.count,
+    })
+    claimed = released.map(c => ({ id: c.id }))
+  }
+
+  // v3.9.9 — fallbackText terkirim ke chat yang ke-release karena TIMEOUT:
+  // pelanggan yang tak bales menu tetap dapat kabar sebelum CS mengambil alih
+  // (dulu silent release → kelihatannya diabaikan — lapor Kanaka 12:00).
+  // Jalur release manual (PUT enabled=false) TIDAK mengirim: admin sadar
+  // mematikan gateway; blast pesan ke semua awaiting justru membingungkan (D11).
+  let sentFallback = 0
+  if (timeoutOnly) {
+    const cfg = slot !== null && slot !== undefined ? await getConfigForSlot(tenantId, slot) : await getConfig(tenantId)
+    const fb = cfg && cfg.enabled ? String(cfg.fallbackText || '').trim() : ''
+    if (fb) {
+      for (const chat of claimed) {
+        try {
+          const ok = await sendAutoMessage(chat, fb, chat.contact?.name || chat.contactName || null)
+          if (ok) sentFallback++
+        } catch (sendErr) {
+          console.error(`[MenuGateway] fallbackText timeout gagal (chat=${chat.id}, tenant ${tenantId}):`, sendErr.message)
+        }
+      }
+    }
+  }
+
+  const ids = claimed.map(c => c.id)
   for (const id of ids) {
     broadcast.emitToTenant(tenantId, 'chat_update', { chatId: id, queuedAt: new Date(), menuState: 'done' })
   }
   const queue = require('../socket/queue')
   queue.emitQueueUpdate(tenantId)
   broadcast.emitToTenant(tenantId, 'menu_waiting_update', { count: await countWaiting(tenantId) })
-  console.log(`[MenuGateway] releaseAwaiting(${timeoutOnly ? 'timeout' : 'disabled'}, tenant ${tenantId}): ${ids.length} chat → queue tanpa tag`)
-  return { released: result.count, ids }
+  console.log(`[MenuGateway] releaseAwaiting(${timeoutOnly ? 'timeout' : 'disabled'}, tenant ${tenantId}): ${ids.length} chat → queue tanpa tag${sentFallback ? `, fallbackText terkirim ke ${sentFallback}` : ''}`)
+  return { released: ids.length, ids, sentFallback }
 }
 
 // ─── Sweep timeout PER-TENANT PER-SLOT (interval 30 dtk, mulai post-WA-connect) ──
