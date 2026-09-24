@@ -496,6 +496,9 @@ async function releaseAwaiting(tenantId, timeoutOnly = false, timeoutSeconds = n
       where,
       select: { id: true, tenantId: true, waJid: true, numberSlot: true, contactName: true, contact: { select: { name: true } } },
       orderBy: { menuRequestedAt: 'asc' },
+      // v3.9.9b (audit M1b) — take 100/tick: mass-timeout dilepas bertahap;
+      // sisa ke-release tick berikutnya (fallback tetap terkirim per-batch).
+      take: 100,
     })
     for (const c of candidates) {
       const r = await prisma.chat.updateMany({
@@ -521,6 +524,15 @@ async function releaseAwaiting(tenantId, timeoutOnly = false, timeoutSeconds = n
     claimed = released.map(c => ({ id: c.id }))
   }
 
+  const ids = claimed.map(c => c.id)
+  for (const id of ids) {
+    broadcast.emitToTenant(tenantId, 'chat_update', { chatId: id, queuedAt: new Date(), menuState: 'done' })
+  }
+  const queue = require('../socket/queue')
+  queue.emitQueueUpdate(tenantId)
+  broadcast.emitToTenant(tenantId, 'menu_waiting_update', { count: await countWaiting(tenantId) })
+  // v3.9.9b (audit M1c) — UI sinkron DULU: broadcast sebelum loop kirim fallback;
+  // mass-timeout tidak menunda realtime antrean menunggu serial-send Baileys.
   // v3.9.9 — fallbackText terkirim ke chat yang ke-release karena TIMEOUT:
   // pelanggan yang tak bales menu tetap dapat kabar sebelum CS mengambil alih
   // (dulu silent release → kelihatannya diabaikan — lapor Kanaka 12:00).
@@ -530,6 +542,8 @@ async function releaseAwaiting(tenantId, timeoutOnly = false, timeoutSeconds = n
   if (timeoutOnly) {
     const cfg = slot !== null && slot !== undefined ? await getConfigForSlot(tenantId, slot) : await getConfig(tenantId)
     const fb = cfg && cfg.enabled ? String(cfg.fallbackText || '').trim() : ''
+    // v3.9.9b (audit L1, didokumentasikan): admin disable di antara klaim & fetch
+    // config → enabled=false → fb kosong → skip kirim; chat tetap ke-release (D11/D12).
     if (fb) {
       for (const chat of claimed) {
         try {
@@ -542,21 +556,19 @@ async function releaseAwaiting(tenantId, timeoutOnly = false, timeoutSeconds = n
     }
   }
 
-  const ids = claimed.map(c => c.id)
-  for (const id of ids) {
-    broadcast.emitToTenant(tenantId, 'chat_update', { chatId: id, queuedAt: new Date(), menuState: 'done' })
-  }
-  const queue = require('../socket/queue')
-  queue.emitQueueUpdate(tenantId)
-  broadcast.emitToTenant(tenantId, 'menu_waiting_update', { count: await countWaiting(tenantId) })
   console.log(`[MenuGateway] releaseAwaiting(${timeoutOnly ? 'timeout' : 'disabled'}, tenant ${tenantId}): ${ids.length} chat → queue tanpa tag${sentFallback ? `, fallbackText terkirim ke ${sentFallback}` : ''}`)
   return { released: ids.length, ids, sentFallback }
 }
 
 // ─── Sweep timeout PER-TENANT PER-SLOT (interval 30 dtk, mulai post-WA-connect) ──
 let sweepTimer = null
+let sweeping = false
 
 async function sweepOnce() {
+  // v3.9.9b (audit M1a) — anti-overlap: tick baru SKIP bila tick lama masih
+  // jalan (loop kirim fallback serial bisa memanjang saat mass-timeout).
+  if (sweeping) return
+  sweeping = true
   try {
     // v3.9.4 — per-tenant PER-SLOT: efektif config tiap slot di-resolve (row
     // slot-spesifik menang, fallback shared link-all), lalu release awaiting
@@ -576,6 +588,8 @@ async function sweepOnce() {
     }
   } catch (e) {
     console.error('[MenuGateway] sweep error:', e.message)
+  } finally {
+    sweeping = false
   }
 }
 

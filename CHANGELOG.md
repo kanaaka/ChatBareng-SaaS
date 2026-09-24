@@ -1,3 +1,21 @@
+## v3.9.9b — Tambalan audit Kimi-K3 v3.9.9 (GO-WITH-NOTES) (2026-09-24)
+
+**Verdict: 0 CRITICAL, 0 HIGH, 1 MEDIUM, 3 LOW, 5 INFO.** Semua fokus A–H PASS
+(race handleChoice aman, snapshot lengkap, jalur manual no-send, D11 konsisten,
+tanpa frontend).
+
+- **MEDIUM-1 (ditambal):** sweep anti-overlap (`sweeping` flag + finally) — tick
+  baru skip saat tick lama masih kirim fallback serial; candidates `take:100`
+  per-tick (mass-timeout dilepas bertahap); broadcast realtime DULU sebelum loop
+  kirim (antrean UI gak menunggu serial-send Baileys).
+- LOW-1 (dokumentasi): admin disable antara klaim & fetch config → skip kirim,
+  chat tetap ke-release (konsisten D11/D12).
+- LOW-2/3 diterima: return semantics manual (fire-and-forget callers), query
+  tanpa index menuState (volume kecil, PK-claim index-friendly).
+- INFO-4: hitungan E2E diperjelas — 10 check (A0..T4c), di commit note sbg 9
+  test-case (T2 pre+seed digabung).
+- E2E ulang dgn kode final: v3.9.9 SEMUA PASS + regresi 21/21 + 13/13 + 15/15 PASS.
+
 ## v3.9.9 — Fitur: fallbackText terkirim saat TIMEOUT (lapor Kanaka 24 Sep 12:00)
 
 **Test Kanaka:** timeout 30 dtk → chat masuk Unassigned ✅ sesuai desain, TAPI
