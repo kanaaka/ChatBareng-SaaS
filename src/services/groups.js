@@ -49,6 +49,70 @@ function assertWaReady(tenantId) {
   }
 }
 
+// ═══ v3.9.6 — Slot-aware grup ═══
+// Nomor pembuat grup (jadi admin WA) bisa DIPILIH via body.slot (0..MAX_SLOT).
+// Row grup menyimpan slot pemilik di numberSlot (1 grup = 1 baris, v3.9.2 K1-A);
+// SEMUA aksi grup (metadata/member/setting/invite/reset) lewat socket slot itu.
+// Row legacy (numberSlot 0) = perilaku lama persis. PM & invite-link ke participant
+// TETAP via slot-0 (status quo — isolasi chat 1:1 slot-0, documented).
+function assertWaReadySlot(tenantId, slot) {
+  const s = Number(slot) || 0
+  const st = wa.getStatusForTenant(tenantId, s)
+  if (!st.connected) {
+    const msg = s === 0
+      ? 'WhatsApp belum terhubung. Hubungkan WhatsApp dulu (halaman Admin → WhatsApp).'
+      : `Nomor slot ${s} belum terhubung. Hubungkan nomor itu dulu di halaman Admin → WhatsApp.`
+    throw new GroupServiceError('WA_BELUM_TERHUBUNG', 503, msg)
+  }
+}
+
+/** Validasi body.slot utk create: ada row TenantNumber + dalam rentang slot. */
+async function resolveCreateSlot(tenantId, raw) {
+  const max = Number(wa.MAX_SLOT) || 2
+  const s = Math.max(0, Math.min(Number(raw) || 0, max))
+  const row = await wa.getTenantNumber(tenantId, s)
+  if (!row) {
+    throw new GroupServiceError('VALIDATION', 400, `Slot ${s} tidak tersedia untuk tenant ini`)
+  }
+  return s
+}
+
+/** Slot pemilik row grup (row legacy = slot-0). */
+function slotOfRow(row) {
+  return Number(row?.numberSlot) || 0
+}
+
+/** Socket utk aksi row grup: slot pemilik (TANPA fallback — kalau slot mati, error jelas). */
+function getSocketForRow(tenantId, row) {
+  return wa.getSocketForTenant(tenantId, slotOfRow(row))
+}
+
+/** WA siap utk aksi row grup: slot PEMILIK wajib connected (bukan cek slot-0 legacy). */
+function assertWaReadyForRow(tenantId, row) {
+  assertWaReadySlot(tenantId, slotOfRow(row))
+}
+
+/**
+ * Metadata grup dari slot manapun yang connected & anggota (0..MAX_SLOT, asc).
+ * Return {metadata, slot} — dipakai jalur orphan (detail/adopt/leave).
+ */
+async function fetchGroupMetadataAnySlot(tenantId, chatId) {
+  const max = Number(wa.MAX_SLOT) || 2
+  let lastErr = null
+  for (let s = 0; s <= max; s++) {
+    const sock = wa.getSocketForTenant(tenantId, s)
+    if (!sock) continue
+    try {
+      const metadata = await sock.groupMetadata(chatId)
+      return { metadata, slot: s }
+    } catch (e) {
+      lastErr = e
+    }
+  }
+  if (lastErr) throw mapWaError(lastErr, 'groupMetadata')
+  throw new GroupServiceError('WA_BELUM_TERHUBUNG', 503, 'WhatsApp belum terhubung. Hubungkan WhatsApp dulu (halaman Admin → WhatsApp).')
+}
+
 /**
  * Peta error Baileys → error service. Bot bukan admin / bukan anggota grup =
  * 422 BOT_BUKAN_ADMIN (BUKAN 500) — spec §3/§5.
@@ -106,8 +170,8 @@ function normalizePhoneInputs(phonesRaw) {
 }
 
 // ─── Bot identity helpers ─────────────────────────────────────────────
-function getBotJids(tenantId) {
-  const sock = wa.getSocketForTenant(tenantId)
+function getBotJids(tenantId, slot = 0) {
+  const sock = wa.getSocketForTenant(tenantId, slot)
   const ids = new Set()
   const uid = sock?.user?.id
   if (uid) {
@@ -124,9 +188,9 @@ function digitsOf(jid) {
 }
 
 /** Apakah bot admin di metadata grup? (false jika bot tidak ditemukan) */
-function botIsAdminFromMetadata(tenantId, metadata) {
+function botIsAdminFromMetadata(tenantId, metadata, slot = 0) {
   if (!metadata || !Array.isArray(metadata.participants)) return false
-  const botJids = getBotJids(tenantId)
+  const botJids = getBotJids(tenantId, slot)
   const botDigits = new Set([...botJids].map(digitsOf))
   return metadata.participants.some(p => botJids.has(p.id) || botDigits.has(digitsOf(p.id)))
     && metadata.participants.some(p => (botJids.has(p.id) || botDigits.has(digitsOf(p.id))) && (p.isAdmin || p.admin === 'admin' || p.admin === 'superadmin'))
@@ -213,20 +277,36 @@ function isOrphanRow(chat) {
  * groupFetchAllParticipating saat admin buka halaman Grup. WA off → [].
  */
 async function listOrphanGroups(tenantId) {
-  const sock = wa.getSocketForTenant(tenantId)
-  const st = wa.getStatusForTenant(tenantId)
-  if (!sock || !st.connected) return []
+  // v3.9.6 — fetch yatim dari SEMUA slot connected (slot-0 saja bikin grup yang
+  // cuma di-invite ke nomor slot-1 tak kelihatan — QA Kanaka 24 Sep 10:47).
+  const max = Number(wa.MAX_SLOT) || 2
+  const merged = new Map()
+  let anyConnected = false
+  for (let s = 0; s <= max; s++) {
+    const sock = wa.getSocketForTenant(tenantId, s)
+    if (!sock) continue
+    anyConnected = true
+    try {
+      const all = await sock.groupFetchAllParticipating()
+      for (const [gid, meta] of Object.entries(all || {})) {
+        if (!isGroupJid(gid) || merged.has(gid)) continue
+        merged.set(gid, meta)
+      }
+    } catch (e) {
+      console.error(`[Groups] listOrphanGroups slot-${s} error (non-fatal):`, e.message)
+    }
+  }
+  if (!anyConnected) return []
   try {
-    const all = await sock.groupFetchAllParticipating()
-    const gids = Object.keys(all || {}).filter(isGroupJid)
+    const gids = [...merged.keys()]
     if (gids.length === 0) return []
     const known = await prisma.chat.findMany({ where: { tenantId, waJid: { in: gids } }, select: { waJid: true } })
     const knownSet = new Set(known.map(c => c.waJid))
     return gids.filter(gid => !knownSet.has(gid)).map(gid => ({
       id: gid,
-      name: all[gid]?.subject || gid,
+      name: merged.get(gid)?.subject || gid,
       phoneJid: gid,
-      memberCount: all[gid]?.size ?? null,
+      memberCount: merged.get(gid)?.size ?? null,
       orphan: true,
       isGroup: true,
       picUserId: null,
@@ -265,6 +345,7 @@ async function listGroups(user, tenantId) {
     isGroup: true,
     orphan: isOrphanRow(c),
     picUserId: c.picUserId,
+    numberSlot: Number(c.numberSlot) || 0, // v3.9.6 — slot nomor admin grup
     pic: c.assignedTo ? { id: c.assignedTo.id, username: c.assignedTo.username, role: c.assignedTo.role } : null,
     unreadCount: c.unreadCount || 0,
     lastMessageAt: c.lastMessageAt,
@@ -282,8 +363,10 @@ async function listGroups(user, tenantId) {
 }
 
 // ─── Detail ───────────────────────────────────────────────────────────
-async function fetchGroupMetadata(tenantId, chatId) {
-  const sock = wa.getSocketForTenant(tenantId)
+async function fetchGroupMetadata(tenantId, chatId, slot = null) {
+  // v3.9.6 — slot eksplisit = socket pemilik grup; null = fallback legacy slot-0
+  // (caller orphan tanpa row). Untuk row, SELALU pass slot row.
+  const sock = wa.getSocketForTenant(tenantId, slot == null ? 0 : slot)
   try {
     return await sock.groupMetadata(chatId)
   } catch (e) {
@@ -296,13 +379,13 @@ async function getGroupDetail(user, tenantId, chatId) {
   let row = await findGroupChat(tenantId, chatId)
   if (!row) {
     if (!isAdmin(user)) throw new GroupServiceError('FORBIDDEN', 403, 'Anda tidak memiliki akses ke grup ini')
-    assertWaReady(tenantId)
-    const metadata = await fetchGroupMetadata(tenantId, chatId)
+    // v3.9.6 — orphan: coba SEMUA slot connected (grup mungkin cuma di-invite ke slot-1).
+    const { metadata } = await fetchGroupMetadataAnySlot(tenantId, chatId)
     return buildDetailPayload(tenantId, null, metadata)
   }
   assertCanSee(user, row)
-  assertWaReady(tenantId)
-  const metadata = await fetchGroupMetadata(tenantId, chatId)
+  assertWaReadyForRow(tenantId, row)
+  const metadata = await fetchGroupMetadata(tenantId, chatId, slotOfRow(row))
   return buildDetailPayload(tenantId, row, metadata)
 }
 
@@ -319,7 +402,7 @@ async function buildDetailPayload(tenantId, row, metadata) {
     const contacts = await prisma.contact.findMany({ where: { tenantId, phone: { in: digits } }, select: { phone: true, name: true } })
     contactMap = new Map(contacts.map(c => [c.phone, c.name]))
   }
-  const botJids = getBotJids(tenantId)
+  const botJids = getBotJids(tenantId, row ? slotOfRow(row) : 0)
   const botDigits = new Set([...botJids].map(digitsOf))
 
   const members = (metadata.participants || []).map(p => {
@@ -339,12 +422,12 @@ async function buildDetailPayload(tenantId, row, metadata) {
     }
   })
 
-  const botIsAdmin = botIsAdminFromMetadata(tenantId, metadata)
+  const botIsAdmin = botIsAdminFromMetadata(tenantId, metadata, row ? slotOfRow(row) : 0)
 
   let inviteCode = metadata.inviteCode || null
   if (!inviteCode && botIsAdmin) {
     try {
-      inviteCode = await wa.getSocketForTenant(tenantId).groupInviteCode(metadata.id) || null
+      inviteCode = await wa.getSocketForTenant(tenantId, row ? slotOfRow(row) : 0).groupInviteCode(metadata.id) || null
     } catch (e) { /* non-fatal */ }
   }
 
@@ -357,6 +440,7 @@ async function buildDetailPayload(tenantId, row, metadata) {
       isGroup: true,
       orphan: isOrphanRow(row),
       picUserId: row.picUserId,
+      numberSlot: slotOfRow(row), // v3.9.6 — slot nomor admin grup
       pic: row.assignedTo ? { id: row.assignedTo.id, username: row.assignedTo.username } : null,
       unreadCount: row.unreadCount || 0,
       status: row.status,
@@ -399,6 +483,10 @@ async function createGroup(user, tenantId, body) {
   if (subject.length > 100) throw new GroupServiceError('VALIDATION', 400, 'Nama grup maksimal 100 karakter')
   const description = body.description != null ? String(body.description).trim().slice(0, 500) : null
 
+  // v3.9.6 — pilih nomor pembuat grup (jadi admin WA): body.slot (0..MAX_SLOT).
+  // Default 0 = status quo (nomor utama). Row TenantNumber wajib ada.
+  const createSlot = await resolveCreateSlot(tenantId, body.slot)
+
   // PIC: admin boleh pilih (termasuk cabang/relay — spec §3); CS → diri sendiri.
   let picUserId = user.id
   if (isAdmin(user) && body.picUserId != null) {
@@ -409,8 +497,8 @@ async function createGroup(user, tenantId, body) {
     picUserId = pic.id
   }
 
-  assertWaReady(tenantId)
-  const sock = wa.getSocketForTenant(tenantId)
+  assertWaReadySlot(tenantId, createSlot)
+  const sock = wa.getSocketForTenant(tenantId, createSlot)
   let metadata
   try {
     metadata = await sock.groupCreate(subject, [])
@@ -438,8 +526,9 @@ async function createGroup(user, tenantId, body) {
     assignedToId: picUserId, // born-assigned — guard existing otomatis jalan (spec §4)
     status: 'open',
     unreadCount: 0,
+    numberSlot: createSlot, // v3.9.6 — slot pemilik grup (nomor pembuat/admin WA)
   }
-  const chatUpdate = { picUserId, assignedToId: picUserId, queuedAt: null }
+  const chatUpdate = { picUserId, assignedToId: picUserId, queuedAt: null, numberSlot: createSlot }
   // v3.9.2 K1-A — grup (@g.us) TIDAK dipisah per slot (1 grup = 1 baris): lookup
   // by (tenantId, waJid) via findFirst; create selalu numberSlot 0 (slot grup).
   let chat
@@ -453,14 +542,14 @@ async function createGroup(user, tenantId, body) {
     chat = await prisma.chat.update({ where: { id: chat.id }, data: chatUpdate })
   }
 
-  await logAction(user.id, tenantId, chat.id, 'create', `subject="${subject}" picUserId=${picUserId}`)
+  await logAction(user.id, tenantId, chat.id, 'create', `subject="${subject}" picUserId=${picUserId} slot=${createSlot}`)
 
   // Anggota awal (opsional) → lewat groupParticipantsUpdate utk partial-failure
   // per-member (groupCreate tidak melaporkan kegagalan per nomor).
   let memberResults = []
   const phonesRaw = Array.isArray(body.phones) ? body.phones : (Array.isArray(body.participants) ? body.participants : [])
   if (phonesRaw.length) {
-    memberResults = await addParticipants(tenantId, gid, phonesRaw)
+    memberResults = await addParticipants(tenantId, gid, phonesRaw, createSlot)
     await logAction(user.id, tenantId, chat.id, 'add', `anggota awal: ${JSON.stringify(memberResults.map(r => ({ phone: r.phone, status: r.status })))}`)
   }
   // v0.14.7 — kontak LID-only (tanpa nomor asli): WA menolak add langsung →
@@ -504,11 +593,12 @@ async function createGroup(user, tenantId, body) {
  * Jalankan groupParticipantsUpdate → map hasil per-member (partial failure).
  * Return [{phone, status: 'ok'|'error', error?}]
  */
-async function addParticipants(tenantId, chatId, phonesRaw) {
+async function addParticipants(tenantId, chatId, phonesRaw, slot = 0) {
   const { jids, results } = normalizePhoneInputs(phonesRaw)
   if (!jids.length) return results
   for (const r of results) if (r.jid) r.sentJid = r.jid
-  const sock = wa.getSocketForTenant(tenantId)
+  // v3.9.6 — aksi member via socket slot PEMILIK grup
+  const sock = wa.getSocketForTenant(tenantId, Number(slot) || 0)
   let response
   try {
     response = await sock.groupParticipantsUpdate(chatId, jids, 'add')
@@ -581,8 +671,9 @@ function mergeParticipantResults(results, response, action = 'add') {
  * Mapping: groupMetadata v7 bawa phoneNumber utk tiap participant → digits → JID.
  * Nomor yg BELUM member (add) tidak ada di metadata → tetap phone-jid (WA resolve).
  */
-async function mapToParticipantJids(tenantId, chatId, jids) {
-  const sock = wa.getSocketForTenant(tenantId)
+async function mapToParticipantJids(tenantId, chatId, jids, slot = 0) {
+  // v3.9.6 — metadata via slot pemilik grup
+  const sock = wa.getSocketForTenant(tenantId, Number(slot) || 0)
   let meta
   try {
     meta = await sock.groupMetadata(chatId)
@@ -598,10 +689,11 @@ async function mapToParticipantJids(tenantId, chatId, jids) {
 }
 
 /** Verifikasi kebenaran final via metadata: participant yg kini anggota grup → ok. */
-async function reconcileWithMetadata(tenantId, chatId, results) {
+async function reconcileWithMetadata(tenantId, chatId, results, slot = 0) {
   const stillPendingErrors = results.filter(r => r.status === 'error' && r.error === 'Tidak ada respons dari WhatsApp')
   if (!stillPendingErrors.length) return results
-  const sock = wa.getSocketForTenant(tenantId)
+  // v3.9.6 — metadata via slot pemilik grup
+  const sock = wa.getSocketForTenant(tenantId, Number(slot) || 0)
   let meta
   try {
     meta = await sock.groupMetadata(chatId)
@@ -642,12 +734,13 @@ async function updateMembers(user, tenantId, chatId, body) {
     throw new GroupServiceError('VALIDATION', 400, 'phones[] atau lids[] wajib diisi')
   }
 
-  assertWaReady(tenantId)
-  const sock = wa.getSocketForTenant(tenantId)
+  assertWaReadyForRow(tenantId, row)
+  const gslot = slotOfRow(row)
+  const sock = wa.getSocketForTenant(tenantId, gslot)
 
   let results
   if (action === 'add') {
-    results = phonesRaw.length ? await addParticipants(tenantId, chatId, phonesRaw) : []
+    results = phonesRaw.length ? await addParticipants(tenantId, chatId, phonesRaw, gslot) : []
     // v0.14.7 — kontak LID-only: kirim link undangan ke chat 1:1 (join via link).
     if (lidsRaw.length) {
       const inviteResults = await sendGroupInviteLinks(user, tenantId, chatId, lidsRaw, row.contactName || 'grup')
@@ -660,7 +753,7 @@ async function updateMembers(user, tenantId, chatId, body) {
       // v0.14.3 — kirim JID participant asli (LID): remove/promote/demote dgn
       // phone-jid ke grup ber-LID ditolak WA (kasus remove grup hello 10:32).
       for (const r of results) if (r.jid) r.sentJid = r.jid
-      const targetJids = await mapToParticipantJids(tenantId, chatId, jids)
+      const targetJids = await mapToParticipantJids(tenantId, chatId, jids, gslot)
       let response
       try {
         response = await sock.groupParticipantsUpdate(chatId, targetJids, action)
@@ -707,20 +800,24 @@ async function sendGroupInviteLinks(user, tenantId, chatId, lidJids, groupName) 
   const row = await findGroupChat(tenantId, chatId)
   if (!row) throw new GroupServiceError('NOT_FOUND', 404, 'Grup tidak ditemukan')
   assertCanSee(user, row)
+  // v3.9.6 — PM/invite-link ke chat 1:1 TETAP slot-0 (isolasi 1:1 status quo) —
+  // tapi kode invite diambil via slot PEMILIK grup (yang mungkin admin WA).
   assertWaReady(tenantId)
   const sock = wa.getSocketForTenant(tenantId)
 
   // Invite code (pola getGroupDetail): metadata dulu; bot admin → groupInviteCode.
   let inviteCode = null
   try {
-    const metadata = await fetchGroupMetadata(tenantId, chatId)
+    const metadata = await fetchGroupMetadata(tenantId, chatId, slotOfRow(row))
     inviteCode = metadata?.inviteCode || null
-    if (!inviteCode && botIsAdminFromMetadata(tenantId, metadata)) {
-      inviteCode = await sock.groupInviteCode(chatId).catch(() => null)
+    if (!inviteCode && botIsAdminFromMetadata(tenantId, metadata, slotOfRow(row))) {
+      inviteCode = await wa.getSocketForTenant(tenantId, slotOfRow(row)).groupInviteCode(chatId).catch(() => null)
     }
   } catch (e) { /* non-fatal — fallback di bawah */ }
   if (!inviteCode) {
-    inviteCode = await sock.groupInviteCode(chatId).catch(() => null)
+    // Fallback: coba slot pemilik dulu, lalu slot-0 (legacy).
+    inviteCode = await wa.getSocketForTenant(tenantId, slotOfRow(row)).groupInviteCode(chatId).catch(() => null)
+    if (!inviteCode) inviteCode = await sock.groupInviteCode(chatId).catch(() => null)
   }
   if (!inviteCode) {
     throw new GroupServiceError('WA_GAGAL', 502, 'Gagal mengambil link undangan grup (pastikan bot masih anggota grup)')
@@ -853,8 +950,9 @@ async function updateGroupInfo(user, tenantId, chatId, body) {
   if (name != null && !name) throw new GroupServiceError('VALIDATION', 400, 'Nama grup tidak boleh kosong')
   if (name == null && description == null) throw new GroupServiceError('VALIDATION', 400, 'Tidak ada perubahan (name/description)')
 
-  assertWaReady(tenantId)
-  const sock = wa.getSocketForTenant(tenantId)
+  // v3.9.6 — rename/description via slot PEMILIK grup
+  assertWaReadyForRow(tenantId, row)
+  const sock = wa.getSocketForTenant(tenantId, slotOfRow(row))
   try {
     if (name) await sock.groupUpdateSubject(chatId, name)
     if (description != null) await sock.groupUpdateDescription(chatId, description)
@@ -883,9 +981,10 @@ async function updateSettings(user, tenantId, chatId, body) {
   const row = await findGroupChat(tenantId, chatId)
   if (!row) throw new GroupServiceError('NOT_FOUND', 404, 'Grup tidak ditemukan')
   assertCanSee(user, row)
-  assertWaReady(tenantId)
+  // v3.9.6 — settings via slot PEMILIK grup
+  assertWaReadyForRow(tenantId, row)
 
-  const sock = wa.getSocketForTenant(tenantId)
+  const sock = wa.getSocketForTenant(tenantId, slotOfRow(row))
   const applied = []
   const failed = []
   const truthy = v => v === true || v === 'true' || v === 1
@@ -924,8 +1023,9 @@ async function resetInvite(user, tenantId, chatId) {
   const row = await findGroupChat(tenantId, chatId)
   if (!row) throw new GroupServiceError('NOT_FOUND', 404, 'Grup tidak ditemukan')
   assertCanSee(user, row)
-  assertWaReady(tenantId)
-  const sock = wa.getSocketForTenant(tenantId)
+  // v3.9.6 — revoke invite via slot PEMILIK grup
+  assertWaReadyForRow(tenantId, row)
+  const sock = wa.getSocketForTenant(tenantId, slotOfRow(row))
   let code
   try {
     code = await sock.groupRevokeInvite(chatId)
@@ -952,8 +1052,9 @@ async function assignPic(user, tenantId, chatId, picUserIdRaw) {
   let row = await findGroupChat(tenantId, chatId)
   if (!row) {
     // Adopt grup yatim: buat row Chat born-assigned ke PIC (spec §3/§4).
-    assertWaReady(tenantId)
-    const metadata = await fetchGroupMetadata(tenantId, chatId)
+    // v3.9.6 — metadata via SEMUA slot (orphan bisa milik slot manapun);
+    // slot hasil temuan disimpan sbg pemilik row.
+    const { metadata, slot: foundSlot } = await fetchGroupMetadataAnySlot(tenantId, chatId)
     row = await prisma.chat.create({
       data: {
         tenantId,
@@ -965,9 +1066,10 @@ async function assignPic(user, tenantId, chatId, picUserIdRaw) {
         assignedToId: picUserId,
         status: 'open',
         unreadCount: 0,
+        numberSlot: foundSlot, // v3.9.6 — pemilik = slot yang punya grup di WA
       },
     })
-    await logAction(user.id, tenantId, row.id, 'assign_pic', `adopt yatim → PIC @${pic.username} (subject="${metadata.subject}")`)
+    await logAction(user.id, tenantId, row.id, 'assign_pic', `adopt yatim → PIC @${pic.username} (subject="${metadata.subject}" slot=${foundSlot})`)
   } else {
     await prisma.chat.update({
       where: { id: row.id },
@@ -1192,10 +1294,9 @@ async function saveParticipantContact(user, tenantId, chatId, pmJidRaw) {
   const row = await findGroupChat(tenantId, chatId)
   if (!row) throw new GroupServiceError('NOT_FOUND', 404, 'Grup tidak ditemukan')
   assertCanSee(user, row)
-  assertWaReady(tenantId)
-
   const pj = validateParticipantJid(pmJidRaw)
-  const metadata = await fetchGroupMetadata(tenantId, chatId)
+  // v3.9.6 — metadata utk cari participant via slot PEMILIK grup (row pasti ada di caller ini)
+  const metadata = await fetchGroupMetadata(tenantId, chatId, slotOfRow(row))
   const p = findParticipantInMetadata(metadata, pj)
 
   // Nomor asli: phone-jid → digits-nya sendiri; @lid → phoneNumber dari metadata.
@@ -1257,9 +1358,10 @@ async function pmParticipant(user, tenantId, chatId, pmJidRaw, body) {
   const sock = wa.getSocketForTenant(tenantId)
 
   // Nama profil WA (notify) utk contactName chat 1:1 — best-effort, non-fatal.
+  // v3.9.6 — metadata via slot PEMILIK grup (notify name konsisten dgn save-contact).
   let notifyName = null
   try {
-    const metadata = await fetchGroupMetadata(tenantId, chatId)
+    const metadata = await fetchGroupMetadata(tenantId, chatId, slotOfRow(row))
     const p = findParticipantInMetadata(metadata, pj)
     if (p) notifyName = (p.notify || '').trim() || null
   } catch (e) { /* non-fatal — kirim pesan tidak boleh gagal karena ini */ }
@@ -1368,14 +1470,15 @@ async function pmParticipant(user, tenantId, chatId, pmJidRaw, body) {
 /** Bot keluar dari grup (admin-only) — cleanup grup uji/orphan. */
 async function leaveGroup(user, tenantId, chatId) {
   if (!isAdmin(user)) throw new GroupServiceError('FORBIDDEN', 403, 'Hanya admin yang dapat mengeluarkan bot dari grup')
-  assertWaReady(tenantId)
-  const sock = wa.getSocketForTenant(tenantId)
+  // v3.9.6 — leave via slot manapun yang anggota (ops cleanup; row mungkin tidak ada)
+  const { slot } = await fetchGroupMetadataAnySlot(tenantId, chatId)
+  const sock = wa.getSocketForTenant(tenantId, slot)
   try {
     await sock.groupLeave(chatId)
   } catch (e) {
     throw mapWaError(e, 'groupLeave')
   }
-  await logAction(user.id, tenantId, 0, 'leave', `bot keluar dari grup (ops cleanup) jid=${chatId}`)
+  await logAction(user.id, tenantId, 0, 'leave', `bot keluar dari grup (ops cleanup) jid=${chatId} slot=${slot}`)
   emitGroupUpdate(tenantId, chatId)
   return { ok: true }
 }

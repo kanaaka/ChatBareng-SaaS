@@ -1,3 +1,37 @@
+## v3.9.6 — Grup slot-aware: pilih nomor admin grup + orphan multi-slot (2026-09-24)
+
+**Permintaan owner 10:47:** (1) bikin grup bisa PILIH nomor mana yang jadi admin WA;
+(2) grup yang cuma di-invite ke nomor slot-1 harus tetap kelihatan di menu Grup
+(sebelumnya fetch yatim CUMA slot-0 → grup slot-1 tak terlihat sama sekali).
+
+**Desain:** TANPA kolom baru — `Chat.numberSlot` pada row grup = slot PEMILIK grup
+(nomor pembuat/admin WA). Row legacy (slot-0) = perilaku lama persis. 1 grup = 1 baris
+(v3.9.2 K1-A) tetap.
+
+**Backend (services/groups.js):**
+- `createGroup` — body.slot (0..MAX_SLOT, wajib row TenantNumber) → groupCreate via
+  socket slot itu; row grup numberSlot = slot itu. Default 0 = status quo.
+- Slot-aware end-to-end: fetchGroupMetadata/addParticipants/updateMembers
+  (add/remove/promote/demote)/updateGroupInfo/updateSettings/resetInvite/invite-code
+  semuanya lewat socket slot PEMILIK row (bukan selalu slot-0).
+- assertWaReadySlot: pesan error per-slot ("Nomor slot 1 belum terhubung…").
+- Orphan: listOrphanGroups fetch dari SEMUA slot connected (merge by gid, dedup);
+  getGroupDetail + adopt (assignPic) + leaveGroup pakai fetchGroupMetadataAnySlot —
+  grup yatim milik slot manapun kini terlihat & bisa di-adopt.
+- buildDetailPayload/getBotJids/botIsAdminFromMetadata slot-aware (bot = nomor pemilik).
+- PM participant & invite-link ke chat 1:1 TETAP slot-0 (isolasi 1:1 status quo);
+  kode invite diambil via slot pemilik.
+- API create: body.slot; list/detail kini include numberSlot.
+
+**Frontend (GroupListPanel):** dropdown "Nomor pembuat grup (jadi admin WA)" di dialog
+Buat Grup — daftar slot + label + status connected, default Nomor utama; fetch on-open.
+
+**E2E v3.9.6 (scripts/e2e-v396.cjs): 15/15 PASS** — validasi slot (400 slot invalid/
+tanpa row; 503 WA off konsisten di create/settings/members/rename/invite-reset/leave),
+numberSlot persist per-row (legacy 0 + slot-1), adopt orphan 503 rapi.
+Regression v3.9.4 (21/21) + v3.9.5 (13/13) tetap PASS. Bonus test-hygiene:
+T8 limiter login kini pakai X-FF dummy fixed (bucket IP test utama tidak terbakar).
+
 ## v3.9.5b — Tambalan re-audit Kimi-K3 v3.9.5 (GO-WITH-NOTES) (2026-09-24)
 
 **Verdict re-audit d546967: GO-WITH-NOTES — 0 CRITICAL/HIGH/MEDIUM.** 2 LOW + 6 INFO.

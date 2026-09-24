@@ -102,8 +102,8 @@ async function main() {
     check('T7d routing assigned → 200', good.status === 200 && good.data?.number?.assignedAgentId === agent.id, JSON.stringify(good.data?.number || {}).slice(0, 140))
   }
 
-  // T9 — release awaiting SLOT-SCOPED (inti QA #6): disable menu slot-1 HANYA
-  // melepas awaiting milik slot-1; awaiting slot-0 tidak tersentuh.
+  // T9 — v3.9.6: semantik master-off (QA round-2 24 Sep): enabled=false = MATI
+  // TOTAL semua slot walau ada tick-box → awaiting SEMUA slot ke-release.
   try {
     const src = await prisma.chat.findFirst({ where: { tenantId: 4 } })
     check('T9 pre: ada chat tenant-4 utk clone', !!src)
@@ -120,8 +120,8 @@ async function main() {
       check('T9 menu-gw disable slot1 → 200', off.status === 200, JSON.stringify(off.data || {}).slice(0, 120))
       const a = await prisma.chat.findUnique({ where: { id: cA.id } })
       const b = await prisma.chat.findUnique({ where: { id: cB.id } })
-      check('T9b slot-0 awaiting TETAP (tidak ke-release)', a?.menuState === 'awaiting', 'menuState=' + a?.menuState)
-      check('T9c slot-1 awaiting → done (ke-release)', b?.menuState === 'done', 'menuState=' + b?.menuState)
+      check('T9b master-off → slot-0 awaiting ke-release (full-off)', a?.menuState === 'done', 'menuState=' + a?.menuState)
+      check('T9c master-off → slot-1 awaiting ke-release (full-off)', b?.menuState === 'done', 'menuState=' + b?.menuState)
       await prisma.chat.deleteMany({ where: { id: { in: [cA.id, cB.id] } } })
     }
   } catch (e) {
@@ -129,9 +129,18 @@ async function main() {
   }
 
   // T8 — login limiter (dijalankan TERAKHIR: bakar bucket login ±1 menit)
+  // v3.9.6 — T8 pakai X-Forwarded-For dummy (trust proxy loopback) supaya bucket
+  // login IP test utama TIDAK kebakar (dulu rerun E2E selalu 429 di A0 run berikut).
   let last = null
-  for (let i = 0; i < 16; i++) last = await api('POST', '/api/auth/login', { username: 'e2e-nope', password: 'x' })
-  check('T8 login ke-16 → 429 (limiter login terpisah)', last?.status === 429, 'status=' + last?.status)
+  for (let i = 0; i < 18; i++) {
+    const res = await fetch(BASE + '/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': '198.51.100.7' },
+      body: JSON.stringify({ username: 'e2e-nope', password: 'x' }),
+    })
+    last = { status: res.status, data: await res.json().catch(() => null) }
+  }
+  check('T8 login ke-18 → 429 (limiter login terpisah)', last?.status === 429, 'status=' + last?.status)
 
   console.log('\n=== RINGKASAN ===')
   console.log(fails.length === 0 ? 'SEMUA PASS ✅' : `FAIL: ${fails.join(', ')} ❌`)

@@ -115,6 +115,21 @@
               <p class="text-[11px] text-gray-400">Format 62… / 08… — nomor gagal dilaporkan per-member. Kontak LID-only dikirim link undangan via chat pribadi.</p>
             </div>
 
+            <!-- v3.9.6 — pilih nomor pembuat grup (jadi admin WA); default slot-0 -->
+            <div v-if="waSlotsOptions.length" class="space-y-1">
+              <label class="text-xs font-medium text-gray-600" for="group-slot-select">Nomor pembuat grup (jadi admin WA)</label>
+              <select
+                id="group-slot-select"
+                v-model.number="createForm.slot"
+                class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-wa-green"
+              >
+                <option v-for="s in waSlotsOptions" :key="s.slot" :value="s.slot">
+                  {{ s.slot === 0 ? 'Nomor utama' : (s.label || ('Nomor ' + (s.slot + 1))) }}{{ s.phoneNumber ? ' (' + s.phoneNumber + ')' : '' }}{{ s.connected ? '' : ' — belum terhubung' }}
+                </option>
+              </select>
+              <p class="text-[11px] text-gray-400">Nomor ini yang jadi admin grup di WhatsApp (add/kick/pengaturan lewat dia). Grup muncul di ChatBareng walau bot bukan admin.</p>
+            </div>
+
             <!-- Admin: dropdown PIC (default: admin sendiri) -->
             <div v-if="auth.isAdmin" class="space-y-1">
               <label class="text-xs font-medium text-gray-600" for="group-pic-select">PIC grup</label>
@@ -219,7 +234,26 @@ const listSubtitle = computed(() => {
 
 const showCreate = ref(false)
 const creating = ref(false)
-const createForm = ref({ name: '', description: '', phones: [], picUserId: null })
+const createForm = ref({ name: '', description: '', phones: [], picUserId: null, slot: 0 })
+
+// v3.9.6 — daftar nomor tenant utk dropdown pilih nomor pembuat grup
+const waSlotsOptions = ref([])
+async function fetchWaSlots() {
+  try {
+    const api = groupsClient(auth.token)
+    const res = await api.get('/api/wa/status')
+    const slots = res.data?.slots || []
+    waSlotsOptions.value = slots.map(s => ({
+      slot: Number(s.slot) || 0,
+      label: s.label || null,
+      phoneNumber: s.status?.phoneNumber || null,
+      connected: !!s.status?.connected,
+    }))
+  } catch (e) {
+    console.error('Fetch WA slots error:', e)
+    waSlotsOptions.value = []
+  }
+}
 
 const assignTarget = ref(null)
 const assignPicUserId = ref(null)
@@ -268,7 +302,9 @@ async function fetchPicCandidates() {
 // ─── Buat grup ─────────────────────────────────────────────────────────
 function openCreate() {
   // v0.14.1 — phones: [] (array string final dari GroupMemberPicker; backend yang normalisasi)
-  createForm.value = { name: '', description: '', phones: [], picUserId: auth.user.id }
+  // v3.9.6 — slot: 0 default (nomor utama); fetch daftar slot on-open (fresh status)
+  createForm.value = { name: '', description: '', phones: [], picUserId: auth.user.id, slot: 0 }
+  fetchWaSlots()
   showCreate.value = true
 }
 
@@ -284,6 +320,8 @@ async function submitCreate() {
       phones: all.filter(p => !p.includes('@')),
       // v0.14.7 — kontak LID-only (chatId "...@lid") → backend kirim link undangan 1:1
       lids: all.filter(p => p.includes('@')),
+      // v3.9.6 — nomor pembuat grup (jadi admin WA)
+      slot: Number(createForm.value.slot) || 0,
     }
     if (auth.isAdmin && createForm.value.picUserId) body.picUserId = createForm.value.picUserId
     const res = await api.post('/api/groups', body)
