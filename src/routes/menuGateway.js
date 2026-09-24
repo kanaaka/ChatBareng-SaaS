@@ -335,7 +335,7 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
     // Akar QA-2: slot dgn row scoped lama (mis. AR teks yang sudah dimatikan) TIDAK
     // pernah dapat menu via fallback shared → "tick gateway semua nomor" gak jalan.
     if (targetList === null && body.numberSlots !== undefined && body.enabled !== false) {
-      const nums = await prisma.tenantNumber.findMany({ where: { tenantId: req.tenantId }, select: { slot: true }, orderBy: { slot: 'asc' } })
+      const nums = await prisma.tenantNumber.findMany({ where: { tenantId: req.tenantId, slot: { in: [0, 1, 2] } }, select: { slot: true }, orderBy: { slot: 'asc' } })
       targetSlots = nums.map(n => Number(n.slot))
       if (targetSlots.length === 0) targetSlots = [0] // tenant fresh (slot-0 sintetis)
       targetList = targetSlots

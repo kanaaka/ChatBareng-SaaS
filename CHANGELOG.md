@@ -1,3 +1,18 @@
+## v3.9.5b — Tambalan re-audit Kimi-K3 v3.9.5 (GO-WITH-NOTES) (2026-09-24)
+
+**Verdict re-audit d546967: GO-WITH-NOTES — 0 CRITICAL/HIGH/MEDIUM.** 2 LOW + 6 INFO.
+
+- **LOW-1 (ditambal):** expand "Semua nomor" kini filter `slot in [0,1,2]` (defense-in-depth —
+  row slot >2 takkan pernah di-resolve runtime).
+- **I5 (ditambal):** skrip E2E v3.9.4 + v3.9.5 di-commit ke `scripts/` (reproducible):
+  e2e-v394.cjs, e2e-v395.cjs, e2e-reset-superadmin.cjs.
+- **LOW-2 (diterima):** race expand concurrent — idempoten + self-healing (P2002-catch);
+  pembungkusan $transaction besar opsional, tidak dilakukan (risiko rendah).
+- **INFO penting:** proteksi 409 link-all kini efektif utk caller legacy saja (UI baru selalu
+  kirim numberSlots → expand per-slot, proteksinya lebih ketat); legacy `{enabled:false}`
+  kini full-off semua slot (semantik master-off baru — sesuai QA-UX); tenant 1-nomor regresi
+  nihil observable; jalur runtime graceful pada inkonsistensi laten (revertClaim + anti-orphan).
+
 ## v3.9.5 — Fix QA round-2 Kanaka 09:38: gateway runtime mati + UX master-toggle (2026-09-24)
 
 **Hasil QA round-2 (09:38):** assigned per-agent ✅, rate limit ✅ (take banyak chat lancar), isolasi auto-reply ✅.
