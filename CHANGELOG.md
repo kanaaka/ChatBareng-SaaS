@@ -1,3 +1,22 @@
+# v3.9.18b — ENHANCEMENT: WA notify multi-target (2026-09-25)
+
+**Request (Kanaka 14:54):** tim Parahita juga mulai pakai ChatBareng — notif tunnel
+regen dikirim juga ke **grup Brandcom PDC** (tenant Parahita) pakai **API key
+Parahita** (`cbk_live_9Nz…`, scope send+read) — sekalian test jalur API kirim ke
+grup.
+
+**Perubahan:**
+- `state/saas_v3_notify.json` → format **multi-target**: `{ enabled, targets: [ … ] }`
+  (backward-compat: single-dict lama Zahrina era v3.9.18 tetap diterima).
+- `saas_v3_tunnel_watchdog.py` — `load_notify_config()` return **LIST** target +
+  `main()` loop: kirim per target, `wa_line` gabung hasil per target
+  ("Zahrina (Mazaya CS): terkirim ✅; Brandcom PDC (Parahita): terkirim ✅").
+- **Adopt grup Brandcom PDC** (orphan → assign PIC `parahitaadmin`) supaya
+  `resolveTarget` API v1 bisa resolve `@g.us` (butuh row Chat tenant).
+- QA kirim manual: Zahrina (single → 200, thread @lid existing), Brandcom PDC
+  (group, 200, `waMessageId 3EB085378F9ACB6CCDC9CA`), invalid slot 400, isolasi
+  tenant (t12 lihat slot-0 miliknya), partisi s0+s1 == baseline.
+
 # v3.9.17 — FITUR: Filter chat-list by nomor WA (numberSlot) (2026-09-25)
 
 **Request (Kanaka 14:16):** era multi-nomor (v3.9) — CS/admin bisa filter list chat
