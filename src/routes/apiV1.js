@@ -174,10 +174,12 @@ async function resolveTarget(tenantId, raw) {
   const s = String(raw || '').trim()
   if (!s) return { ok: false, error: 'Target kosong' }
 
-  // 1) JID eksplisit (grup WA asli = <digits>-<digits>@g.us → terima digit + dash)
+  // 1) JID eksplisit (grup WA asli = <digits>-<digits>@g.us → terima digit + dash;
+  //    v3.9.18 — JID @lid (WA modern, chat Zahrina dsb.) diterima JIKA row-nya ada
+  //    di tenant ini → notif masuk ke chat thread yang sama, bukan thread baru)
   if (s.includes('@')) {
-    if (!/^[\d-]+@(s\.whatsapp\.net|g\.us)$/.test(s)) {
-      return { ok: false, error: 'Format JID tidak valid (harus <digits>@s.whatsapp.net atau <digits>-<digits>@g.us)' }
+    if (!/^[\d-]+@(s\.whatsapp\.net|g\.us|lid)$/.test(s)) {
+      return { ok: false, error: 'Format JID tidak valid (harus <digits>@s.whatsapp.net, <digits>@lid, atau <digits>-<digits>@g.us)' }
     }
     if (s.endsWith('@g.us')) {
       const row = await prisma.chat.findFirst({
@@ -186,6 +188,17 @@ async function resolveTarget(tenantId, raw) {
         orderBy: { id: 'asc' },
       })
       if (!row) return { ok: false, error: 'Grup dengan JID tersebut tidak ditemukan di tenant ini' }
+      return { ok: true, jid: row.waJid, slot: Number(row.numberSlot) || 0 }
+    }
+    // v3.9.18 — JID @lid: resolve via row Chat yang sudah ada (jangan bikin thread
+    // baru — LID bukan nomor yang bisa di-normalisasi). Row gak ada → 400.
+    if (s.endsWith('@lid')) {
+      const row = await prisma.chat.findFirst({
+        where: { tenantId, waJid: s },
+        select: { waJid: true, numberSlot: true },
+        orderBy: { id: 'asc' },
+      })
+      if (!row) return { ok: false, error: 'JID @lid tidak ditemukan di chat tenant ini (tidak membuat thread baru)' }
       return { ok: true, jid: row.waJid, slot: Number(row.numberSlot) || 0 }
     }
     return { ok: true, jid: s, slot: 0 }
