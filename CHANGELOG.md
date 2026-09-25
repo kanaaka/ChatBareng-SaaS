@@ -1,4 +1,4 @@
-# v3.9.24 — FEATURE: AI Usage (cost metering + panel dashboard + rate tabel per-model) (GO Kanaka 2026-09-26 02:21) — RELEASED, MENUNGGU USER-VERIFY
+# v3.9.24 — FEATURE: AI Usage (cost metering + panel dashboard + rate tabel per-model) (GO Kanaka 2026-09-26 02:21) — RELEASED — USER-VERIFIED ✅ (Kanaka QA 02:47–02:56)
 
 **Request (Kanaka 02:04–02:21, spec `docs/spec-v3.9.24-ai-usage.md`):** setiap call LLM
 (summary/preview/test) dicatat ke `AiUsageLog`: token per jenis + latency + error +
