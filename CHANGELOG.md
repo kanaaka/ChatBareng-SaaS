@@ -1,3 +1,30 @@
+# v3.9.17 — FITUR: Filter chat-list by nomor WA (numberSlot) (2026-09-25)
+
+**Request (Kanaka 14:16):** era multi-nomor (v3.9) — CS/admin bisa filter list chat
+berdasarkan **nomor penerima pesannya** (slot 0/1/2), biar chat per nomor gak tercampur.
+
+**Backend (`src/routes/chats.js` GET /api/chats):**
+- Query param additive **`numberSlot`** (0–2; kosong/absent = tanpa filter slot —
+  compat semua caller lama). Invalid (bukan digit 0-2) → 400 VALIDATION.
+- CS juga boleh pakai (nomor milik tenant, bukan info lintas-CS); isolasi tenant
+  tetap via requireTenant (tenant lain lihat slot-nya sendiri).
+
+**Frontend (`ChatListPane.vue`):**
+- Dropdown **"All numbers"** di panel filter (sama baris dgn All handlers) —
+  **muncul HANYA bila tenant punya >1 nomor** (`waSlots.length > 1` — data badge
+  slot yang sama; tenant 1 nomor = UI nihil, zero change). Label = label slot
+  (atau `Slot N`) + ✓ kalau connected.
+- State `filterNumberSlot` (null = semua) + masuk `buildFilterParams()` →
+  socket-handler refetch ikut filter + counter badge Filters ikut +1 + tombol
+  Clear all filters me-reset-nya.
+
+**QA (copy 5099, tenant 11 & 12 + 2 slots seeded):** admin filter=all baseline
+2 chat slot-0; `numberSlot=0` → sama dgn baseline; `numberSlot=1` → chat slot-1
+tepat (7734 t12); `numberSlot=2` → 0; invalid `numberSlot=9` → 400; kombinasi
+`mine`/`unassigned` + handlerId → 200; isolasi tenant (t12 lihat slot-0 miliknya
+saja). Visual: dropdown tampil 2 slot dgn label + status ✓. Prod 5047 restart
+health 200.
+
 # v3.9.16b — FIX: Logo branding gak ke-render + logo gak bisa dihapus (2026-09-25)
 
 **Bug (lapor Kanaka 13:32, logo 512×512 dipasang di tenant Parahita):**

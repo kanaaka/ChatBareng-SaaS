@@ -349,6 +349,17 @@ router.get('/', ...rt, async (req, res) => {
       }
     }
 
+    // v3.9.17 — Filter by nomor penerima (numberSlot, additive): chat masuk lewat
+    // nomor WA slot N. Value "all" / kosong = tanpa filter slot (default semua nomor).
+    // CS juga boleh (nomor itu milik tenant, bukan info sensitif lintas-CS).
+    if (req.query.numberSlot !== undefined && req.query.numberSlot !== '') {
+      const ns = parseInt(req.query.numberSlot, 10)
+      if (!Number.isFinite(ns) || ns < 0 || ns > 2) {
+        return res.status(400).json({ error: 'numberSlot harus 0-2 (atau kosong = semua nomor)' })
+      }
+      where.numberSlot = ns
+    }
+
     // Filter by date range (lastMessageAt)
     const dateFrom = req.query.dateFrom
     const dateTo = req.query.dateTo

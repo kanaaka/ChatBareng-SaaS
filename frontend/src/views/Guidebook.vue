@@ -65,7 +65,7 @@
                 <li><strong>Pengaturan</strong> ⚙️ — profil, notifikasi, tema, panduan (halaman ini), logout.</li>
               </ul>
             </li>
-            <li>Di halaman Obrolan, filter atas: <strong>Mine</strong> (chat milikmu) dan <strong>Resolved</strong> (riwayat chat yang sudah kamu selesaikan). Kalau ada chat snoozed, muncul chip <strong>😴 Snoozed</strong> juga.</li>
+            <li>Di halaman Obrolan, filter atas: <strong>Mine</strong> (chat milikmu) dan <strong>Resolved</strong> (riwayat chat yang sudah kamu selesaikan). Kalau ada chat snoozed, muncul chip <strong>😴 Snoozed</strong> juga. Tenant multi-nomor? Panel <strong>Filters</strong> punya pilihan <strong>All numbers</strong> / nomor spesifik (v3.9.17) — chat bisa difilter per nomor penerima.</li>
           </ol>
           <div class="guide-tip">
             💡 <strong>Tip:</strong> Aktifkan notifikasi lewat Pengaturan → Notifikasi supaya chat baru masuk antrean tetap terlihat walau app di background.

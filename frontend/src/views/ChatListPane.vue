@@ -86,6 +86,20 @@
           <option v-for="agent in agentList" :key="agent.id" :value="agent.id">@{{ agent.username }}</option>
         </select>
 
+        <!-- v3.9.17 — Filter by nomor penerima (numberSlot): muncul hanya bila tenant
+             punya >1 nomor terdaftar. Data = waSlots (badge data yang sama). -->
+        <select
+          v-if="waSlots.length > 1"
+          v-model="filterNumberSlot"
+          @change="onFilterChange"
+          class="w-full px-2 py-1.5 text-xs border border-gray-200 rounded-lg focus:ring-1 focus:ring-wa-green focus:border-transparent text-gray-600"
+        >
+          <option :value="null">All numbers</option>
+          <option v-for="s in waSlots" :key="s.slot" :value="s.slot">
+            {{ slotBadgeLabel(s.slot) }}{{ s.status?.connected ? ' ✓' : '' }}
+          </option>
+        </select>
+
         <div class="flex items-center gap-1">
           <input
             v-model="filterDateFrom"
@@ -252,6 +266,8 @@ const filterTagIds = ref([])
 const filterHandlerId = ref(null)
 const filterDateFrom = ref('')
 const filterDateTo = ref('')
+// v3.9.17 — filter nomor penerima (null = semua nomor; 0..2 = slot)
+const filterNumberSlot = ref(null)
 const showTagFilterMenu = ref(false)
 const agentList = ref([])
 
@@ -308,6 +324,7 @@ const activeFilterCount = computed(() => {
   let count = 0
   if (filterTagIds.value.length > 0) count += filterTagIds.value.length
   if (filterHandlerId.value !== null) count++
+  if (filterNumberSlot.value !== null) count++ // v3.9.17
   if (filterDateFrom.value) count++
   if (filterDateTo.value) count++
   return count
@@ -330,6 +347,10 @@ function buildFilterParams() {
   }
   if (filterDateTo.value) {
     params.dateTo = filterDateTo.value
+  }
+  // v3.9.17 — nomor penerima (numberSlot)
+  if (filterNumberSlot.value !== null) {
+    params.numberSlot = filterNumberSlot.value
   }
   return params
 }
@@ -372,6 +393,7 @@ function removeFilterTag(tagId) {
 function clearFilters() {
   filterTagIds.value = []
   filterHandlerId.value = null
+  filterNumberSlot.value = null // v3.9.17
   filterDateFrom.value = ''
   filterDateTo.value = ''
   showTagFilterMenu.value = false
