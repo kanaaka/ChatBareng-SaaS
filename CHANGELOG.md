@@ -1,4 +1,4 @@
-# v3.9.23 — FEATURE: AI Chat Summary (Ollama Cloud) + AI Assistant SA + Format Summary per-tenant (GO Kanaka 2026-09-25)
+# v3.9.23 — FEATURE: AI Chat Summary (Ollama Cloud) + AI Assistant SA + Format Summary per-tenant (GO Kanaka 2026-09-25) — USER-VERIFIED ✅ (Kanaka QA 2026-09-26 01:42–02:01: "udah cek semuanya, working as intended")
 
 **Request (Kanaka 21:06–21:25, spec `docs/spec-v3.9.23-ai-summary.md`):** fitur summary sesi chat via
 Ollama Cloud — 100% mandiri dari OpenClaw/Alita (call langsung ke provider, key disimpan ENCRYPTED
