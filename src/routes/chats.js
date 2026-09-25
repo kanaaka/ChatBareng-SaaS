@@ -1855,7 +1855,8 @@ async function runSummaryForChat(chat, tplRow, aiCfg) {
     { role: 'system', content: llmService.buildSystemPrompt(template) },
     { role: 'user', content: `${meta}\n\n=== PERCAKAPAN ===\n${transcript}\n=== AKHIR PERCAKAPAN ===` },
   ]
-  const r = await llmService.aiChat({ messages })
+  // v3.9.24 — metering: source 'summary' + tenant/chat id utk AiUsageLog
+  const r = await llmService.aiChat({ messages, source: 'summary', tenantId: chat.tenantId, chatId: chat.id })
   if (!r.ok) return { err: { status: 502, code: r.code, message: r.message } }
   return {
     summaryText: r.content,
@@ -1957,7 +1958,7 @@ router.post('/summary-preview', ...stAdmin, async (req, res) => {
         content: `Kontak: Contoh Pelanggan\nNomor: 628000000000\nStatus chat: open\nTanggal: ${new Date().toISOString()}\n\n=== PERCAKAPAN ===\n${SAMPLE_TRANSCRIPT}\n=== AKHIR PERCAKAPAN ===`,
       },
     ]
-    const r = await llmService.aiChat({ messages })
+    const r = await llmService.aiChat({ messages, source: 'preview', tenantId: req.tenantId, chatId: null })
     if (!r.ok) return res.status(502).json({ error: r.message, code: r.code })
     return res.json({
       summaryText: r.content,

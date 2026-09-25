@@ -1703,4 +1703,233 @@ router.post('/ai-config/local-pull', ...sa, async (req, res) => {
   }
 })
 
+// ═══════════════ v3.9.24 — AI USAGE + AI RATES (additive murni, guard ...sa) ═══════════════
+// Spec docs/spec-v3.9.24-ai-usage.md §5. Snapshot per-call di AiUsageLog — edit rate
+// TIDAK PERNAH mengubah histori (D3). Key/token tidak pernah masuk response/audit.
+
+// PUT /api/sa/ai-rates → replace-all transaksional (pilihan desain: hapus-then-insert —
+// paling sederhana & aman; FE selalu kirim daftar penuh hasil edit, "hapus row" =
+// kirim daftar tanpa row itu; DELETE endpoint tetap ada utk hapus eksplisit 1 model).
+const AI_RATE_MODEL_RE = /^[a-zA-Z0-9._:\-\/]+$/
+const AI_RATES_MAX_ROWS = 100
+
+/** Validasi + normalisasi 1 row rate. → {row} | {error}. */
+function parseAiRateRow(raw, idx) {
+  const model = String(raw?.model ?? '').trim()
+  if (!model) return { error: `rates[${idx}].model wajib diisi` }
+  if (model.length > 64 || !AI_RATE_MODEL_RE.test(model)) {
+    return { error: `rates[${idx}].model tidak valid (1-64 char; huruf/angka/._:-/)` }
+  }
+  const inputPerM = Number(raw?.inputPerM)
+  const outputPerM = Number(raw?.outputPerM)
+  if (!Number.isFinite(inputPerM) || inputPerM < 0) return { error: `rates[${idx}].inputPerM harus angka >= 0` }
+  if (!Number.isFinite(outputPerM) || outputPerM < 0) return { error: `rates[${idx}].outputPerM harus angka >= 0` }
+  let cachedPerM = null // null/''/absent = pakai rate input (D7)
+  if (raw?.cachedPerM !== undefined && raw?.cachedPerM !== null && String(raw.cachedPerM).trim() !== '') {
+    const c = Number(raw.cachedPerM)
+    if (!Number.isFinite(c) || c < 0) return { error: `rates[${idx}].cachedPerM harus angka >= 0 (kosong = pakai input)` }
+    cachedPerM = c
+  }
+  return { row: { model, inputPerM, cachedPerM, outputPerM } }
+}
+
+async function aiUsdToIdr() {
+  const cfg = await prisma.aiConfig.findUnique({ where: { id: 1 } })
+  const v = Number(cfg?.usdToIdr)
+  return Number.isFinite(v) && v > 0 ? v : 16000
+}
+
+// GET /api/sa/ai-usage?range=today|7d|30d|all (default 7d) — dashboard panel SA.
+// perDay = sumbu tanggal WIB penuh (pola v3.9.20, zero-filled); perTenant hanya row
+// ber-tenant (source test tidak masuk); avgLatencyMs hanya row ok=true + latency ada.
+router.get('/ai-usage', ...sa, async (req, res) => {
+  try {
+    const raw = String(req.query.range || '7d').toLowerCase()
+    if (!['today', '7d', '30d', 'all'].includes(raw)) {
+      return res.status(400).json({ error: 'range harus today|7d|30d|all' })
+    }
+    const range = raw === 'today' ? { days: 1, label: 'today' }
+      : raw === '7d' ? { days: 7, label: '7d' }
+      : raw === '30d' ? { days: 30, label: '30d' }
+      : { days: null, label: 'all' }
+    const { sinceIso, dates } = await saStatsWindow(range)
+    const conds = []
+    const params = []
+    if (sinceIso != null) { conds.push('"createdAt" >= ?'); params.push(new Date(sinceIso)) }
+    const whereSql = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
+    // AiUsageLog.createdAt tersimpan INTEGER ms epoch (pola DateTime SQLite repo)
+    // → grouping strftime('/1000','unixepoch','+07:00') = WIB, pola v3.9.20.
+    const [totRows, dayRows, tenRows, untrRows] = await Promise.all([
+      prisma.$queryRawUnsafe(`
+        SELECT COUNT(*) AS calls,
+               COALESCE(SUM("promptTokens" + "cachedTokens" + "outputTokens"), 0) AS tokens,
+               COALESCE(SUM("costUsd"), 0) AS costUsd,
+               AVG(CASE WHEN "ok" = 1 AND "latencyMs" IS NOT NULL THEN "latencyMs" END) AS avgLatency,
+               SUM(CASE WHEN "ok" = 0 THEN 1 ELSE 0 END) AS errors,
+               SUM(CASE WHEN "viaFallback" = 1 THEN 1 ELSE 0 END) AS fallbacks,
+               COALESCE(SUM("wouldCostUsd"), 0) AS fallbackSavedUsd
+        FROM AiUsageLog ${whereSql}
+      `, ...params),
+      prisma.$queryRawUnsafe(`
+        SELECT strftime('%Y-%m-%d', "createdAt"/1000, 'unixepoch', '+07:00') AS day,
+               COUNT(*) AS calls, COALESCE(SUM("costUsd"), 0) AS costUsd
+        FROM AiUsageLog ${whereSql}
+        GROUP BY day ORDER BY day ASC
+      `, ...params),
+      prisma.$queryRawUnsafe(`
+        SELECT l."tenantId" AS tenantId, t."name" AS name,
+               COUNT(*) AS calls,
+               COALESCE(SUM(l."promptTokens" + l."cachedTokens" + l."outputTokens"), 0) AS tokens,
+               COALESCE(SUM(l."costUsd"), 0) AS costUsd,
+               MAX(l."createdAt") AS lastUsedAt
+        FROM AiUsageLog l LEFT JOIN Tenant t ON t."id" = l."tenantId"
+        ${conds.length ? 'WHERE l."createdAt" >= ? AND l."tenantId" IS NOT NULL' : 'WHERE l."tenantId" IS NOT NULL'}
+        GROUP BY l."tenantId", t."name" ORDER BY costUsd DESC, l."tenantId" ASC
+      `, ...params),
+      // untracked = distinct model dgn costUsd NULL di range (hanya ok=true —
+      // row gagal cost=0, bukan untracked, D4)
+      prisma.$queryRawUnsafe(`
+        SELECT DISTINCT "model" AS model FROM AiUsageLog
+        WHERE ${conds.length ? conds.join(' AND ') + ' AND ' : ''}"costUsd" IS NULL AND "ok" = 1
+        ORDER BY model ASC
+      `, ...params),
+    ])
+    const t = totRows[0] || {}
+    const dayMap = new Map(dayRows.map((r) => [String(r.day), r]))
+    res.json({
+      usdToIdr: await aiUsdToIdr(),
+      totals: {
+        calls: Number(t.calls) || 0,
+        tokens: Number(t.tokens) || 0,
+        costUsd: Number(t.costUsd) || 0,
+        avgLatencyMs: t.avgLatency == null ? null : Math.round(Number(t.avgLatency)),
+        errors: Number(t.errors) || 0,
+        fallbacks: Number(t.fallbacks) || 0,
+        fallbackSavedUsd: Number(t.fallbackSavedUsd) || 0,
+      },
+      perDay: dates.map((d) => {
+        const r = dayMap.get(d)
+        return { date: d, calls: Number(r?.calls) || 0, costUsd: Number(r?.costUsd) || 0 }
+      }),
+      perTenant: tenRows.map((r) => ({
+        tenantId: Number(r.tenantId),
+        name: r.name || `Tenant #${r.tenantId}`,
+        calls: Number(r.calls) || 0,
+        tokens: Number(r.tokens) || 0,
+        costUsd: Number(r.costUsd) || 0,
+        lastUsedAt: r.lastUsedAt == null ? null : new Date(Number(r.lastUsedAt)).toISOString(),
+      })),
+      untrackedModels: untrRows.map((r) => String(r.model)),
+    })
+  } catch (e) {
+    console.error('[SA] ai-usage GET error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/sa/ai-rates — { usdToIdr, rates: [{model, inputPerM, cachedPerM, outputPerM, updatedAt}] }
+router.get('/ai-rates', ...sa, async (req, res) => {
+  try {
+    const rows = await prisma.aiModelRate.findMany({ orderBy: { model: 'asc' } })
+    res.json({
+      usdToIdr: await aiUsdToIdr(),
+      rates: rows.map((r) => ({
+        model: r.model,
+        inputPerM: r.inputPerM,
+        cachedPerM: r.cachedPerM,
+        outputPerM: r.outputPerM,
+        updatedAt: r.updatedAt,
+      })),
+    })
+  } catch (e) {
+    console.error('[SA] ai-rates GET error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// PUT /api/sa/ai-rates — body { usdToIdr?, rates: [...] } (rates undefined = keep;
+// array = replace-all transaksional). Validasi: model regex 1..64 char, angka finite
+// >= 0, usdToIdr > 0, maks 100 row. Audit ai_rates_update (jumlah row, TANPA key/token).
+router.put('/ai-rates', ...sa, async (req, res) => {
+  try {
+    const b = req.body || {}
+    let usdUpdated = null
+    if (b.usdToIdr !== undefined && b.usdToIdr !== null) {
+      const v = Number(b.usdToIdr)
+      if (!Number.isFinite(v) || v <= 0) return res.status(400).json({ error: 'usdToIdr harus angka > 0' })
+      usdUpdated = v
+    }
+    let rows = null
+    if (b.rates !== undefined && b.rates !== null) {
+      if (!Array.isArray(b.rates)) return res.status(400).json({ error: 'rates harus array' })
+      if (b.rates.length > AI_RATES_MAX_ROWS) {
+        return res.status(400).json({ error: `rates maksimal ${AI_RATES_MAX_ROWS} row` })
+      }
+      rows = []
+      const seen = new Set()
+      for (let i = 0; i < b.rates.length; i++) {
+        const parsed = parseAiRateRow(b.rates[i], i)
+        if (parsed.error) return res.status(400).json({ error: parsed.error })
+        if (seen.has(parsed.row.model)) return res.status(400).json({ error: `rates: model duplikat "${parsed.row.model}"` })
+        seen.add(parsed.row.model)
+        rows.push(parsed.row)
+      }
+    }
+    if (usdUpdated != null) {
+      await prisma.aiConfig.upsert({
+        where: { id: 1 },
+        update: { usdToIdr: usdUpdated },
+        create: { id: 1, usdToIdr: usdUpdated },
+      })
+    }
+    if (rows != null) {
+      await prisma.$transaction(async (tx) => {
+        await tx.aiModelRate.deleteMany({})
+        if (rows.length) {
+          await tx.aiModelRate.createMany({
+            data: rows.map((r) => ({ ...r, updatedById: req.user?.id ?? null })),
+          })
+        }
+      })
+    }
+    await saAudit.audit(req.user, 'ai_rates_update', null, null, {
+      rateCount: rows == null ? null : rows.length,
+      usdToIdr: usdUpdated, // null = tidak diubah
+    })
+    const saved = await prisma.aiModelRate.findMany({ orderBy: { model: 'asc' } })
+    res.json({
+      usdToIdr: await aiUsdToIdr(),
+      rates: saved.map((r) => ({
+        model: r.model,
+        inputPerM: r.inputPerM,
+        cachedPerM: r.cachedPerM,
+        outputPerM: r.outputPerM,
+        updatedAt: r.updatedAt,
+      })),
+    })
+  } catch (e) {
+    console.error('[SA] ai-rates PUT error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// DELETE /api/sa/ai-rates/:model — hapus 1 rate (model jadi untracked, D4).
+// Audit ai_rates_delete. 404 bila model tidak ada.
+router.delete('/ai-rates/:model', ...sa, async (req, res) => {
+  try {
+    const model = String(req.params.model || '').trim()
+    if (!model || model.length > 64 || !AI_RATE_MODEL_RE.test(model)) {
+      return res.status(400).json({ error: 'Format model tidak valid' })
+    }
+    const existing = await prisma.aiModelRate.findUnique({ where: { model } })
+    if (!existing) return res.status(404).json({ error: 'Rate model tidak ditemukan' })
+    await prisma.aiModelRate.delete({ where: { model } })
+    await saAudit.audit(req.user, 'ai_rates_delete', null, null, { model })
+    res.json({ deleted: model })
+  } catch (e) {
+    console.error('[SA] ai-rates DELETE error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 module.exports = router

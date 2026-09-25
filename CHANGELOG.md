@@ -1,3 +1,127 @@
+# v3.9.24 — FEATURE: AI Usage (cost metering + panel dashboard + rate tabel per-model) (GO Kanaka 2026-09-26 02:21) — RELEASED, MENUNGGU USER-VERIFY
+
+**Request (Kanaka 02:04–02:21, spec `docs/spec-v3.9.24-ai-usage.md`):** setiap call LLM
+(summary/preview/test) dicatat ke `AiUsageLog`: token per jenis + latency + error +
+**cost USD yang dihitung & di-snapshot SAAT call** (D3 — edit rate TIDAK PERNAH mengubah
+histori) + flag fallback lokal (D5: costUsd=0 + wouldCostUsd). SA dashboard dapat SATU
+panel "AI Usage" (angka besar = COST, D1); Pengaturan SA dapat tabel rate per-model
+editable (D2) + field USD→IDR (D6). Seed rate = pricing resmi ollama.com/pricing
+(fetch 2026-09-26 02:19, 17 model — spec §7).
+
+**Audit & deploy (Alita):** Kimi K3 audit **GO-WITH-NOTES** (0 CRITICAL/HIGH; E2E re-run
+live 72/72 + regresi 121/121 PASS). Fix pre-deploy oleh Alita: MEDIUM-1 (`_savedModel`
+initial-load → Hapus-row konsisten panggil DELETE endpoint) + NIT-5 (EOF newline llm.js)
++ NIT-6 (komentar cross-ref §4). LOW-2 (range=all totals vs perDay clock-skew) &
+LOW-3 (regex PUT izinkan `/` tapi Express `:model` tak bisa bawa `/`) → backlog v3.9.25.
+Deploy prod 02:43–02:46: backup `backup/saas-v3-backup-20260926-0244-pre-v3924.db` →
+`migrate deploy` OK (AiUsageLog 19 kolom, AiModelRate 7, AiConfig.usdToIdr ada) → seed
+17 rate OK → restart PID 1714→13216 (health 200, 3 WA slot reconnect ✅) → smoke:
+ai-usage no-token 401, shape JSON benar (perDay zero-fill WIB), ai-rates 17 model.
+vite build ulang setelah fix (exit 0, `public/` fresh).
+
+**Migration (SATU, additive murni — 2 CREATE TABLE + 1 ADD COLUMN):**
+- `prisma/migrations/20260926023000_ai_usage/migration.sql` — tabel `AiUsageLog`
+  (snapshot per-call: rateInput/rateCached/rateOutput/costUsd/wouldCostUsd + index
+  createdAt & (tenantId, createdAt)) + `AiModelRate` (model @unique, per-1M-token USD,
+  cachedPerM NULL = pakai input, D7) + `AiConfig.usdToIdr REAL NOT NULL DEFAULT 16000`.
+  Tidak ada kolom/tabel existing yang diubah/dihapus. Prod: `npx prisma migrate deploy`
+  saat release (copy-DB path = apply SQL manual + record checksum, pola proven v3.9.14/23).
+
+**Backend — service `src/services/llm.js` (additive):**
+- `aiChat()` opsi baru `source` ('summary'|'preview'|'test', default 'summary') +
+  `tenantId` + `chatId` — di-pass dari caller (chats.js summary/preview, superadmin test).
+- `chatOnce()` tangkap usage dari response provider: `prompt_eval_count` (prompt),
+  `eval_count` (output), `prompt_eval_cached_count` (cached subset) — provider tidak
+  kasih → 0 (spec §4).
+- `resolveRate(model)`: exact nama → strip `:suffix` (D8, 'gemma4:31b'→'gemma4') → null.
+- `computeCost(usage, rate)`: `uncached = max(prompt−cached, 0)`; `costUsd =
+  (uncached×input + cached×(cachedPerM ?? input) + output×output)/1e6` (cachedPerM NULL
+  → pakai rate input, D7).
+- `logAiUsage()`: BEST-EFFORT (try/catch swallow — gagal metering tidak pernah
+  menggagalkan call utama), di-AWAIT di semua exit aiChat + aiTestConnection (deterministik
+  utk E2E; tetap best-effort). ok=true: costUsd = hitungan rate saat call; viaFallback →
+  costUsd=0 + wouldCostUsd = est. via rate PRIMARY cloud (dihitung walau model lokal tanpa
+  rate — D5). ok=false: tokens 0, costUsd 0, errorCode disimpan. NO_CONFIG / EMPTY_WINDOW /
+  429 cooldown TIDAK di-log (bukan pemakaian, spec §4). Key/token tidak pernah masuk row.
+
+**Backend — Superadmin (`src/routes/superadmin.js` — additive murni, guard `...sa`):**
+- `GET /api/sa/ai-usage?range=today|7d|30d|all` (default 7d; 400 utk range lain) →
+  `{ usdToIdr, totals:{calls,tokens,costUsd,avgLatencyMs,errors,fallbacks,fallbackSavedUsd},
+  perDay (WIB zero-filled, pola v3.9.20 strftime '+07:00'), perTenant (hanya row
+  ber-tenant; name dari Tenant; lastUsedAt ISO), untrackedModels (distinct costUsd NULL
+  dgn ok=true di range — D4) }`. avgLatencyMs hanya row ok=true + latency ada.
+- `GET /api/sa/ai-rates` → `{ usdToIdr, rates:[{model,inputPerM,cachedPerM,outputPerM,updatedAt}] }`.
+- `PUT /api/sa/ai-rates` — body `{usdToIdr?, rates?}`: usdToIdr > 0 (upsert AiConfig);
+  rates = REPLACE-ALL transaksional (deleteMany + createMany dalam $transaction — pilihan
+  paling sederhana & aman; FE kirim daftar penuh). Validasi: model regex
+  `^[a-zA-Z0-9._:\-\/]+$` 1..64 char, angka finite ≥ 0, duplikat → 400, maks 100 row.
+  Audit `ai_rates_update` (rateCount + usdToIdr, TANPA key/token).
+- `DELETE /api/sa/ai-rates/:model` → 404 bila tidak ada; audit `ai_rates_delete`.
+- Semua endpoint SA-only (CS/admin tenant → 403, tanpa token → 401).
+
+**Backend — callers (`src/routes/chats.js` — 2 baris additive):** summary →
+`source:'summary', tenantId, chatId`; preview → `source:'preview', tenantId, chatId:null`.
+
+**Seed — `prisma/seed-ai-rates.js` (NEW, pola seed-api-access.js):** idempoten
+upsert 17 model (glm-5.3-flash, glm-5.3, glm-5.2, kimi-k3, kimi-k2.6, kimi-k2.7-code,
+deepseek-v4.1-flash, deepseek-v4-pro, minimax-m3, minimax-m2.7, gpt-oss:120b, gpt-oss:20b,
+gemma4, mistral-large-3, nemotron-3-nano, nemotron-3-super, nemotron-3-ultra).
+`usdToIdr` TIDAK di-set script (default kolom 16000). Dijalankan Alita saat deploy
+(`node prisma/seed-ai-rates.js` — argumen path = DB copy utk E2E).
+
+**Frontend:**
+- `SaOverview.vue` — panel "AI Usage" SETELAH panel Storage Tangan Kanan: range tab
+  Today/7 Hari/30 Hari/Semua (default 7 hari, per-panel sendiri), angka besar cost USD
+  (≥$0.01 → 2 desimal; <$0.01 → 4 desimal) + "≈ Rp" (Math.round × usdToIdr, locale
+  id-ID, dihitung saat render — D6), subtitle "N call · M token · K error", mini bar
+  cost/hari (maks 14 bar, div/CSS — TANPA instance Chart.js baru), tap judul → expand
+  inline (D1): 4 stats sekunder (calls, tokens, avg latency detik, error & fallback +
+  "hemat $X via lokal" bila fallbackSavedUsd > 0) + tabel per-tenant (Tenant/Calls/
+  Tokens/Cost/Terakhir) + warning untrackedModels ("… belum di-set rate — cost gak
+  terlacak") + hint "Atur rate di Pengaturan → AI Assistant". Loading + empty state
+  "Belum ada pemakaian AI". Refresh via loadOverview/refreshPanel mechanism. NO v-html.
+- `SaPengaturan.vue` — section "Tabel Harga (per 1 juta token, USD)" di dalam panel
+  AI Assistant: tabel editable per-row (model | input | cached kosong=pakai input |
+  output | tombol Hapus), tombol "+ Tambah Model", field USD→IDR, Muat Ulang Rate,
+  Simpan Rate → PUT (toast sukses; note "Rate berlaku untuk call berikutnya. Histori
+  lama tidak berubah (snapshot per-call)"). Hapus row tersimpan = DELETE endpoint
+  eksplisit; row baru belum tersimpan = hapus dari array lokal (PUT semantics =
+  replace-all terdokumentasi di kode). Load rates saat panel dibuka (onMounted).
+
+**E2E (`scripts/e2e-v3924.cjs` — NEW, 72 check):** mock LLM 127.0.0.1:11435 WAJIB return
+token fields (700/100/50 deterministik). N1 summary → row + costUsd hitungan PERSIS
+(0.000118, tol 1e-9) + snapshot rate seed; N2 preview/test rows (test = tenantId null);
+N3 model tanpa rate → costUsd null + untracked; N4 snapshot semantics (PUT rate baru →
+call baru pakai rate baru 0.000143; row LAMA utuh; rate di-restore via seed); N5 fallback
+→ costUsd=0 + wouldCostUsd=0.000118 + fallbackSavedUsd di totals; N6 error 500 →
+ok=false + UPSTREAM_5XX + tokens 0 + cost 0; N7 range stats lintas hari (seed sintetis
+d−2 & d−40) → today/7d/30d/all + perDay zero-filled WIB + perTenant t8/t10 terpisah +
+total = sum perDay; N8 DELETE rate → call baru costUsd NULL → untrackedModels + audit;
+N9 validasi PUT (karakter liar/negatif/kurs≤0/>64char/>100row → 400; PUT valid → echo +
+audit tanpa key); N10 SA-only (CS/admin → 403, tanpa token → 401, DELETE/PUT juga).
+**72/72 PASS ×2 beruntun. Regresi e2e-v3919.cjs 121/121 PASS** (server copy port 5099,
+DATABASE_URL eksplisit file:/tmp/saas-v3-e2e.db, WA_DISABLED=1; prod 5047 tak disentuh).
+
+**Gates:** `node --check` llm/superadmin/chats/e2e-v3924/seed OK; `npx vite build` exit 0
+(2.90s, outDir ../public); `prisma format`+`validate`+`generate` OK; E2E check( count
+programmatic (`grep -c 'check(' scripts/e2e-v3924.cjs`) = **73** (72 runtime check + 1
+definisi helper; v3919 = 117 definisi/runtime = 121 hasil karena 4 check dipanggil
+2× dalam loop kondisional).
+
+**Catatan implementasi / deviation (semua terdokumentasi di kode):**
+- `logAiUsage` di-AWAIT (bukan fire-and-forget): SQLite lokal + try/catch swallow →
+  deterministik utk E2E & risk sama-kecil; prinsip best-effort dipertahankan.
+- wouldCostUsd dihitung dari rate PRIMARY cloud walau model lokal TIDAK punya rate
+  (interpretasi konsisten D5: "estimasi pakai rate model primary cloud" — fallbackSavedUsd
+  jadi lebih akurat; model lokal tanpa rate tetap costUsd=0).
+- PUT ai-rates = REPLACE-ALL (hapus-then-insert transaksional) — spec §5 izinkan pilih
+  "paling sederhana & aman"; FE selalu kirim daftar penuh.
+- N8 E2E: untracked = distinct costUsd NULL **di range** — row lama snapshot tetap
+  ber-cost; assert dilakukan dgn call BARU model tsb setelah DELETE (konsisten D3+D4).
+- untrackedModels hanya row ok=true (row gagal = cost 0, bukan untracked).
+- Copy-DB E2E: migration di-apply manual (pola proven, bookkeeping _prisma_migrations
+  dgn checksum 'manual-copy-db'); ADDITIVE ONLY — tidak ada reset/drop/data-loss.
+
 # v3.9.23 — FEATURE: AI Chat Summary (Ollama Cloud) + AI Assistant SA + Format Summary per-tenant (GO Kanaka 2026-09-25) — USER-VERIFIED ✅ (Kanaka QA 2026-09-26 01:42–02:01: "udah cek semuanya, working as intended")
 
 **Request (Kanaka 21:06–21:25, spec `docs/spec-v3.9.23-ai-summary.md`):** fitur summary sesi chat via

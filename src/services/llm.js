@@ -86,9 +86,10 @@ async function getAiConfig() {
  * Fallback logic: primary gagal (NETWORK/TIMEOUT/5XX) + fallbackEnabled + local
  * reachable (ping /api/tags 2s) → retry 1x ke local, flag viaFallback:true.
  */
-async function aiChat({ messages, model = null, timeoutMs = CHAT_TIMEOUT_MS, fallback = true }) {
+async function aiChat({ messages, model = null, timeoutMs = CHAT_TIMEOUT_MS, fallback = true, source = 'summary', tenantId = null, chatId = null }) {
   const cfg = await getAiConfig()
   if (!cfg || !cfg.cloudBaseUrl || !cfg.cloudModel || !cfg.apiKey) {
+    // v3.9.24 — NO_CONFIG / 400 / 429 cooldown TIDAK di-log (bukan pemakaian, spec §4)
     return { ok: false, code: 'NO_CONFIG', message: 'AI belum dikonfigurasi. Hubungi admin platform.' }
   }
   const primaryModel = model || cfg.cloudModel
@@ -99,15 +100,48 @@ async function aiChat({ messages, model = null, timeoutMs = CHAT_TIMEOUT_MS, fal
     messages,
     timeoutMs,
   })
-  if (primary.ok) return { ...primary, viaFallback: false }
+  if (primary.ok) {
+    await logAiUsage({
+      source, tenantId, chatId,
+      model: primary.model || primaryModel,
+      primaryModel: null,
+      viaFallback: false,
+      latencyMs: primary.latencyMs,
+      ok: true,
+      usage: primary.usage,
+    })
+    return { ...primary, viaFallback: false }
+  }
 
   // Fallback path — HANYA utk failure teknis (bukan 401 auth / NO_CONFIG).
   const canFallback =
     fallback && cfg.fallbackEnabled && cfg.localBaseUrl && ['NETWORK', 'TIMEOUT', 'UPSTREAM_5XX'].includes(primary.code)
-  if (!canFallback) return primary
+  if (!canFallback) {
+    await logAiUsage({
+      source, tenantId, chatId,
+      model: primaryModel,
+      primaryModel: null,
+      viaFallback: false,
+      latencyMs: primary.latencyMs,
+      ok: false,
+      errorCode: primary.code,
+      usage: null,
+    })
+    return primary
+  }
 
   const reachable = await pingLocal(cfg.localBaseUrl)
   if (!reachable) {
+    await logAiUsage({
+      source, tenantId, chatId,
+      model: primaryModel,
+      primaryModel: null,
+      viaFallback: false,
+      latencyMs: primary.latencyMs,
+      ok: false,
+      errorCode: primary.code,
+      usage: null,
+    })
     return {
       ...primary,
       message: `AI cloud gagal (${primary.code}) dan fallback lokal tidak terdeteksi di ${cfg.localBaseUrl}.`,
@@ -121,7 +155,28 @@ async function aiChat({ messages, model = null, timeoutMs = CHAT_TIMEOUT_MS, fal
     messages,
     timeoutMs,
   })
-  if (retry.ok) return { ...retry, viaFallback: true }
+  if (retry.ok) {
+    await logAiUsage({
+      source, tenantId, chatId,
+      model: retry.model || localModel,
+      primaryModel, // model cloud utama — utk wouldCostUsd (D5)
+      viaFallback: true,
+      latencyMs: retry.latencyMs,
+      ok: true,
+      usage: retry.usage,
+    })
+    return { ...retry, viaFallback: true }
+  }
+  await logAiUsage({
+    source, tenantId, chatId,
+    model: retry.model || localModel,
+    primaryModel,
+    viaFallback: true,
+    latencyMs: (primary.latencyMs || 0) + (retry.latencyMs || 0),
+    ok: false,
+    errorCode: retry.code,
+    usage: null,
+  })
   return {
     ok: false,
     code: retry.code,
@@ -131,7 +186,10 @@ async function aiChat({ messages, model = null, timeoutMs = CHAT_TIMEOUT_MS, fal
   }
 }
 
-/** Satu call chat ke satu baseUrl. Error → {ok:false, code, message} (key tidak pernah dilog). */
+/** Satu call chat ke satu baseUrl. Error → {ok:false, code, message} (key tidak pernah dilog).
+ * v3.9.24 — response provider diperiksa utk usage fields (jika ada):
+ * prompt_eval_count (prompt), eval_count (output), prompt_eval_cached_count (cached subset).
+ * Provider tidak menyediakan → 0 (spec §4). */
 async function chatOnce({ baseUrl, apiKey, model, messages, timeoutMs }) {
   const started = Date.now()
   const ctrl = new AbortController()
@@ -160,7 +218,13 @@ async function chatOnce({ baseUrl, apiKey, model, messages, timeoutMs }) {
     if (content == null) {
       return { ok: false, code: 'NETWORK', message: 'Respon AI tidak dikenali (message.content kosong).', latencyMs }
     }
-    return { ok: true, content, model: data?.model || model, latencyMs }
+    // v3.9.24 — tangkap usage dari response (best-effort; provider tidak menyediakan → 0)
+    const usage = {
+      promptTokens: Math.max(0, Number(data?.prompt_eval_count) || 0),
+      cachedTokens: Math.max(0, Number(data?.prompt_eval_cached_count) || 0),
+      outputTokens: Math.max(0, Number(data?.eval_count) || 0),
+    }
+    return { ok: true, content, model: data?.model || model, latencyMs, usage }
   } catch (e) {
     const latencyMs = Date.now() - started
     if (e?.name === 'AbortError') {
@@ -183,6 +247,120 @@ async function pingLocal(localBaseUrl) {
     return false
   } finally {
     clearTimeout(timer)
+  }
+}
+
+// ═════════ v3.9.24 — AI USAGE (cost metering, spec docs/spec-v3.9.24-ai-usage.md §4) ═════════
+// Snapshot pricing SAAT CALL (D3): rate dibaca di sini, cost dihitung & disimpan per-row —
+// edit rate TIDAK PERNAH mengubah histori. logAiUsage best-effort: try/catch swallow —
+// GAK BOLEH bikin call utama gagal. Key/token tidak pernah masuk row/log.
+
+/**
+ * resolveRate(model) → { inputPerM, cachedPerM, outputPerM } | null.
+ * Match: exact nama → strip ':suffix' (D8: 'gemma4:31b'→'gemma4') → null.
+ */
+async function resolveRate(model) {
+  const name = String(model || '').trim()
+  if (!name) return null
+  try {
+    let row = await prisma.aiModelRate.findUnique({ where: { model: name } })
+    if (!row && name.includes(':')) {
+      const base = name.split(':')[0]
+      row = await prisma.aiModelRate.findUnique({ where: { model: base } })
+    }
+    if (!row) return null
+    return { inputPerM: row.inputPerM, cachedPerM: row.cachedPerM, outputPerM: row.outputPerM }
+  } catch (e) {
+    console.error('[LLM] resolveRate error (non-fatal):', e.message)
+    return null
+  }
+}
+
+/**
+ * computeCost(usage, rate) → costUsd (Float) | null (rate null = model tanpa rate, D4).
+ * Formula (spec §4): uncached = max(prompt − cached, 0);
+ * cost = (uncached×input + cached×(cachedPerM ?? input) + output×output) / 1e6.
+ * cachedPerM NULL → token cached dihitung pakai rate input (konservatif, D7).
+ */
+function computeCost(usage, rate) {
+  if (!rate) return null
+  const prompt = Math.max(0, Number(usage?.promptTokens) || 0)
+  const cached = Math.min(prompt, Math.max(0, Number(usage?.cachedTokens) || 0))
+  const output = Math.max(0, Number(usage?.outputTokens) || 0)
+  const uncached = Math.max(prompt - cached, 0)
+  const rateCached = rate.cachedPerM == null ? rate.inputPerM : rate.cachedPerM
+  return (uncached * rate.inputPerM + cached * rateCached + output * rate.outputPerM) / 1e6
+}
+
+/**
+ * logAiUsage({...}) — tulis 1 row AiUsageLog. BEST-EFFORT: semua error di-swallow
+ * (log console saja) — kegagalan metering tidak pernah menggagalkan call utama.
+ * Row utk call yang menyentuh provider SAJA (NO_CONFIG/EMPTY_WINDOW/429 tidak di-log).
+ * - ok=true  : costUsd = computeCost(usage, resolveRate(model)); viaFallback → costUsd=0
+ *              + wouldCostUsd = est. via rate primaryModel (D5).
+ * - ok=false : tokens 0, costUsd = 0, errorCode disimpan.
+ */
+async function logAiUsage({ source = 'summary', tenantId = null, chatId = null, model, primaryModel = null, viaFallback = false, latencyMs = null, ok = true, errorCode = null, usage = null }) {
+  try {
+    const usedModel = String(model || '').trim()
+    if (!usedModel) return
+    const safeSource = ['summary', 'preview', 'test'].includes(source) ? source : 'summary'
+    let promptTokens = 0
+    let cachedTokens = 0
+    let outputTokens = 0
+    let costUsd = null
+    let wouldCostUsd = null
+    let rateInput = null
+    let rateCached = null
+    let rateOutput = null
+    if (ok) {
+      promptTokens = Math.max(0, Number(usage?.promptTokens) || 0)
+      cachedTokens = Math.max(0, Number(usage?.cachedTokens) || 0)
+      outputTokens = Math.max(0, Number(usage?.outputTokens) || 0)
+      if (viaFallback) {
+        // D5: fallback lokal = costUsd 0 + wouldCostUsd = est. via rate PRIMARY cloud
+        // (dihitung walau model lokal tanpa rate — wouldCost tergantung rate primary).
+        costUsd = 0
+        if (primaryModel) {
+          const primaryRate = await resolveRate(primaryModel)
+          wouldCostUsd = primaryRate ? computeCost(usage, primaryRate) : null
+        }
+      } else {
+        const rate = await resolveRate(usedModel)
+        if (rate) {
+          rateInput = rate.inputPerM
+          rateCached = rate.cachedPerM
+          rateOutput = rate.outputPerM
+          costUsd = computeCost(usage, rate) // null tak mungkin di sini (rate ada)
+        }
+        // rate null → costUsd tetap null (model tanpa rate, D4 — token tetap tercatat)
+      }
+    } else {
+      costUsd = 0 // gagal → 0 (§4: ok=false → tokens 0, cost 0; D4 cuma utk model tanpa rate)
+    }
+    await prisma.aiUsageLog.create({
+      data: {
+        tenantId: tenantId == null ? null : Number(tenantId),
+        chatId: chatId == null ? null : Number(chatId),
+        source: safeSource,
+        model: usedModel.slice(0, 120),
+        primaryModel: primaryModel == null ? null : String(primaryModel).slice(0, 120),
+        viaFallback: !!viaFallback,
+        promptTokens,
+        cachedTokens,
+        outputTokens,
+        latencyMs: latencyMs == null ? null : Math.max(0, Math.round(Number(latencyMs) || 0)),
+        ok: !!ok,
+        errorCode: ok ? null : String(errorCode || 'NETWORK').slice(0, 40),
+        rateInput,
+        rateCached,
+        rateOutput,
+        costUsd,
+        wouldCostUsd,
+      },
+    })
+  } catch (e) {
+    console.error('[LLM] logAiUsage error (non-fatal):', e.message)
   }
 }
 
@@ -231,6 +409,19 @@ async function aiTestConnection({ baseUrl, apiKey, model, timeoutMs = 30000 }) {
     messages: [{ role: 'user', content: 'Balas persis satu kata: siap' }],
     timeoutMs,
   })
+  // v3.9.24 — tes koneksi juga di-meter (source 'test', platform-level tanpa tenant).
+  await logAiUsage({
+    source: 'test',
+    tenantId: null,
+    chatId: null,
+    model: r.model || model,
+    primaryModel: null,
+    viaFallback: false,
+    latencyMs: r.latencyMs,
+    ok: !!r.ok,
+    errorCode: r.ok ? null : r.code,
+    usage: r.ok ? r.usage : null,
+  })
   if (r.ok) return { ok: true, latencyMs: r.latencyMs, model: r.model }
   return { ok: false, code: r.code, message: r.message, latencyMs: r.latencyMs }
 }
@@ -276,6 +467,9 @@ module.exports = {
   pingLocal,
   resolveTemplate,
   buildSystemPrompt,
+  resolveRate, // v3.9.24 — resolve rate per-model (exact → strip :suffix → null)
+  computeCost, // v3.9.24 — hitung cost USD dari usage + rate (export utk E2E/E2E-assert parity)
+  logAiUsage, // v3.9.24 — tulis AiUsageLog (best-effort)
   encryptText, // re-export utk endpoint SA (simpan key ENCRYPTED)
   isEncrypted,
 }

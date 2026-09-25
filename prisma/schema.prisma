@@ -28,35 +28,35 @@ datasource db {
 // ═════════════════════════════════════════════════════════════════
 
 model Tenant {
-  id           Int      @id @default(autoincrement())
-  name         String   @unique
-  status       String   @default("active") // active | suspended
-  waPhone      String?  // fase 2 (slot-0; nomor utama)
-  waSessionDir String?  // fase 2 (dir sesi slot-0 — JANGAN migrasi: sesi existing parahita/mazaya tinggal di sini)
-  createdAt    DateTime @default(now())
+  id           Int            @id @default(autoincrement())
+  name         String         @unique
+  status       String         @default("active") // active | suspended
+  waPhone      String? // fase 2 (slot-0; nomor utama)
+  waSessionDir String? // fase 2 (dir sesi slot-0 — JANGAN migrasi: sesi existing parahita/mazaya tinggal di sini)
+  createdAt    DateTime       @default(now())
   users        User[]
-  chats       Chat[]
+  chats        Chat[]
   plan         TenantPlan? // v3.4 — plan & kuota per-tenant (1:1)
   // ═══ v3.9 — Multi-nomor WA per tenant (ADDITIVE kolom) ═══
   // waMode: "pool" (default, semua slot masuk antrean umum) | "assigned" (semua slot
   // born-assigned ke agent slot) | "mix" (per-slot: slot dgn assignedAgentId=assigned,
   // sisanya pool). Tenant 1 nomor = zero behavior change (spec §0 HARD RULE).
-  waMode       String   @default("pool")
+  waMode       String         @default("pool")
   numbers      TenantNumber[]
   // v3.9.13 — Public API v1: API keys milik tenant (additive)
   apiKeys      ApiKey[]
 
   // v3.4 — branding per-tenant (header "<brandName> by ChatBareng")
-  brandName    String? // kosong/null = tampil "ChatBareng" polos
-  logoPath     String? // path file logo di disk (data/branding/tenant-<id>/)
+  brandName String? // kosong/null = tampil "ChatBareng" polos
+  logoPath  String? // path file logo di disk (data/branding/tenant-<id>/)
 
   // ═══ v3.8 — Masa aktif tenant (subscription validity, ADDITIVE) ═══
   // validFrom: null = info saja; validUntil: null = Lifetime (tanpa batas);
   // validUntil < now = kedaluwarsa → READ-ONLY mode (keputusan owner 15:30,
   // JANGAN hard-lockout — tenant expired tetap bisa login & lihat Dashboard).
   // Existing tenants (null/null) = Lifetime, zero behavior change.
-  validFrom    DateTime?
-  validUntil   DateTime?
+  validFrom  DateTime?
+  validUntil DateTime?
 
   @@index([status])
 }
@@ -99,30 +99,30 @@ model User {
 }
 
 model Chat {
-  id                    Int       @id @default(autoincrement())
+  id                    Int                @id @default(autoincrement())
   tenantId              Int
-  tenant                Tenant    @relation(fields: [tenantId], references: [id])
+  tenant                Tenant             @relation(fields: [tenantId], references: [id])
   waJid                 String // JID WhatsApp pelanggan/grup, unik per tenant
   contactName           String?
   contactPhone          String
   phoneJid              String?
-  unreadCount           Int       @default(0)
+  unreadCount           Int                @default(0)
   assignedToId          Int?
-  assignedTo            User?     @relation("assignments", fields: [assignedToId], references: [id])
+  assignedTo            User?              @relation("assignments", fields: [assignedToId], references: [id])
   lastMessageAt         DateTime?
   lastMessagePreview    String?
-  status                String    @default("open")
+  status                String             @default("open")
   resolvedAt            DateTime?
   firstIncomingAt       DateTime?
   firstAssignedAt       DateTime?
   lastAssignedAt        DateTime?
   firstResponseAt       DateTime?
   firstResponseById     Int?
-  csMessagesSent        Int       @default(0)
+  csMessagesSent        Int                @default(0)
   messagesBeforeResolve Int?
-  reopenedCount         Int       @default(0)
+  reopenedCount         Int                @default(0)
   resolvedById          Int?
-  transferUnseen        Boolean   @default(false) // v0.5.1: highlight "transfer belum dibaca" (additive)
+  transferUnseen        Boolean            @default(false) // v0.5.1: highlight "transfer belum dibaca" (additive)
   queuedAt              DateTime? // v0.1.21: kapan chat masuk antrean (FIFO key); null = assigned/taken
   lastAutoGreetDate     String? // v0.7.0: "YYYY-MM-DD" (WIB) terakhir kirim auto message (outside-hours/greeting)
   // v0.10.0 — Snooze Chat (additive): null = tidak snooze
@@ -151,14 +151,14 @@ model Chat {
   // saat dibuat/di-adopt PIC di-set → BOTH picUserId AND assignedToId = picUserId.
   // NULL + waJid @g.us = grup yatim (hanya admin yang melihat).
   picUserId             Int?
-  pic                   User?      @relation("groupPics", fields: [picUserId], references: [id])
+  pic                   User?              @relation("groupPics", fields: [picUserId], references: [id])
   // ═══ v3.9 — Multi-nomor (ADDITIVE kolom) ═══
   // numberSlot: slot nomor WA asal pesan masuk (0..2).
   // v3.9.2 K1-A — NOT NULL default 0 (chat lama = milik slot-0; backfill null→0).
   // Prisma menolak compound key dgn NULL (lesson v3.9.1) → wajib NOT NULL.
-  numberSlot            Int       @default(0)
-  createdAt             DateTime   @default(now())
-  updatedAt             DateTime   @updatedAt
+  numberSlot            Int                @default(0)
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
 
   // v3.9.2 K1-A — chat UNIK per (tenantId, numberSlot, waJid): kontak sama yang
   // chat ke 2 nomor beda = 2 baris Chat berbeda, masing-masing numberSlot tetap
@@ -181,22 +181,22 @@ model AppConfig {
 }
 
 model Contact {
-  id        Int       @id @default(autoincrement())
-  tenantId  Int
-  name      String?
-  phone     String? // normalized 62xxx; null for LID-only contacts
-  chatId    Int?      @unique
-  chat      Chat?     @relation(fields: [chatId], references: [id])
-  birthDate DateTime?
-  gender    String? // 'male' | 'female'
-  city      String?
-  note      String?
-  source    String    @default("chat") // chat | import | manual
+  id              Int          @id @default(autoincrement())
+  tenantId        Int
+  name            String?
+  phone           String? // normalized 62xxx; null for LID-only contacts
+  chatId          Int?         @unique
+  chat            Chat?        @relation(fields: [chatId], references: [id])
+  birthDate       DateTime?
+  gender          String? // 'male' | 'female'
+  city            String?
+  note            String?
+  source          String       @default("chat") // chat | import | manual
   // v0.13.0 — marker terakhir kontak mendapat menu intro (D6, repeat frequency; WIB-aware di service)
   lastMenuShownAt DateTime?
-  tags      ContactTag[]
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  tags            ContactTag[]
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 
   @@index([tenantId])
   @@index([phone])
@@ -211,20 +211,20 @@ model Contact {
 // Config per tenant — pola AutoReplyConfig v0.7.0.
 // v3.9 — unique per (tenantId, numberSlot): row shared (null) + row per-slot (0..2).
 model MenuGatewayConfig {
-  id              Int      @id @default(autoincrement())
+  id              Int                 @id @default(autoincrement())
   tenantId        Int
-  enabled         Boolean  @default(false)
-  introText       String   @default("Halo {name}! Silakan pilih topik yang ingin Anda sampaikan:\n1. Komplain\n2. Ambil hasil\n3. Tanya promo")
-  fallbackText    String   @default("Terima kasih! CS kami akan segera membalas pesan Anda. 🙏")
+  enabled         Boolean             @default(false)
+  introText       String              @default("Halo {name}! Silakan pilih topik yang ingin Anda sampaikan:\n1. Komplain\n2. Ambil hasil\n3. Tanya promo")
+  fallbackText    String              @default("Terima kasih! CS kami akan segera membalas pesan Anda. 🙏")
   fallbackTagId   Int? // tag "Lainnya"; null = tanpa tag
-  timeoutValue    Int      @default(30) // 10..3600 (efektif detik)
-  timeoutUnit     String   @default("minutes") // "seconds" | "minutes" (UI dropdown)
-  repeatFrequency String   @default("daily") // "per_chat" | "daily" | "weekly"
+  timeoutValue    Int                 @default(30) // 10..3600 (efektif detik)
+  timeoutUnit     String              @default("minutes") // "seconds" | "minutes" (UI dropdown)
+  repeatFrequency String              @default("daily") // "per_chat" | "daily" | "weekly"
   // ═══ v3.9 — Multi-nomor (ADDITIVE kolom): null = "Terapkan ke semua nomor" (link-all,
   // default & perilaku existing); angka 0..2 = config hanya utk slot itu. Runtime:
   // resolve config slot → fallback shared (null) → disabled.
   numberSlot      Int?
-  updatedAt       DateTime @updatedAt
+  updatedAt       DateTime            @updatedAt
   updatedById     Int?
   options         MenuGatewayOption[]
 
@@ -234,12 +234,12 @@ model MenuGatewayConfig {
 // Opsi menu: position = urutan tampil = nomor menu (1..8), unik per config.
 // tenantId ikut kolom (real dari config); FK ke config (cascade delete).
 model MenuGatewayOption {
-  id        Int    @id @default(autoincrement())
+  id        Int               @id @default(autoincrement())
   tenantId  Int // v3 — real tenant (dari config)
   configId  Int
   position  Int // urutan tampil = nomor menu (1..8)
   label     String // "Komplain" (≤50)
-  aliases   String  @default("")// csv keyword tambahan, ≤200 (mis. "komplain,keluhan")
+  aliases   String            @default("") // csv keyword tambahan, ≤200 (mis. "komplain,keluhan")
   replyText String // konfirmasi per opsi, ≤500, {name} diizinkan
   tagId     Int? // tag kontak yg dilekatkan; null = tanpa tag
   config    MenuGatewayConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
@@ -252,53 +252,53 @@ model MenuGatewayOption {
 // source: "manual" (UI kontak) | "menu" (auto dari pilihan/fallback gateway).
 // @@unique([contactId, tagId]) → upsert idempoten; tidak pernah menghapus tag lama.
 model ContactTag {
-  id         Int      @id @default(autoincrement())
-  tenantId   Int // v3 — real tenant (dari contact)
-  contactId  Int
-  contact    Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  tagId      Int
-  tag        Tag      @relation(fields: [tagId], references: [id])
-  source     String   @default("manual") // "manual" | "menu"
-  addedById  Int?
-  createdAt  DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  tenantId  Int // v3 — real tenant (dari contact)
+  contactId Int
+  contact   Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tagId     Int
+  tag       Tag      @relation(fields: [tagId], references: [id])
+  source    String   @default("manual") // "manual" | "menu"
+  addedById Int?
+  createdAt DateTime @default(now())
 
   @@unique([contactId, tagId])
   @@index([tenantId])
 }
 
 model Message {
-  id          Int               @id @default(autoincrement())
-  tenantId    Int
-  chatId      Int
-  chat        Chat              @relation(fields: [chatId], references: [id])
-  direction   String
-  content     String?
-  mediaPath   String?
-  mediaType   String?
-  mediaMime   String?
-  mediaSize   Int?
-  senderName  String
-  senderId    Int?
-  sender      User?             @relation(fields: [senderId], references: [id])
-  timestamp   DateTime          @default(now())
-  status      String            @default("sent")
-  waMessageId String?
-  purged      Boolean           @default(false)
-  isAuto      Boolean           @default(false) // v0.7.0: true = pesan auto greeting/outside-hours (bukan CS manusia)
+  id                   Int               @id @default(autoincrement())
+  tenantId             Int
+  chatId               Int
+  chat                 Chat              @relation(fields: [chatId], references: [id])
+  direction            String
+  content              String?
+  mediaPath            String?
+  mediaType            String?
+  mediaMime            String?
+  mediaSize            Int?
+  senderName           String
+  senderId             Int?
+  sender               User?             @relation(fields: [senderId], references: [id])
+  timestamp            DateTime          @default(now())
+  status               String            @default("sent")
+  waMessageId          String?
+  purged               Boolean           @default(false)
+  isAuto               Boolean           @default(false) // v0.7.0: true = pesan auto greeting/outside-hours (bukan CS manusia)
   // v0.14.0 — Manajemen Grup (additive kolom): pengirim asli di chat grup
   // (full JID dari msg.participant). 1:1 tetap NULL.
-  participantJid String?
+  participantJid       String?
   // ═══ v3.9.14 — Quote Reply (WhatsApp contextInfo, ADDITIVE kolom) ═══
   // quotedWaMessageId: contextInfo.stanzaId (inbound) / waMessageId target (outbound).
   // quotedParticipantJid: full JID penulis pesan yang di-quote (grup; 1:1 null).
   // quotedSnippet: plaintext snippet ≤200 char TERENKRIPSI (encryptText) — fallback
   //   chip quote saat pesan asal sudah di-purge/hilang.
   // quotedType: text|image|video|audio|sticker|document — ikon chip.
-  quotedWaMessageId   String?
+  quotedWaMessageId    String?
   quotedParticipantJid String?
-  quotedSnippet       String?
-  quotedType          String?
-  favorites           FavoriteMessage[]
+  quotedSnippet        String?
+  quotedType           String?
+  favorites            FavoriteMessage[]
 
   @@index([tenantId])
   @@index([chatId, timestamp])
@@ -309,13 +309,13 @@ model Message {
 // Tidak ada relasi ketat (chatId Int + tenantId) supaya purge/hapus row tidak
 // pernah memblokir aksi (chatId bisa dangling setelah chat dihapus — by design).
 model GroupActionLog {
-  id           Int      @id @default(autoincrement())
-  tenantId     Int
-  chatId       Int
-  actorUserId  Int
-  action       String   // create|add|remove|promote|demote|setting|invite_reset|rename|assign_pic|save_contact|pm|invite_link|leave
-  detail       String?
-  createdAt    DateTime @default(now())
+  id          Int      @id @default(autoincrement())
+  tenantId    Int
+  chatId      Int
+  actorUserId Int
+  action      String // create|add|remove|promote|demote|setting|invite_reset|rename|assign_pic|save_contact|pm|invite_link|leave
+  detail      String?
+  createdAt   DateTime @default(now())
 
   @@index([tenantId])
 }
@@ -354,12 +354,12 @@ model ChatEvent {
 }
 
 model Tag {
-  id        Int       @id @default(autoincrement())
+  id        Int          @id @default(autoincrement())
   tenantId  Int
   name      String
-  color     String    @default("blue")
+  color     String       @default("blue")
   createdBy Int?
-  createdAt DateTime  @default(now())
+  createdAt DateTime     @default(now())
   chats     ChatTag[]
   contacts  ContactTag[]
 
@@ -370,8 +370,8 @@ model Tag {
 model ChatTag {
   chatId Int
   tagId  Int
-  chat   Chat  @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  tag    Tag   @relation(fields: [tagId], references: [id])
+  chat   Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  tag    Tag  @relation(fields: [tagId], references: [id])
 
   @@id([chatId, tagId])
   @@index([tagId])
@@ -393,7 +393,7 @@ model Blast {
   // ═══ v3.9 — Multi-nomor (ADDITIVE kolom) ═══
   // numberSlots: JSON array slot terpilih (mis. [0,1]); null = slot-0 saja (default).
   // rotateEvery: round-robin tiap N pesan (N≥1); null/0 = fixed slot (slot pertama terpilih).
-  numberSlots     String?    // JSON string ("Json" Prisma di SQLite = TEXT; String utk kompatibilitas client)
+  numberSlots     String? // JSON string ("Json" Prisma di SQLite = TEXT; String utk kompatibilitas client)
   rotateEvery     Int?
   startedAt       DateTime?
   completedAt     DateTime?
@@ -655,7 +655,7 @@ model CsatConfig {
   message       String   @default("Halo {name}! Terima kasih sudah menghubungi kami 🙏 Bagaimana pengalaman Anda hari ini? Balas dengan angka 1–5 (1 = kurang, 5 = sangat puas).")
   // v0.10.6 — cooldown configurable via admin
   cooldownMode  String   @default("per_chat") // per_chat (A) | per_agent (B) | hybrid (C)
-  cooldownHours Int      @default(24)         // 0–168
+  cooldownHours Int      @default(24) // 0–168
   updatedAt     DateTime @updatedAt
   updatedById   Int?
 }
@@ -794,6 +794,7 @@ model AiConfig {
   localModel      String?
   fallbackEnabled Boolean  @default(false)
   defaultPreset   String   @default("standard") // format default utk tenant tanpa row template
+  usdToIdr        Float    @default(16000) // v3.9.24 — kurs USD→IDR utk render Rp (dihitung saat render, D6)
   updatedAt       DateTime @updatedAt
   updatedById     Int?
 }
@@ -802,6 +803,48 @@ model TenantSummaryTemplate {
   tenantId    Int      @id
   presetKey   String   @default("standard")
   customText  String? // instruksi bebas admin (≤1000 char); non-kosong menang atas preset
+  updatedAt   DateTime @updatedAt
+  updatedById Int?
+}
+
+// ───────────────────── v3.9.24 — AI Usage (cost metering) ─────────────────────
+// AiUsageLog = log pemakaian LLM per-call (summary/preview/test). Snapshot pricing
+// SAAT CALL (D3): costUsd dihitung & disimpan saat call — edit rate TIDAK PERNAH
+// mengubah histori. costUsd NULL = model tanpa rate (D4); costUsd 0 + wouldCostUsd
+// = fallback lokal (D5). tenantId NULL = source 'test' (platform-level).
+// AiModelRate = rate per-model (per 1M token, USD) manual-editable di Pengaturan SA.
+// Migration: prisma/migrations/20260926023000_ai_usage (ADDITIVE ONLY).
+model AiUsageLog {
+  id           Int      @id @default(autoincrement())
+  tenantId     Int? // null utk source 'test' (platform-level)
+  chatId       Int?
+  source       String // 'summary' | 'preview' | 'test'
+  model        String // model yang BENAR-BENAR dipakai (cloud/local)
+  primaryModel String? // model cloud saat viaFallback=true
+  viaFallback  Boolean  @default(false)
+  promptTokens Int      @default(0)
+  cachedTokens Int      @default(0)
+  outputTokens Int      @default(0)
+  latencyMs    Int?
+  ok           Boolean  @default(true)
+  errorCode    String? // NO_CONFIG|AUTH_401|TIMEOUT|NETWORK|UPSTREAM_5XX
+  rateInput    Float? // snapshot per 1M token saat call
+  rateCached   Float?
+  rateOutput   Float?
+  costUsd      Float? // null = model tanpa rate; 0 = fallback lokal / error
+  wouldCostUsd Float? // utk baris fallback: est. cost via rate primary cloud
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([tenantId, createdAt])
+}
+
+model AiModelRate {
+  id          Int      @id @default(autoincrement())
+  model       String   @unique
+  inputPerM   Float
+  cachedPerM  Float? // null = pakai rate input (D7)
+  outputPerM  Float
   updatedAt   DateTime @updatedAt
   updatedById Int?
 }

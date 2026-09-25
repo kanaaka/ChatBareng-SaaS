@@ -60,6 +60,13 @@ const sparkline = ref([])
 // v3.9.21 — Panel Storage Tangan Kanan (GET /api/sa/stats/tk-storage)
 const tkStorage = ref(null)
 
+// ── v3.9.24 — Panel AI Usage (GET /api/sa/ai-usage) — snapshot cost per-call ──
+const aiUsage = ref(null)
+const aiUsageRange = ref('7d') // per-panel sendiri, gak ganggu panel lain (pola v3.9.20)
+const aiUsageLoading = ref(false)
+const aiUsageError = ref('')
+const aiUsageExpanded = ref(false) // tap panel → expand inline (D1, bukan halaman baru)
+
 // Chart instances (destroy saat re-render biar tak leak canvas)
 let trendChart = null
 let avgChart = null
@@ -126,6 +133,55 @@ const tkRows = computed(() => {
   const rows = Array.isArray(tkStorage.value?.perTenant) ? [...tkStorage.value.perTenant] : []
   return rows.sort((a, b) => (b.bytes || 0) - (a.bytes || 0) || (b.files || 0) - (a.files || 0))
 })
+
+// ── v3.9.24 — AI Usage: fetch + format ──
+// Range tab sederhana (spec §8a: Today/7 Hari/30 Hari/Semua — tanpa Custom):
+const AI_USAGE_TABS = [
+  { key: 'today', label: 'Hari Ini' },
+  { key: '7d', label: '7 Hari' },
+  { key: '30d', label: '30 Hari' },
+  { key: 'all', label: 'Semua' },
+]
+async function fetchAiUsage() {
+  aiUsageLoading.value = true
+  aiUsageError.value = ''
+  try {
+    const res = await axios.get(`${API}/api/sa/ai-usage`, { params: { range: aiUsageRange.value } })
+    aiUsage.value = res.data
+  } catch (e) {
+    aiUsageError.value = e.response?.data?.error || 'Gagal memuat AI Usage'
+    aiUsage.value = null
+  } finally {
+    aiUsageLoading.value = false
+  }
+}
+function setAiUsageRange(key) {
+  aiUsageRange.value = key
+  fetchAiUsage()
+}
+// Cost USD: >= $0.01 → 2 desimal; < $0.01 → 4 desimal (spec §8a)
+function fmtUsd(n) {
+  const v = Number(n || 0)
+  if (v !== 0 && Math.abs(v) < 0.01) return '$' + v.toFixed(4)
+  return '$' + v.toFixed(2)
+}
+function fmtRp(usd, kurs) {
+  const v = Math.round(Number(usd || 0) * Number(kurs || 0))
+  return 'Rp ' + v.toLocaleString('id-ID')
+}
+// Mini bar: cost per hari (maks 14 bar terakhir) — div/CSS, tanpa Chart.js (spec §8a)
+const aiUsageBars = computed(() => {
+  const rows = (aiUsage.value?.perDay || []).slice(-14)
+  const max = Math.max(...rows.map((r) => Number(r.costUsd) || 0), 0)
+  return rows.map((r) => ({
+    date: r.date,
+    costUsd: Number(r.costUsd) || 0,
+    calls: Number(r.calls) || 0,
+    pct: max > 0 ? Math.max(2, Math.round(((Number(r.costUsd) || 0) / max) * 100)) : 2,
+    title: `${r.date}: ${fmtUsd(r.costUsd)} · ${r.calls} call`,
+  }))
+})
+const aiUsageHasData = computed(() => (aiUsage.value?.totals?.calls || 0) > 0)
 
 const pieLegendLabel = computed(() => {
   if (!resolution.value) return ''
@@ -245,6 +301,9 @@ async function loadOverview() {
     } catch {
       tkStorage.value = null
     }
+
+    // v3.9.24 — AI Usage (non-blocking; gagal → panel hidden + error inline saat refresh)
+    await fetchAiUsage()
 
     renderCharts()
   } catch (e) {
@@ -518,6 +577,82 @@ onMounted(() => {
         </div>
       </div>
 
+      <!-- v3.9.24 — Panel AI Usage (snapshot cost per-call; SETELAH Storage Tangan Kanan) -->
+      <div v-if="aiUsage" class="sa-panel sa-aiusage mb-6" data-testid="panel-ai-usage">
+        <div class="flex items-center justify-between flex-wrap gap-2">
+          <button type="button" class="sa-aiusage__toggle" @click="aiUsageExpanded = !aiUsageExpanded" :aria-expanded="aiUsageExpanded">
+            <h2 class="text-base font-semibold" :style="{ color: 'var(--md-sys-color-on-surface)' }">AI Usage</h2>
+          </button>
+          <div class="flex gap-1 flex-wrap">
+            <button
+              v-for="r in AI_USAGE_TABS" :key="r.key"
+              class="sa-tab"
+              :class="{ 'sa-tab--active': aiUsageRange === r.key }"
+              @click="setAiUsageRange(r.key)"
+            >{{ r.label }}</button>
+          </div>
+        </div>
+        <template v-if="aiUsageLoading && !aiUsage">
+          <div class="sa-empty">Memuat…</div>
+        </template>
+        <template v-else-if="aiUsageError">
+          <div class="sa-aiusage__err">{{ aiUsageError }}</div>
+        </template>
+        <template v-else-if="!aiUsageHasData">
+          <div class="sa-empty">Belum ada pemakaian AI</div>
+        </template>
+        <template v-else>
+          <!-- Angka besar = COST (D1) -->
+          <div class="sa-aiusage__total">{{ fmtUsd(aiUsage.totals.costUsd) }}</div>
+          <div class="sa-aiusage__rp">≈ {{ fmtRp(aiUsage.totals.costUsd, aiUsage.usdToIdr) }}</div>
+          <div class="sa-storage__sub">
+            {{ fmtNum(aiUsage.totals.calls) }} call · {{ fmtNum(aiUsage.totals.tokens) }} token · {{ fmtNum(aiUsage.totals.errors) }} error
+          </div>
+          <!-- Mini bar cost per hari (maks 14 bar) — div/CSS, tanpa Chart.js -->
+          <div v-if="aiUsageBars.length" class="sa-aiusage__bars" role="img" aria-label="Biaya AI per hari">
+            <div
+              v-for="b in aiUsageBars" :key="b.date"
+              class="sa-aiusage__bar"
+              :style="{ height: b.pct + '%' }"
+              :title="b.title"
+            ></div>
+          </div>
+          <!-- Expand inline (tap panel header) — D1 -->
+          <div v-if="aiUsageExpanded" class="sa-aiusage__expand">
+            <div class="sa-aiusage__stats">
+              <div class="sa-aiusage__stat"><span class="sa-aiusage__stat-n">{{ fmtNum(aiUsage.totals.calls) }}</span><span class="sa-aiusage__stat-l">Call</span></div>
+              <div class="sa-aiusage__stat"><span class="sa-aiusage__stat-n">{{ fmtNum(aiUsage.totals.tokens) }}</span><span class="sa-aiusage__stat-l">Token</span></div>
+              <div class="sa-aiusage__stat"><span class="sa-aiusage__stat-n">{{ aiUsage.totals.avgLatencyMs == null ? '—' : (aiUsage.totals.avgLatencyMs / 1000).toLocaleString('id-ID', { maximumFractionDigits: 1 }) + ' dtk' }}</span><span class="sa-aiusage__stat-l">Rata-rata latency</span></div>
+              <div class="sa-aiusage__stat">
+                <span class="sa-aiusage__stat-n">{{ fmtNum(aiUsage.totals.errors) }} error · {{ fmtNum(aiUsage.totals.fallbacks) }} fallback</span>
+                <span class="sa-aiusage__stat-l" v-if="(aiUsage.totals.fallbackSavedUsd || 0) > 0">hemat {{ fmtUsd(aiUsage.totals.fallbackSavedUsd) }} via lokal</span>
+                <span class="sa-aiusage__stat-l" v-else>fallback lokal (D5)</span>
+              </div>
+            </div>
+            <div v-if="aiUsage.perTenant.length" class="sa-aiusage__table-wrap">
+              <table class="sa-aiusage__table">
+                <thead>
+                  <tr><th>Tenant</th><th class="num">Calls</th><th class="num">Tokens</th><th class="num">Cost</th><th>Terakhir</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="t in aiUsage.perTenant" :key="t.tenantId">
+                    <td>{{ t.name }}</td>
+                    <td class="num">{{ fmtNum(t.calls) }}</td>
+                    <td class="num">{{ fmtNum(t.tokens) }}</td>
+                    <td class="num">{{ fmtUsd(t.costUsd) }}</td>
+                    <td>{{ t.lastUsedAt ? new Date(t.lastUsedAt).toLocaleString('id-ID') : '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-if="aiUsage.untrackedModels.length" class="sa-aiusage__warn" role="alert">
+              ⚠️ {{ aiUsage.untrackedModels.join(', ') }} belum di-set rate — cost gak terlacak.
+            </div>
+            <div class="sa-aiusage__hint">Atur rate di Pengaturan → AI Assistant</div>
+          </div>
+        </template>
+      </div>
+
       <!-- Charts grid -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <!-- v3.9.20 — bar tab range per panel (reuse .sa-tab) -->
@@ -759,6 +894,107 @@ onMounted(() => {
 .sa-storage__files {
   color: var(--md-sys-color-on-surface-variant);
   font-size: 0.78rem;
+}
+/* v3.9.24 — Panel AI Usage */
+.sa-aiusage__toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.sa-aiusage__total {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--md-sys-color-on-surface);
+  line-height: 1.15;
+  margin-top: 6px;
+}
+.sa-aiusage__rp {
+  font-size: 0.85rem;
+  color: var(--md-sys-color-on-surface-variant);
+  margin-bottom: 2px;
+}
+.sa-aiusage__bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 48px;
+  margin-top: 10px;
+}
+.sa-aiusage__bar {
+  flex: 1;
+  min-height: 2px;
+  background: var(--md-sys-color-primary, #25d366);
+  opacity: 0.75;
+  border-radius: 3px 3px 0 0;
+}
+.sa-aiusage__expand {
+  margin-top: 14px;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  padding-top: 12px;
+}
+.sa-aiusage__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.sa-aiusage__stat {
+  display: flex;
+  flex-direction: column;
+}
+.sa-aiusage__stat-n {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface);
+}
+.sa-aiusage__stat-l {
+  font-size: 0.75rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.sa-aiusage__table-wrap {
+  margin-top: 12px;
+  overflow-x: auto;
+}
+.sa-aiusage__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.sa-aiusage__table th,
+.sa-aiusage__table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface);
+}
+.sa-aiusage__table th {
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.sa-aiusage__table td.num,
+.sa-aiusage__table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.sa-aiusage__warn {
+  margin-top: 10px;
+  font-size: 0.8rem;
+  padding: 8px 12px;
+  border-radius: var(--md-sys-shape-corner-s);
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+}
+.sa-aiusage__err {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: #991b1b;
+  font-weight: 500;
+}
+.sa-aiusage__hint {
+  margin-top: 8px;
+  font-size: 0.72rem;
+  color: var(--md-sys-color-on-surface-variant);
 }
 .sa-chart-box {
   position: relative;

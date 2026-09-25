@@ -182,6 +182,43 @@
             {{ aiSaving ? 'Menyimpan…' : 'Simpan AI Assistant' }}
           </button>
         </div>
+
+        <!-- ── v3.9.24 — Tabel Harga per-model (snapshot per-call; D2/D3) ── -->
+        <div class="rounded-[var(--md-sys-shape-corner-m)] p-4" style="background: var(--md-sys-color-surface-container-lowest); margin-top: 12px;" data-testid="ai-rates-section">
+          <div class="text-sm font-semibold mb-1">Tabel Harga (per 1 juta token, USD)</div>
+          <p class="text-xs mb-3" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
+            Rate berlaku untuk call berikutnya. Histori lama tidak berubah (snapshot per-call).
+          </p>
+          <div v-if="aiRatesError" class="text-sm mb-2 text-red-600" role="alert">{{ aiRatesError }}</div>
+          <div v-if="aiRatesSuccess" class="text-sm mb-2 text-green-600" role="status">{{ aiRatesSuccess }}</div>
+          <div class="sa-aitable-wrap">
+            <table class="sa-aitable">
+              <thead>
+                <tr><th>Model</th><th>Input</th><th>Cached (kosong = pakai input)</th><th>Output</th><th></th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="(r, i) in aiRateRows" :key="i">
+                  <td><input v-model="r.model" type="text" class="sa-aitable__in" aria-label="Nama model" maxlength="64"></td>
+                  <td><input v-model.number="r.inputPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga input per 1M token"></td>
+                  <td><input v-model.number="r.cachedPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga cached per 1M token (kosong = pakai input)" placeholder="—"></td>
+                  <td><input v-model.number="r.outputPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga output per 1M token"></td>
+                  <td><button type="button" class="m3-btn m3-btn--tonal !min-h-[36px]" @click="removeAiRateRow(i)" aria-label="Hapus rate model">Hapus</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 mt-2">
+            <button type="button" class="m3-btn m3-btn--tonal !min-h-[40px]" @click="addAiRateRow">+ Tambah Model</button>
+            <button type="button" class="m3-btn m3-btn--tonal !min-h-[40px]" :disabled="aiRatesReloading" @click="loadAiRates">Muat Ulang Rate</button>
+            <div class="flex items-center gap-2 ml-auto">
+              <label class="text-sm" for="ai-usdtoidr">USD → IDR</label>
+              <input id="ai-usdtoidr" v-model.number="aiUsdToIdr" type="number" min="1" step="1" class="sa-aitable__in sa-aitable__in--num" style="max-width: 120px;">
+            </div>
+            <button type="button" class="m3-btn m3-btn--filled !min-h-[40px]" :disabled="aiRatesSaving" @click="saveAiRates">
+              {{ aiRatesSaving ? 'Menyimpan…' : 'Simpan Rate' }}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -442,9 +479,118 @@ async function pullLocalModel() {
   }
 }
 
+// ── v3.9.24 — Tabel harga per-model (AiModelRate) + kurs USD→IDR (AiConfig.usdToIdr) ──
+// PUT semantics = REPLACE-ALL: FE selalu kirim daftar penuh hasil edit; "hapus row"
+// di UI = kirim daftar tanpa row itu (konsisten dgn PUT; tombol Hapus row memanggil
+// DELETE endpoint eksplisit — dokumentasi pilihan: spec §8b izinkan keduanya).
+const aiRateRows = ref([])
+const aiUsdToIdr = ref(16000)
+const aiRatesLoading = ref(false)
+const aiRatesReloading = ref(false)
+const aiRatesSaving = ref(false)
+const aiRatesError = ref('')
+const aiRatesSuccess = ref('')
+
+async function loadAiRates() {
+  aiRatesError.value = ''
+  aiRatesReloading.value = true
+  try {
+    const { data } = await axios.get(`${API}/api/sa/ai-rates`)
+    aiRateRows.value = (data.rates || []).map((r) => ({
+      model: r.model,
+      inputPerM: r.inputPerM,
+      cachedPerM: r.cachedPerM, // null = kosong → pakai input (D7)
+      outputPerM: r.outputPerM,
+      _savedModel: r.model, // audit v3.9.24 MEDIUM-1: tandai tersimpan sejak initial load → Hapus = DELETE endpoint konsisten
+    }))
+    aiUsdToIdr.value = Number(data.usdToIdr) || 16000
+  } catch (e) {
+    aiRatesError.value = e.response?.data?.error || 'Gagal memuat tabel harga'
+  } finally {
+    aiRatesReloading.value = false
+  }
+}
+
+function addAiRateRow() {
+  aiRateRows.value.push({ model: '', inputPerM: 0, cachedPerM: null, outputPerM: 0 })
+}
+
+// Hapus row di UI = DELETE endpoint eksplisit (model harus sudah tersimpan); row baru
+// yang belum tersimpan cukup dihapus dari array lokal.
+async function removeAiRateRow(idx) {
+  const row = aiRateRows.value[idx]
+  if (!row) return
+  const isNew = !row._savedModel
+  if (!isNew && row.model) {
+    try {
+      await axios.delete(`${API}/api/sa/ai-rates/${encodeURIComponent(row.model)}`)
+    } catch (e) {
+      aiRatesError.value = e.response?.data?.error || 'Gagal menghapus rate'
+      return
+    }
+    aiRatesSuccess.value = `Rate "${row.model}" dihapus — model jadi tanpa rate (cost gak terlacak)`
+  }
+  aiRateRows.value.splice(idx, 1)
+}
+
+async function saveAiRates() {
+  aiRatesError.value = ''
+  aiRatesSuccess.value = ''
+  const kurs = Number(aiUsdToIdr.value)
+  if (!Number.isFinite(kurs) || kurs <= 0) {
+    aiRatesError.value = 'USD → IDR harus angka > 0'
+    return
+  }
+  const rates = []
+  for (let i = 0; i < aiRateRows.value.length; i++) {
+    const r = aiRateRows.value[i]
+    const model = String(r.model || '').trim()
+    if (!model) {
+      aiRatesError.value = `Baris ${i + 1}: nama model wajib diisi`
+      return
+    }
+    const inputPerM = Number(r.inputPerM)
+    const outputPerM = Number(r.outputPerM)
+    if (!Number.isFinite(inputPerM) || inputPerM < 0 || !Number.isFinite(outputPerM) || outputPerM < 0) {
+      aiRatesError.value = `Baris ${i + 1}: harga harus angka >= 0`
+      return
+    }
+    let cachedPerM = null
+    if (r.cachedPerM !== null && r.cachedPerM !== undefined && String(r.cachedPerM).trim() !== '') {
+      const c = Number(r.cachedPerM)
+      if (!Number.isFinite(c) || c < 0) {
+        aiRatesError.value = `Baris ${i + 1}: harga cached harus angka >= 0 (kosong = pakai input)`
+        return
+      }
+      cachedPerM = c
+    }
+    rates.push({ model, inputPerM, cachedPerM, outputPerM })
+  }
+  aiRatesSaving.value = true
+  try {
+    await axios.put(`${API}/api/sa/ai-rates`, { usdToIdr: kurs, rates })
+    // re-load dari server (echo resmi) — tandai _savedModel utk DELETE per-row
+    const { data } = await axios.get(`${API}/api/sa/ai-rates`)
+    aiRateRows.value = (data.rates || []).map((r) => ({
+      model: r.model,
+      inputPerM: r.inputPerM,
+      cachedPerM: r.cachedPerM,
+      outputPerM: r.outputPerM,
+      _savedModel: r.model,
+    }))
+    aiUsdToIdr.value = Number(data.usdToIdr) || 16000
+    aiRatesSuccess.value = `Rate disimpan (${rates.length} model) — berlaku untuk call berikutnya`
+  } catch (e) {
+    aiRatesError.value = e.response?.data?.error || 'Gagal menyimpan rate'
+  } finally {
+    aiRatesSaving.value = false
+  }
+}
+
 onMounted(() => {
   loadPlatformBranding()
   loadAiConfig()
+  loadAiRates() // v3.9.24 — load rate saat panel dibuka (spec §8b)
 })
 </script>
 
@@ -457,5 +603,41 @@ onMounted(() => {
 }
 .sa-muted-panel {
   opacity: 0.85;
+}
+/* v3.9.24 — tabel harga per-model */
+.sa-aitable-wrap {
+  overflow-x: auto;
+}
+.sa-aitable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.sa-aitable th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  white-space: nowrap;
+}
+.sa-aitable td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+.sa-aitable__in {
+  width: 100%;
+  min-width: 140px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-s);
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+  padding: 6px 10px;
+  font-size: 0.82rem;
+}
+.sa-aitable__in--num {
+  min-width: 96px;
+  max-width: 120px;
+  font-variant-numeric: tabular-nums;
 }
 </style>
