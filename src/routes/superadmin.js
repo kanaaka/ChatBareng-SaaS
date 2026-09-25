@@ -78,6 +78,7 @@ function planToJson(plan) {
     featCsat: plan.featCsat,
     featGdriveBackup: plan.featGdriveBackup,
     featApiAccess: plan.featApiAccess, // v3.9.13 — plan gate Public API
+    featAiRouting: plan.featAiRouting, // v3.9.25 — AI Hybrid Routing gate
   }
 }
 
@@ -127,6 +128,9 @@ router.get('/tenants', ...sa, async (req, res) => {
         // v3.9 — mode multi-nomor + daftar slot (additive)
         waMode: t.waMode || 'pool',
         slots: await waSlotsFor(t.id),
+        // v3.9.25 — AI Hybrid toggle per-tenant (D5a): status baca dari row menu gateway
+        // shared tenant (numberSlot null). Row belum ada → false. Gagal → false (non-fatal).
+        aiHybridEnabled: await prisma.menuGatewayConfig.findFirst({ where: { tenantId: t.id, numberSlot: null }, select: { aiHybrid: true } }).then(r => !!r?.aiHybrid).catch(() => false),
         createdAt: t.createdAt,
         // v3.8 — masa aktif tenant (+ computed validityState; null/null = lifetime)
         ...validity.validityToJson(t),

@@ -9,6 +9,33 @@ const prisma = require('../prisma') // v3.9.2 K1-A — chatCount per slot di GET
 // WA_DISABLED=1 → status balik { connected:false, disabled:true } tanpa menyentuh Baileys.
 const rt = [requireAuth, requireTenant]
 
+// ═══ v3.9.25 — POST /api/wa/inbound (DEBUG/E2E-ONLY) ═══
+// Simulasi pesan masuk → wa/pool.processIncomingMessage (jalur asli: menu gateway,
+// auto-reply, csat, grup). GUARD: super_admin SAJA + E2E_DEBUG_INBOUND=1 + WA_DISABLED=1
+// (kill-switch produksi). Endpoint ini HANYA untuk pengujian jalur runtime tanpa Baileys
+// (E2E scripts/e2e-v3925.cjs) — TIDAK dipakai aplikasi/FE. Isi pesan tidak di-log.
+// (catatan: tidak memanggil saAudit.audit() — endpoint debug-only, log cukup di error handler bawah)
+router.post('/inbound', requireAuth, async (req, res) => {
+  try {
+    if (req.user?.role !== 'super_admin') return res.status(403).json({ error: 'super_admin only' })
+    if (process.env.E2E_DEBUG_INBOUND !== '1') return res.status(403).json({ error: 'E2E debug inbound disabled (E2E_DEBUG_INBOUND!=1)' })
+    if (!config.waDisabled) return res.status(403).json({ error: 'inbound debug hanya saat WA_DISABLED=1' })
+    const msg = req.body?.messages
+    if (!msg?.key?.remoteJid || typeof msg.key.remoteJid !== 'string') {
+      return res.status(400).json({ error: 'messages.key.remoteJid wajib (string)' })
+    }
+    const tenantId = Number(req.body?.tenantId)
+    if (!Number.isFinite(tenantId) || tenantId <= 0) {
+      return res.status(400).json({ error: 'tenantId wajib (angka)' })
+    }
+    const result = await wa.processIncomingMessage(tenantId, msg, { slot: Number(req.body?.slot) || 0 })
+    return res.json({ ok: true, handled: !!result && !result.message && !!result.chat, chatId: result?.chat?.id ?? null, savedMessageId: result?.message?.id ?? null })
+  } catch (e) {
+    console.error('[WA] inbound debug error:', e.message)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // v3.9 — helper: slot dari query/body (default 0 — compat semua caller lama)
 function slotFrom(req) {
   const raw = req.query.slot ?? req.body?.slot ?? 0

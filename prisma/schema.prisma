@@ -224,6 +224,12 @@ model MenuGatewayConfig {
   // default & perilaku existing); angka 0..2 = config hanya utk slot itu. Runtime:
   // resolve config slot → fallback shared (null) → disabled.
   numberSlot      Int?
+  // ═══ v3.9.25 — AI Hybrid Routing (ADDITIVE kolom, default OFF — spec D3/D5) ═══
+  // aiHybrid: kalau jawaban customer gak kena keyword/angka, LLM classifier memilih
+  // opsi ({position, confidence}) — eksekusi tetap rules lama (tag + replyText resmi).
+  // aiThreshold: confidence minimal 0.50–0.95 sebelum route; di bawah → fallback lama.
+  aiHybrid        Boolean             @default(false)
+  aiThreshold     Float               @default(0.70)
   updatedAt       DateTime            @updatedAt
   updatedById     Int?
   options         MenuGatewayOption[]
@@ -234,15 +240,17 @@ model MenuGatewayConfig {
 // Opsi menu: position = urutan tampil = nomor menu (1..8), unik per config.
 // tenantId ikut kolom (real dari config); FK ke config (cascade delete).
 model MenuGatewayOption {
-  id        Int               @id @default(autoincrement())
-  tenantId  Int // v3 — real tenant (dari config)
-  configId  Int
-  position  Int // urutan tampil = nomor menu (1..8)
-  label     String // "Komplain" (≤50)
-  aliases   String            @default("") // csv keyword tambahan, ≤200 (mis. "komplain,keluhan")
-  replyText String // konfirmasi per opsi, ≤500, {name} diizinkan
-  tagId     Int? // tag kontak yg dilekatkan; null = tanpa tag
-  config    MenuGatewayConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  id            Int               @id @default(autoincrement())
+  tenantId      Int // v3 — real tenant (dari config)
+  configId      Int
+  position      Int // urutan tampil = nomor menu (1..8)
+  label         String // "Komplain" (≤50)
+  aliases       String            @default("") // csv keyword tambahan, ≤200 (mis. "komplain,keluhan")
+  replyText     String // konfirmasi per opsi, ≤500, {name} diizinkan
+  tagId         Int? // tag kontak yg dilekatkan; null = tanpa tag
+  // v3.9.25 — Deskripsi AI per opsi (≤200 char; kosong → prompt pakai label+aliases, D8)
+  aiDescription String            @default("")
+  config        MenuGatewayConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
 
   @@unique([configId, position])
   @@index([tenantId])
@@ -704,6 +712,8 @@ model TenantPlan {
   featGdriveBackup  Boolean  @default(false)
   // v3.9.13 — Public API v1: plan gate (max=true, lite/pro=false). Kolom ADDITIVE.
   featApiAccess     Boolean  @default(false)
+  // v3.9.25 — AI Hybrid Routing (plan gate; preset Lite ✗ / Pro ✓ / Max ✓ — D5). Kolom ADDITIVE.
+  featAiRouting     Boolean  @default(false)
   updatedAt         DateTime @updatedAt
   updatedBy         Int? // plain Int, TANPA FK (hindari urutan purge)
 

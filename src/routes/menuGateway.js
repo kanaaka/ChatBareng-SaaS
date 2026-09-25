@@ -43,9 +43,15 @@ const ALLOWED_TOP_FIELDS = new Set([
   'enabled', 'introText', 'fallbackText', 'fallbackTagId',
   'timeoutValue', 'timeoutUnit', 'repeatFrequency',
   'numberSlot', 'numberSlots', // v3.9.4 — tick-box scope (fix: sebelumnya ditolak 400 "Field tidak dikenal" — QA #5)
+  'aiHybrid', 'aiThreshold', // v3.9.25 — AI Hybrid Routing (spec D3/D5)
   'options',
 ])
-const ALLOWED_OPTION_FIELDS = new Set(['position', 'label', 'aliases', 'replyText', 'tagId'])
+const ALLOWED_OPTION_FIELDS = new Set(['position', 'label', 'aliases', 'replyText', 'tagId', 'aiDescription']) // v3.9.25 + aiDescription
+
+// v3.9.25 — batas AI Hybrid (spec D3/D8): threshold 0.50–0.95, aiDescription ≤200 char
+const AI_THRESHOLD_MIN = 0.5
+const AI_THRESHOLD_MAX = 0.95
+const AI_DESC_MAX_LEN = 200
 
 // Fallback field-level → message top-level (kontrak 400 { error, errors })
 function topMessage(errors) {
@@ -161,6 +167,28 @@ async function validatePayload(body, errors) {
     }
   }
 
+  // ── v3.9.25 — AI Hybrid Routing (validasi ketat spec D3/D5) ──
+  // aiHybrid: boolean STRICT ("yes"/1/null → 400). aiThreshold: angka 0.50–0.95
+  // (string "0.7"/out-of-range → 400). aiThreshold boleh diset walau aiHybrid OFF
+  // (pre-set sebelum menyalakan). aiHybrid itu sendiri TIDAK digate plan di sini —
+  // gate plan (403 upsell) ada di PUT handler (bisa lihat req/res).
+  if (body.aiHybrid !== undefined) {
+    if (typeof body.aiHybrid !== 'boolean') {
+      errors.push('aiHybrid harus boolean')
+    } else {
+      data.aiHybrid = body.aiHybrid
+    }
+  }
+  if (body.aiThreshold !== undefined) {
+    if (typeof body.aiThreshold !== 'number' || !Number.isFinite(body.aiThreshold)) {
+      errors.push(`aiThreshold harus angka ${AI_THRESHOLD_MIN}–${AI_THRESHOLD_MAX}`)
+    } else if (body.aiThreshold < AI_THRESHOLD_MIN || body.aiThreshold > AI_THRESHOLD_MAX) {
+      errors.push(`aiThreshold harus ${AI_THRESHOLD_MIN}–${AI_THRESHOLD_MAX} (nilai ekstrem diblokir — lebih aman gagal ke antrean CS daripada salah kamar)`)
+    } else {
+      data.aiThreshold = body.aiThreshold
+    }
+  }
+
   // ── Options array 2..8 ──
   if (body.options !== undefined) {
     const options = body.options
@@ -222,7 +250,19 @@ async function validatePayload(body, errors) {
         if (o.tagId !== undefined && o.tagId !== null) {
           tagId = await validateTagId(o.tagId, `options[${i}].tagId`, errors)
         }
-        parsed.push({ position: o.position, label: o.label, aliases, replyText, tagId })
+        // v3.9.25 — aiDescription (D8): string ≤200, trim; kosong = prompt pakai label+aliases
+        let aiDescription = ''
+        if (o.aiDescription !== undefined && o.aiDescription !== null) {
+          if (typeof o.aiDescription !== 'string') {
+            errors.push(`options[${i}].aiDescription harus berupa teks`)
+          } else {
+            aiDescription = o.aiDescription.trim()
+            if (aiDescription.length > AI_DESC_MAX_LEN) {
+              errors.push(`options[${i}].aiDescription maksimal ${AI_DESC_MAX_LEN} karakter`)
+            }
+          }
+        }
+        parsed.push({ position: o.position, label: o.label, aliases, replyText, tagId, aiDescription })
       }
 
       // ≥1 opsi wajib punya replyText non-kosong (§8)
@@ -242,6 +282,32 @@ async function validatePayload(body, errors) {
 }
 
 // ── GET /api/menu-gateway (admin) ───────────────────────────────────────
+// v3.9.25 — + aiUsage: {calls, costUsd, costRp} bulan WIB berjalan dari AiUsageLog
+// source='gateway' tenant ini (D7). Plan ✗ → aiUsage null (fitur bukan miliknya).
+function wibMonthStartUtc(now = new Date()) {
+  const ym = new Date(now.getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 7) // ym dalam WIB
+  return new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)) - 1, 1, -7)) // 00:00 WIB = 17:00 UTC sehari sebelumnya (audit MEDIUM-A fix)
+}
+async function aiUsageForTenant(tenantId) {
+  try {
+    const since = wibMonthStartUtc()
+    const agg = await prisma.aiUsageLog.aggregate({
+      where: { tenantId, source: 'gateway', createdAt: { gte: since } },
+      _count: { id: true },
+      _sum: { costUsd: true },
+    })
+    const calls = Number(agg._count?.id) || 0
+    const costUsd = Number(agg._sum?.costUsd) || 0
+    const cfg = await prisma.aiConfig.findUnique({ where: { id: 1 }, select: { usdToIdr: true } })
+    const rate = Number(cfg?.usdToIdr)
+    const usdToIdr = Number.isFinite(rate) && rate > 0 ? rate : 16000
+    return { calls, costUsd, costRp: Math.round(costUsd * usdToIdr), usdToIdr }
+  } catch (e) {
+    console.error('[MenuGateway] aiUsageForTenant error (non-fatal):', e.message)
+    return { calls: 0, costUsd: 0, costRp: 0, usdToIdr: 16000 }
+  }
+}
+
 router.get('/', ...rt, featMenuGatewayGate, async (req, res) => {
   try {
     // v3.9 — ?slot= → config per-slot (fallback shared); tanpa slot = shared (compat)
@@ -273,6 +339,8 @@ router.get('/', ...rt, featMenuGatewayGate, async (req, res) => {
       numberSlot: cfg.numberSlot ?? null,
       menuManagedSlots: mgRows.map(r => Number(r.numberSlot)).sort((a, b) => a - b),
       arManagedSlots: arRows.map(r => Number(r.numberSlot)).sort((a, b) => a - b),
+      // v3.9.25 — AI Hybrid: plan ✗ → aiUsage null (spec D7)
+      aiUsage: (await plans.getPlan(req.tenantId))?.featAiRouting ? await aiUsageForTenant(req.tenantId) : null,
     })
   } catch (e) {
     console.error('MenuGateway GET error:', e)
@@ -361,6 +429,21 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
       return res.status(400).json({ error: topMessage(errors), errors })
     }
 
+    // ── v3.9.25 — Plan gate AI Hybrid (D5/D5a): BERLAKU utk SEMUA aktor ──
+    // Super_admin via ?tenant= JUGA terkena (plan ✗ → 403; plan gate menang di atas
+    // SA — amandemen D5a: SA boleh toggle, tapi TIDAK ada backdoor plan).
+    // aiHybrid=true eksplisit → cek plan; aiHybrid=false/absent → bebas (matikan
+    // toggle tidak boleh diblokir plan). Pola pesan = featMenuGatewayGate (403 ramah + upsell).
+    if (data.aiHybrid === true) {
+      const plan = await plans.getPlan(req.tenantId)
+      if (!plan || plan.featAiRouting === false) {
+        return res.status(403).json({
+          error: 'AI Hybrid Routing tidak tersedia di paket Anda. Hubungi admin platform untuk upgrade.',
+          feature: 'featAiRouting',
+        })
+      }
+    }
+
     // v3.9.4 — proteksi dua arah (kawan Auto Reply 409): slot yang punya auto-reply
     // TEKS aktif tidak boleh ditimpa menu — admin diminta matikan dulu di Auto Reply.
     if (targetList && body.enabled === true) {
@@ -418,6 +501,7 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
               aliases: o.aliases,
               replyText: o.replyText,
               tagId: o.tagId,
+              aiDescription: o.aiDescription || '', // v3.9.25 — D8
             })),
           })
         }
@@ -475,6 +559,28 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
       } catch (relErr) {
         console.error('MenuGateway releaseAwaiting error (non-fatal):', relErr)
       }
+    }
+
+    // v3.9.25 — sinkron AutoReplyConfig (radio Mode greeting) dgn status menu efektif:
+    // bila ada row menu gateway tenant yang enabled → greetMode='menu' + greetEnabled
+    // true (mirror AutoReply PUT mode-menu memaksa ON); bila TIDAK ada yang enabled →
+    // greetMode='text' + greetEnabled=false (radio kembali teks). Tanpa ini radio di
+    // AutoReply kelihatan "Menu gateway" padahal menu OFF (stale — QA E2E v3925).
+    try {
+      const anyEnabled = await prisma.menuGatewayConfig.findFirst({ where: { tenantId: req.tenantId, enabled: true }, select: { id: true } })
+      const menuOn = !!anyEnabled
+      const autoCfgRow = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true, greetMode: true } })
+      if (autoCfgRow) {
+        const menuModeNow = autoCfgRow.greetMode === 'menu'
+        if (menuOn && !menuModeNow) {
+          await prisma.autoReplyConfig.update({ where: { id: autoCfgRow.id }, data: { greetMode: 'menu', greetEnabled: true, updatedById: req.user.id } })
+        } else if (!menuOn && menuModeNow) {
+          await prisma.autoReplyConfig.update({ where: { id: autoCfgRow.id }, data: { greetMode: 'text', greetEnabled: false, updatedById: req.user.id } })
+        }
+        require('../services/autoReply').invalidateConfig(req.tenantId)
+      }
+    } catch (syncErr) {
+      console.error('MenuGateway autoreply-sync error (non-fatal):', syncErr)
     }
 
     res.json({ config: cfg, greetMode: greetSync })

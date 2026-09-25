@@ -4,6 +4,9 @@
     Kartu Status (toggle + repeat + timeout + fallback) · Kartu Intro (textarea +
     counter + preview live) · Kartu Opsi (list dinamis 2..8, reorder ↑↓, add/remove,
     tag select) · satu tombol Simpan → PUT /api/menu-gateway. Dark-safe via token M3.
+    v3.9.25 — + Kartu AI Hybrid Routing (Beta): toggle (disabled+upsell bila plan ✗),
+    slider aiThreshold 0.50–0.95 + 3 preset + keterangan dinamis + info box + hint
+    biaya aiUsage; per-opsi textarea "Deskripsi AI (opsional, ≤200)". TANPA v-html.
   -->
   <PageShell title="Menu Gateway" back-to="/admin/autoreply">
     <header class="hidden md:flex m3-topbar px-4 py-3 items-center justify-between">
@@ -120,6 +123,66 @@
         <div class="text-xs text-gray-400 mt-1 text-right">{{ (form.introText || '').length }}/1000</div>
       </div>
 
+      <!-- v3.9.25 — AI Hybrid Routing (Beta): LLM classifier fallback (D1–D8 spec §7/§7b).
+           Toggle + slider threshold + preset + keterangan dinamis + hint biaya.
+           TANPA v-html — semua teks via interpolasi. -->
+      <div class="m3-card p-6">
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <h2 class="font-semibold text-gray-900 flex items-center gap-2">AI Hybrid Routing <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">Beta</span></h2>
+            <p class="text-xs text-gray-500 mt-1">
+              Kalau jawaban customer gak kena keyword, AI pilihkan rute — balasan tetap pesan resmi kamu.
+            </p>
+          </div>
+          <M3Switch
+            v-model="form.aiHybrid"
+            :disabled="saving || !aiPlanOk"
+            :title="aiPlanOk ? '' : 'Fitur belum tersedia di paket Anda — hubungi admin platform untuk upgrade'"
+          />
+        </div>
+        <p v-if="!aiPlanOk" class="text-xs mt-2 px-3 py-2 rounded-lg bg-amber-50 text-amber-700">
+          Fitur ini belum tersedia di paket Anda. Hubungi admin platform untuk upgrade — setelah aktif, toggle + slider di bawah bisa dipakai.
+        </p>
+        <p v-if="aiUsage" class="text-xs text-gray-400 mt-2">
+          ≈ Rp {{ (aiUsage.costRp || 0).toLocaleString('id-ID') }} bulan ini — metering otomatis ({{ aiUsage.calls || 0 }} call AI).
+        </p>
+
+        <div class="mt-4">
+          <span class="text-xs text-gray-600 block mb-1">Ambang keyakinan AI (aiThreshold)</span>
+          <div class="flex flex-wrap items-center gap-2 mb-2">
+            <input
+              v-model.number="form.aiThreshold"
+              type="range"
+              min="0.50"
+              max="0.95"
+              step="0.05"
+              :disabled="saving || !aiPlanOk"
+              class="flex-1 min-w-[180px] accent-green-600"
+            />
+            <span class="text-sm font-semibold text-gray-800 tabular-nums">{{ thresholdLabel }}</span>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="p in thresholdPresets"
+              :key="p.value"
+              type="button"
+              :disabled="saving || !aiPlanOk"
+              @click="form.aiThreshold = p.value"
+              class="px-3 py-1.5 rounded-full text-xs border"
+              :class="Number(form.aiThreshold) === p.value ? 'bg-green-600 text-white border-green-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'"
+              :title="p.desc"
+            >{{ p.label }} ({{ p.value.toFixed(2) }})</button>
+          </div>
+          <p class="text-xs text-gray-500 mt-2">Angka = seberapa yakin AI minimal sebelum menyuruh sistem menyuruhkan percakapan.</p>
+          <p class="text-xs text-gray-500">≥ {{ thresholdLabel }} → AI salurkan otomatis: tag + balasan resmi kamu terkirim.</p>
+          <p class="text-xs text-gray-500">< {{ thresholdLabel }} → AI diam. Pesan masuk antrean CS seperti biasa (perilaku tanpa AI).</p>
+          <div class="text-xs text-gray-600 mt-2 px-3 py-2 rounded-lg" style="background: var(--md-sys-color-surface-container-high, #f3f0f7);">
+            Semakin tinggi = semakin selektif AI. Dan aman di titik mana pun: AI <b>tidak pernah menulis balasan sendiri</b> — salah rute sekalipun, yang terkirim tetap pesan resmi yang kamu setel.
+          </div>
+          <p class="text-xs text-gray-400 mt-1">Boleh disetel dulu walau toggle masih OFF (pre-set sebelum menyalakan).</p>
+        </div>
+      </div>
+
       <!-- Kartu 3 — Opsi -->
       <div class="m3-card p-6">
         <div class="flex items-center justify-between mb-1">
@@ -136,6 +199,7 @@
           Nomor menu = urutan (otomatis). <b>Aliases</b> = kata kunci TAMBAHAN opsional dipisah koma
           (maks 5) — angka 1-8 sudah otomatis tanpa perlu diketik. Minimal 1 opsi punya balasan.
           Tag menempel ke kontak saat opsi dipilih — bisa pilih existing atau <b>+ Buat tag baru</b> di tempat.
+          <span v-if="aiPlanOk"> <b>Deskripsi AI</b> (opsional) bantu AI paham konteks rute saat jawaban customer gak kena keyword.</span>
         </p>
 
         <div class="space-y-3">
@@ -193,6 +257,18 @@
                 @created="t => upsertLocalTag(t)"
               />
             </label>
+            <!-- v3.9.25 — Deskripsi AI (D8): konteks route utk LLM classifier (≤200) -->
+            <div>
+              <textarea
+                v-model="opt.aiDescription"
+                rows="2"
+                maxlength="200"
+                :disabled="!aiPlanOk"
+                class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-60"
+                placeholder="Deskripsi AI (opsional, ≤200) — mis. 'rute buat pasien mau booking jadwal terapi'. Kosong = AI pakai label + alias."
+              ></textarea>
+              <div class="text-right text-[10px] text-gray-400">{{ (opt.aiDescription || '').length }}/200</div>
+            </div>
           </div>
         </div>
       </div>
@@ -272,8 +348,24 @@ const form = ref({
   timeoutValue: 30,
   timeoutUnit: 'minutes',
   repeatFrequency: 'daily',
+  // v3.9.25 — AI Hybrid Routing (Beta)
+  aiHybrid: false,
+  aiThreshold: 0.70,
   options: [],
 })
+
+// v3.9.25 — plan gate client (menuGateway sudah fitur gated, jadi halaman ini hanya
+// muncul bila featMenuGateway ✓; featAiRouting bisa ✗ walau menu gateway ✓)
+const aiPlanOk = ref(true)
+const aiUsage = ref(null)
+
+// spec §7b — preset threshold klik-instal + keterangan konsekuensi
+const thresholdPresets = [
+  { label: 'Longgar', value: 0.55, desc: 'AI lebih berani menyala — lebih banyak percakapan tersalur otomatis. Risiko salah rute naik.' },
+  { label: 'Seimbang', value: 0.70, desc: 'AI menyala kalau cukup yakin; ragu → antrean CS. Titik awal terbaik.' },
+  { label: 'Ketat', value: 0.85, desc: 'AI cuma menyala kalau sangat yakin — lebih aman, tapi lebih banyak pesan jatuh ke antrean CS manual.' },
+]
+const thresholdLabel = computed(() => Number(form.value.aiThreshold).toFixed(2))
 
 const timeoutHint = computed(() => {
   const u = form.value.timeoutUnit === 'seconds' ? 'detik' : 'menit'
@@ -296,7 +388,7 @@ const introPreview = computed(() => {
 })
 
 function emptyOption(position) {
-  return { position, label: '', aliases: '', replyText: '', tagId: null }
+  return { position, label: '', aliases: '', replyText: '', tagId: null, aiDescription: '' }
 }
 
 function addOption() {
@@ -356,6 +448,11 @@ function validateClient() {
   for (const [i, o] of f.options.entries()) {
     if (!(o.label || '').trim()) return `Opsi ${i + 1}: label wajib diisi`
   }
+  // v3.9.25 — AI Hybrid client guard (server tetap validasi keras — defense in depth)
+  if (typeof f.aiThreshold !== 'number' || !Number.isFinite(f.aiThreshold) || f.aiThreshold < 0.5 || f.aiThreshold > 0.95) return 'Ambang AI harus 0.50–0.95'
+  for (const [i, o] of f.options.entries()) {
+    if ((o.aiDescription || '').length > 200) return `Opsi ${i + 1}: Deskripsi AI maksimal 200 karakter`
+  }
   if (!f.options.some(o => (o.replyText || '').trim())) return 'Minimal 1 opsi punya balasan konfirmasi'
   return null
 }
@@ -376,12 +473,18 @@ async function fetchAll() {
     form.value.timeoutValue = cfg.timeoutValue ?? 30
     form.value.timeoutUnit = cfg.timeoutUnit || 'minutes'
     form.value.repeatFrequency = cfg.repeatFrequency || 'daily'
+    // v3.9.25 — AI Hybrid state + plan gate + metering (spec §7)
+    form.value.aiHybrid = !!cfg.aiHybrid
+    form.value.aiThreshold = Number(cfg.aiThreshold ?? 0.70)
+    aiPlanOk.value = res.data.aiUsage !== null // plan ✗ → aiUsage null → toggle disabled + upsell
+    aiUsage.value = res.data.aiUsage || null
     form.value.options = (cfg.options || []).map(o => ({
       position: o.position,
       label: o.label || '',
       aliases: o.aliases || '',
       replyText: o.replyText || '',
       tagId: o.tagId ?? null,
+      aiDescription: o.aiDescription || '',
     }))
     if (form.value.options.length === 0) {
       // Config default baru → sediakan 2 opsi kosong sebagai titik mulai
@@ -406,7 +509,7 @@ async function fetchAll() {
         form.value.repeatFrequency = sCfg.repeatFrequency || form.value.repeatFrequency
         if ((sCfg.options || []).length > 0) {
           form.value.options = sCfg.options.map(o => ({
-            position: o.position, label: o.label || '', aliases: o.aliases || '', replyText: o.replyText || '', tagId: o.tagId ?? null,
+            position: o.position, label: o.label || '', aliases: o.aliases || '', replyText: o.replyText || '', tagId: o.tagId ?? null, aiDescription: o.aiDescription || '',
           }))
         }
       } catch {}
@@ -447,12 +550,15 @@ async function save() {
       repeatFrequency: form.value.repeatFrequency,
       // v3.9.4 — tick-box scope (legacy numberSlot tetap didukung backend)
       numberSlots: applyAll.value ? null : [...selectedSlots.value],
+      aiHybrid: form.value.aiHybrid,
+      aiThreshold: form.value.aiThreshold,
       options: form.value.options.map(o => ({
         position: o.position,
         label: o.label,
         aliases: o.aliases || '',
         replyText: o.replyText,
         tagId: o.tagId,
+        aiDescription: (o.aiDescription || '').trim(),
       })),
     }
     const res = await axios.put(`${API}/api/menu-gateway`, payload)
@@ -469,11 +575,20 @@ async function save() {
       aliases: o.aliases || '',
       replyText: o.replyText || '',
       tagId: o.tagId ?? null,
+      aiDescription: o.aiDescription || '',
     }))
+    // v3.9.25 — refresh state AI setelah save (metering + echo server)
+    form.value.aiHybrid = !!cfg.aiHybrid
+    form.value.aiThreshold = Number(cfg.aiThreshold ?? form.value.aiThreshold)
     toast.show({ icon: '✅', title: 'Tersimpan', message: 'Config Menu Gateway berhasil disimpan' })
   } catch (e) {
     // v3.9.4 — 409 = slot dilindungi Auto Reply (proteksi hybrid dua arah)
-    toast.show({ icon: '⚠️', title: e?.response?.status === 409 ? 'Slot punya auto-reply aktif' : 'Gagal simpan', message: e.response?.data?.error || 'Terjadi kesalahan' })
+    // v3.9.25 — 403 = plan ✗ (AI Hybrid Routing gate — upsell ramah)
+    toast.show({
+      icon: '⚠️',
+      title: e?.response?.status === 409 ? 'Slot punya auto-reply aktif' : (e?.response?.status === 403 ? 'Fitur belum tersedia di paket Anda' : 'Gagal simpan'),
+      message: e.response?.data?.error || 'Terjadi kesalahan',
+    })
   } finally {
     saving.value = false
   }

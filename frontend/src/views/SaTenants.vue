@@ -73,6 +73,7 @@ const FEATURE_DEFS = [
   { key: 'featCsat', label: 'CSAT' },
   { key: 'featGdriveBackup', label: 'Backup GDrive' },
   { key: 'featApiAccess', label: 'Akses API (v1)' },
+  { key: 'featAiRouting', label: 'AI Hybrid Routing' }, // v3.9.25 — Lite ✗ / Pro ✓ / Max ✓ (D5)
 ]
 const backingUp = ref(null)
 
@@ -420,6 +421,7 @@ function openPlanModal(t) {
     featCsat: !!t.plan?.featCsat,
     featGdriveBackup: !!t.plan?.featGdriveBackup,
     featApiAccess: !!t.plan?.featApiAccess,
+    featAiRouting: !!t.plan?.featAiRouting, // v3.9.25
   }
   planError.value = ''
 }
@@ -452,6 +454,30 @@ async function savePlan() {
     planError.value = e.response?.data?.error || 'Gagal menyimpan paket'
   } finally {
     planSaving.value = false
+  }
+}
+
+// v3.9.25 — AI Hybrid toggle per-tenant (D5a): SA flip aiHybrid via PUT /api/menu-gateway?tenant=
+// Plan gate tetap mengikat semua aktor (plan ✗ → 403 upsell — TIDAK ada backdoor).
+const aiHybridBusy = ref(null) // tenantId yang sedang di-toggle
+async function toggleAiHybrid(t) {
+  if (aiHybridBusy.value) return
+  const target = !t.aiHybridEnabled
+  const msg = target
+    ? `Aktifkan AI Hybrid Routing utk tenant #${t.id} ${t.name}? Jawaban customer yang gak kena keyword akan dicocokkan AI ke opsi menu — balasan tetap pesan resmi tenant. Biaya metering otomatis.`
+    : `Matikan AI Hybrid Routing utk tenant #${t.id} ${t.name}? Kembali ke perilaku lama (keyword saja → fallback antrean).`
+  if (!window.confirm(msg)) return
+  aiHybridBusy.value = t.id
+  try {
+    await axios.put(`${API}/api/menu-gateway?tenant=${t.id}`, { aiHybrid: target })
+    t.aiHybridEnabled = target
+    error.value = ''
+  } catch (e) {
+    error.value = e?.response?.status === 403
+      ? (e.response?.data?.error || 'Plan tenant ini tidak mendukung AI Hybrid Routing — upgrade paket dulu.')
+      : (e.response?.data?.error || 'Gagal toggle AI Hybrid')
+  } finally {
+    aiHybridBusy.value = null
   }
 }
 
@@ -753,6 +779,13 @@ onMounted(() => {
             <button class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm" @click="openNumbersModal(t)">Nomor WA</button>
             <button class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm" @click="openApiKeysModal(t)">API Keys</button>
             <button class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm" @click="openValidityModal(t)">Masa Aktif</button>
+            <!-- v3.9.25 — D5a: SA flip aiHybrid per-tenant (plan gate tetap mengikat di server) -->
+            <button
+              class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm"
+              :disabled="aiHybridBusy === t.id"
+              :title="t.plan?.featAiRouting ? (t.aiHybridEnabled ? 'AI Hybrid ON — klik utk matikan' : 'AI Hybrid OFF — klik utk aktifkan') : 'Plan tenant ini belum mendukung AI Hybrid (Pro/Max)'"
+              @click="toggleAiHybrid(t)"
+            >{{ aiHybridBusy === t.id ? '…' : (t.aiHybridEnabled ? '🤖 AI Hybrid: ON' : '🤖 AI Hybrid: OFF') }}</button>
             <button class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm" @click="openPlanModal(t)">Edit Paket</button>
             <button class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm" @click="openBrandingModal(t)">Branding</button>
             <button class="m3-btn m3-btn--tonal !min-h-[36px] !text-sm" :disabled="backingUp === t.id" @click="backupTenant(t)">

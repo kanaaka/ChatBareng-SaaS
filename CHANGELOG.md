@@ -1,3 +1,55 @@
+# v3.9.25 — FEATURE: AI Hybrid Gateway Routing (LLM classifier fallback untuk Menu Gateway) (GO Kanaka 2026-09-26 03:18) — RELEASED 04:26 (deploy 04:24–04:26: backup pre-v3925 → migrate deploy → restart PID 13216→25493, health 200, 3 WA slot reconnect; E2E final fix-audit 59/59 + regresi 121/121 + 72/72; audit Kimi K3 GO-WITH-NOTES — MEDIUM wibMonthStartUtc + 3 NIT difix pre-deploy; menunggu USER-VERIFY Kanaka)
+
+**Request (Kanaka 03:00–03:18, spec `docs/spec-v3.9.25-ai-hybrid-gateway.md`, keputusan D1–D10 + amandemen D5a terkunci):** trigger case nyata **Mazaya** — routing gateway strict
+(keyword/nomor) gagal mengenal kalimat natural ("kak besok bisa jam berapa ya buat fisio?") → jatuh ke fallback padahal maksud jelas. Solusi: bila jawaban customer **gak kena** keyword/angka DAN tenant menyalakan AI Hybrid → LLM classifier murni memilih opsi ({position, confidence}) → sistem eksekusi **rules lama persis** (tag + replyText resmi). LLM TIDAK PERNAH menyusun pesan ke customer (D2).
+
+**Desain terkunci (spec §3):** D1 hybrid (keyword fast-path SELALU duluan, LLM hanya no-match) · D2 classifier murni · D3 confidence gate per-tenant (aiThreshold 0.50–0.95, slider + 3 preset: Longgar 0.55/Seimbang 0.70/Ketat 0.85) · D4 output JSON ketat (invalid/out-of-range/parse-fail → fallback lama) · D5 toggle 2 lapis (plan `featAiRouting` Lite ✗/Pro ✓/Max ✓ + per-tenant `aiHybrid` default FALSE) + D5a SA boleh toggle per-tenant via `?tenant=` (plan gate tetap mengikat SEMUA aktor) · D6 graceful degradation (gagal/timeout 8s/NO_CONFIG → perilaku lama, TIDAK PERNAH crash) · D7 metering `source='gateway'` + aiUsage bulan WIB di GET · D8 aiDescription per-opsi ≤200 (kosong → label+aliases) · D9 konteks ≤8 pesan (media → [media]) · D10 non-goals parked.
+
+**Migration (SATU, additive murni — 4 ADD COLUMN):**
+- `prisma/migrations/2026092603450000_ai_hybrid_gateway/migration.sql` — `MenuGatewayConfig.aiHybrid BOOLEAN NOT NULL DEFAULT 0` + `aiThreshold REAL NOT NULL DEFAULT 0.7`; `MenuGatewayOption.aiDescription TEXT NOT NULL DEFAULT ''`; `TenantPlan.featAiRouting BOOLEAN NOT NULL DEFAULT 0`. Zero DROP/destruktif; default semuanya OFF → perilaku existing 100% terjaga. Prod: `npx prisma migrate deploy` saat release (copy-DB E2E path = apply SQL manual + record checksum `a501aa38…`, pola proven v3.9.14/23/24). Schema.prisma sinkron 1:1 (format+validate+generate OK).
+
+**Backend — service `src/services/menuGateway.js` (additive):**
+- `classifyAiRoute(tenantId, chat, cfg, customerText)` — guard 2 lapis (aiHybrid ON + plan featAiRouting + AiConfig hasKey) → bangun prompt (opsi bernumber + aiDescription / fallback label+aliases; history ≤8 pesan terakhir teks, media → "[media]") → `aiChat({ source:'gateway', tenantId, chatId, timeoutMs: 8000 })` → parse ketat `parseAiRouteJson()` (regex objek pertama, strip code fence; position int 1..N + confidence 0..1; invalid → null) → confidence ≥ threshold (clamp 0.50–0.95) → return opsi; selain itu null.
+- Hook di `handleChoice()` SETELAH `matchOption()` gak kena: `aiOpt` → `executeGatewayChoice()` — fungsi pindahan PERSIS dari blok pilihan-valid lama (set menuOptionId + ChatEvent menu_choice + sendAutoMessage(replyText) + tagContactAndMirror — SATU kode utk keyword & AI, tanpa duplikasi logic); null/gagal → path lama persis (fallbackText + fallbackTagId + antrean). AI error di-catch → tidak pernah crash (D6).
+- Export baru utk E2E/parity: `classifyAiRoute`, `parseAiRouteJson`, `executeGatewayChoice` + konstanta AI_*.
+
+**Backend — `src/services/plans.js`:** FEATURE_KEYS + `featAiRouting`; preset Lite ✗ / Pro ✓ / Max ✓; LABELS requireFeature + 'AI Hybrid Routing' (403 upsell ramah).
+
+**Backend — `src/services/llm.js`:** whitelist `logAiUsage` safeSource + `'gateway'` (1 baris; aiChat sudah support source/tenantId/chatId sejak v3.9.24 — tidak diubah lainnya).
+
+**Backend — `src/routes/menuGateway.js`:**
+- ALLOWED_TOP_FIELDS + `aiHybrid`/`aiThreshold`; ALLOWED_OPTION_FIELDS + `aiDescription`; field asing tetap 400.
+- Validasi PUT: aiHybrid boolean STRICT ("yes"/1 → 400); aiThreshold number 0.50–0.95 ("0.7" string/out-of-range 0.49/0.96 → 400); aiDescription string ≤200 trim. aiThreshold boleh diset walau toggle OFF (pre-set).
+- Plan gate (D5/D5a): PUT `aiHybrid=true` + plan ✗ (admin MAUPUN super_admin via ?tenant=) → **403** upsell ramah (`AI Hybrid Routing tidak tersedia di paket Anda…`, feature: featAiRouting) — TIDAK ada backdoor; aiHybrid=false bebas (matikan tidak diblokir plan).
+- GET + `aiHybrid`/`aiThreshold`/`options[].aiDescription` + `aiUsage: {calls, costUsd, costRp, usdToIdr}` bulan WIB berjalan (AiUsageLog source='gateway' tenant ini, aggregate ≥ 1-bulan 00:00 WIB; kurs AiConfig.usdToIdr, fallback 16000); plan ✗ → `aiUsage: null`.
+- PUT options createMany + aiDescription; **sinkron balik AutoReplyConfig** (v3.9.25, ditemukan QA E2E): bila ada row menu enabled → greetMode='menu'+greetEnabled=true; bila tidak ada → 'text'+false (mirror jalur AutoReply PUT — radio Mode greeting tidak stale lagi).
+
+**Backend — `src/routes/wa.js` — POST /api/wa/inbound (DEBUG/E2E-ONLY, additive):** simulasi pesan masuk → `wa.processIncomingMessage` (jalur runtime ASLI tanpa Baileys). Guard berlapis: super_admin SAJA + env `E2E_DEBUG_INBOUND=1` + `WA_DISABLED=1` (kill-switch prod) → 403 semua di luar itu. Tanpa isi pesan di log/audit.
+
+**Backend — `src/routes/superadmin.js`:** `planToJson` + `featAiRouting` (echo PUT plan & list tenants); GET /api/sa/tenants + `aiHybridEnabled` (status row menu shared tenant — utk toggle D5a).
+
+**Frontend — `AdminMenuGateway.vue`:** section "AI Hybrid Routing (Beta)" — toggle (disabled + banner upsell bila plan ✗ via aiUsage===null), slider aiThreshold 0.50–0.95 step 0.05 + 3 preset klik-instal (Longgar/Seimbang/Ketat + keterangan konsekuensi), penjelasan dinamis (≥ t → salur otomatis; < t → antrean CS), info box tetap ("AI tidak pernah menulis balasan sendiri…"), hint biaya "≈ Rp X bulan ini — metering otomatis (N call AI)", per-opsi textarea "Deskripsi AI (opsional, ≤200)" + counter. TANPA v-html. Slider bisa disetel walau toggle OFF (pre-set).
+
+**Frontend — `SaTenants.vue` (SA panel, D5a):** tombol "🤖 AI Hybrid: ON/OFF" per-tenant (confirm window.confirm → PUT /api/menu-gateway?tenant=<id> { aiHybrid }); 403 plan ✗ tampil sebagai pesan error jelas (SA lihat plan belum mendukung); FEATURE_DEFS + "AI Hybrid Routing" (modal Edit Paket + badge fitur aktif ikut muncul otomatis).
+
+**E2E (`scripts/e2e-v3925.cjs` — NEW, 58 check):** mock LLM 127.0.0.1:11435 token fields 700/100/50 + skenario {position,confidence} ter-script per test + capture prompt. Trigger runtime via POST /api/wa/inbound (jalur ASLI processIncomingMessage → handleChoice) — in-process require DILARANG (dotenv .env prod kebaca). Setup: seed Contact 1:1 per chat (tag menempel ke kontak), hapus row menu per-slot warisan tenant-8 di COPY db (slot-0 row options lama menimpa shared — QA lesson). N1 keyword match → 0 row gateway (fast-path D1); N2 no-match + OFF → fallback lama + fallbackTag + 0 row; N3 no-match + ON → menuOptionId opsi 2 + row 'gateway' tenant+chat + cost PERSIS 0.000118 (tol 1e-9) + snapshot rate seed + tag opsi 2 (TANPA fallback tag); N4 conf 0.55 @ 0.70 → fallback + PUT aiThreshold=0.50 → call sama → route (opsi 1); N4b conf 0.4 → fallback; N5 position 9 → fallback + row ok=true; N6 mock 500 → fallback + row ok=false UPSTREAM_5XX (D6); N7 plan ✗ → PUT admin 403 + aiUsage null + runtime 0 row + **N7d SA ?tenant= → 403 JUGA** + plan ✓ → SA 200 (D5a); N8 aiDescription kosong → prompt capture "1. Komplain — Komplain — komplain, keluhan" (label+aliases, D8); N9 aiUsage = DB (calls 7 / costUsd / costRp=11) + row bulan-lalu tidak masuk; N10 validasi liar (201 char/"yes"/0.49/0.96/"0.7" → 400; 0.85 → 200 echo) + field asing 400; S3b key tidak bocor di response.
+**58/58 PASS ×2 beruntun (idempoten re-run). Regresi: e2e-v3924 72/72 PASS + e2e-v3919 121/121 PASS** (server copy port 5099, DATABASE_URL eksplisit file:/tmp/saas-v3-e2e.db, WA_DISABLED=1 + E2E_DEBUG_INBOUND=1; prod 5047 tidak disentuh — kolom ai* BELUM ada di DB prod, migrate saat release).
+
+**Gates:** `node --check` ×7 file OK; `npx vite build` exit 0 (2.69s, outDir ../public, index.html fresh `index-Bqr2b-E9.js` — dilihat dari log penuh, bukan pipe tail); `prisma format`+`validate`+`generate` OK. check( count programmatic: v3925=59 (58 runtime + 1 helper-def), v3924=73 (72+1), v3919=117 (121 hasil, 4 check dipanggil 2× dalam loop).
+
+**Catatan implementasi / deviation (terdokumentasi di kode):**
+- **POST /api/wa/inbound (endpoint debug BARU)** — spec tidak minta; dibutuhkan agar E2E men-trigger `handleChoice` lewat jalur runtime asli tanpa Baileys (in-process require terbukti berbahaya: dotenv .env prod kebaca saat module load — nyaris menyentuh DB prod; QA E2E run-1). Guard triple (SA-only + E2E_DEBUG_INBOUND=1 + WA_DISABLED=1) membuat endpoint mati total di produksi normal.
+- **Sinkron balik AutoReplyConfig di PUT menu-gateway** — tidak di spec; ditemukan QA E2E (radio Mode greeting stale di halaman Auto Reply setelah menu OFF dari sini). Mirror jalur balik dari AutoReply PUT (mode-menu paksa ON; menu off → text). Non-fatal try/catch.
+- **Plan-gate `featAiRouting` di runtime TIDAK membuat AiUsageLog row** — no-match + plan ✗ → LLM tidak dipanggil sama sekali (0 cost, 0 row; spec §9 N7e). Row ok=false hanya untuk call yang BENAR-BENAR menyentuh provider (pola v3.9.24 NO_CONFIG tidak di-log, konsisten).
+- **aiUsage shape** `{calls, costUsd, costRp, usdToIdr}` — spec minta {calls, costUsd, costRp}; usdToIdr ditambahkan utk transparansi kurs render FE (additive).
+- **planToJson + GET /api/sa/tenants aiHybridEnabled** — additive field utk panel SA D5a (echo plan baru + status toggle).
+
+**Rollout (spec §12):** default OFF semua tenant → behavior lama 100% sampai tenant menyalakan sendiri / SA flip via panel. Setelah QA lulus + deploy: tawarkan aktifasi ke **Mazaya** (case pemicu) — manual, by request. Estimasi biaya (spec §11): ≈ Rp 1.6/call; traffic 300 msg/bulan @30% no-match ≈ **Rp 145/bulan**.
+
+**Deploy checklist (Alita):** backup DB → `npx prisma migrate deploy` (migrasi 2026092603450000, additive) → restart server 5047 → smoke: GET /api/menu-gateway aiUsage ada (plan ✓) / null (plan ✗); PUT aiHybrid true → runtime; E2E copy-db path di atas.
+
+---
+
 # v3.9.24 — FEATURE: AI Usage (cost metering + panel dashboard + rate tabel per-model) (GO Kanaka 2026-09-26 02:21) — RELEASED — USER-VERIFIED ✅ (Kanaka QA 02:47–02:56)
 
 **Request (Kanaka 02:04–02:21, spec `docs/spec-v3.9.24-ai-usage.md`):** setiap call LLM

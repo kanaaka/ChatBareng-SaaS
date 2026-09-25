@@ -22,6 +22,14 @@ const { encryptText, decryptTextSafe } = require('./textCrypto')
 // Contact.lastMenuShownAt utk menu & teks); di sini hanya re-export.
 const { wibDateString, personalizeText, stripUnknownPlaceholders, repeatAllows } = require('./autoReply')
 
+// v3.9.25 — LLM classifier (lazy require di dalam classifyRoute utk hindari
+// circular import — llm.js tidak require menuGateway, tapi jaga kebiasaan aman).
+const AI_CLASSIFY_TIMEOUT_MS = 8000 // spec D6 — timeout LLM; gagal → fallback lama
+const AI_CLASSIFY_MAX_HISTORY = 8 // spec D9 — max 8 pesan terakhir (teks; media → "[media]")
+const AI_DESC_MAX_LEN = 200 // spec D8 — aiDescription per opsi ≤200 char
+const AI_THRESHOLD_MIN = 0.5
+const AI_THRESHOLD_MAX = 0.95
+
 const SENDER_NAME = 'Auto Reply'
 const SWEEP_INTERVAL_MS = 30 * 1000 // sweep timeout tiap 30 detik (spec §4)
 
@@ -394,45 +402,180 @@ async function handleChoice(chatId, plaintextText) {
     if (claimed.count === 0) return false // kalah race (timeout/release lebih dulu) → skip
 
     const opt = matchOption(plaintextText, cfg.options)
+    let aiOpt = null // v3.9.25 — opsi terpilih via AI classifier (null = fallback lama)
 
     if (opt) {
-      // ── Pilihan valid (D10): konfirmasi per opsi → tag → queue ──
-      if (chat.menuOptionId !== opt.id) {
-        await prisma.chat.updateMany({
-          where: { id: chatId, tenantId, menuState: 'done' },
-          data: { menuOptionId: opt.id },
-        })
-      }
-      // Spec §14 rekomendasi: catat ChatEvent menu_choice (analytics menyusul)
-      await prisma.chatEvent.create({
-        data: { tenantId, chatId, userId: null, type: 'menu_choice', createdAt: new Date() },
-      }).catch(e => console.error('[MenuGateway] chatEvent error (non-fatal):', e.message))
-
-      const sent = await sendAutoMessage(chat, opt.replyText || cfg.fallbackText, chat.contactName)
-      if (!sent) console.error(`[MenuGateway] reply opsi gagal terkirim (chat=${chatId}) — tag & queue tetap jalan`)
-
-      // Tag kontak (persistent) + mirror chat — bila opsi punya tag
-      if (opt.tagId && chat.contact) {
-        await tagContactAndMirror(tenantId, chat.contact.id, opt.tagId, chatId, null)
-      }
+      await executeGatewayChoice(chat, cfg, opt, 'keyword')
     } else {
-      // ── Fallback (D2): TIDAK ada loop menu → tag "Lainnya" + queue ──
-      const sent = await sendAutoMessage(chat, cfg.fallbackText, chat.contactName)
-      if (!sent) console.error(`[MenuGateway] fallbackText gagal terkirim (chat=${chatId}) — tag & queue tetap jalan`)
-      if (cfg.fallbackTagId && chat.contact) {
-        await tagContactAndMirror(tenantId, chat.contact.id, cfg.fallbackTagId, chatId, null)
+      // ═══ v3.9.25 — AI Hybrid Routing (D1–D6): LLM classifier fallback ═══
+      // HANYA saat: toggle ON + plan featAiRouting ✓ + AiConfig ada key. LLM dipanggil
+      // SEBELUM fallbackText supaya pilihan AI dieksekusi SAMA dgn pilihan normal.
+      // Kegagalan apapun (NO_CONFIG/timeout/error/confidence kurang/parse gagal) →
+      // path lama persis: fallbackText + fallbackTagId + antrean (D6 graceful).
+      try {
+        aiOpt = cfg.aiHybrid ? await classifyAiRoute(tenantId, chat, cfg, plaintextText) : null
+      } catch (aiErr) {
+        console.error('[MenuGateway] AI classify error (non-fatal, fallback lama):', aiErr.message)
+      }
+      if (aiOpt) {
+        await executeGatewayChoice(chat, cfg, aiOpt, 'ai')
+      } else {
+        // ── Fallback (D2): TIDAK ada loop menu → tag "Lainnya" + queue ──
+        const sent = await sendAutoMessage(chat, cfg.fallbackText, chat.contactName)
+        if (!sent) console.error(`[MenuGateway] fallbackText gagal terkirim (chat=${chatId}) — tag & queue tetap jalan`)
+        if (cfg.fallbackTagId && chat.contact) {
+          await tagContactAndMirror(tenantId, chat.contact.id, cfg.fallbackTagId, chatId, null)
+        }
       }
     }
 
     // Queue-kan (FIFO key baru) + broadcast
     await queueChatAfterMenu(chat)
     broadcast.emitToTenant(tenantId, 'menu_waiting_update', { count: await countWaiting(tenantId) })
-    console.log(`[MenuGateway] ${opt ? `opsi ${opt.position} (${opt.label})` : 'fallback'} → done & queued: chat=${chatId} (tenant ${tenantId})`)
+    console.log(`[MenuGateway] ${opt ? `opsi ${opt.position} (${opt.label})` : (aiOpt ? `opsi ${aiOpt.position} (${aiOpt.label}) via AI` : 'fallback')} → done & queued: chat=${chatId} (tenant ${tenantId})`)
     return true
   } catch (e) {
     console.error('[MenuGateway] handleChoice error:', e)
     return false
   }
+}
+
+/**
+ * v3.9.25 — Eksekusi pilihan (D1/D2: SATU kode utk pilihan keyword ATAU AI).
+ * Pindahan persis dari blok "Pilihan valid (D10)" lama di handleChoice — logic
+ * TIDAK diubah: set menuOptionId → ChatEvent menu_choice → sendAutoMessage(replyText)
+ * → tagContactAndMirror. LLM TIDAK PERNAH menyusun pesan ke customer (D2).
+ */
+async function executeGatewayChoice(chat, cfg, opt, viaLabel) {
+  const chatId = chat.id
+  const tenantId = chat.tenantId
+  if (chat.menuOptionId !== opt.id) {
+    await prisma.chat.updateMany({
+      where: { id: chatId, tenantId, menuState: 'done' },
+      data: { menuOptionId: opt.id },
+    })
+  }
+  // Spec §14 rekomendasi: catat ChatEvent menu_choice (analytics menyusul)
+  await prisma.chatEvent.create({
+    data: { tenantId, chatId, userId: null, type: 'menu_choice', createdAt: new Date() },
+  }).catch(e => console.error('[MenuGateway] chatEvent error (non-fatal):', e.message))
+
+  const sent = await sendAutoMessage(chat, opt.replyText || cfg.fallbackText, chat.contactName)
+  if (!sent) console.error(`[MenuGateway] reply opsi gagal terkirim (chat=${chatId}) — tag & queue tetap jalan`)
+
+  // Tag kontak (persistent) + mirror chat — bila opsi punya tag
+  if (opt.tagId && chat.contact) {
+    await tagContactAndMirror(tenantId, chat.contact.id, opt.tagId, chatId, null)
+  }
+  if (viaLabel === 'ai') {
+    console.log(`[MenuGateway] opsi ${opt.position} (${opt.label}) dipilih via AI classifier (chat=${chatId})`)
+  }
+}
+
+// ─── v3.9.25 — AI Hybrid Routing: classifier murni (D2/D4/D6) ─────────────
+/**
+ * Parse ketat output LLM (D4): JSON {position:int, confidence:0..1}.
+ * Invalid/out-of-range/parse-fail → null (perlakukan SAMA dgn no-match → fallback).
+ * Strip code fence bila ada (provider kadang bungkus JSON); HANYA objek pertama
+ * {..} yang dianggap — sisanya diabaikan (anti-injection kecil).
+ */
+function parseAiRouteJson(rawContent) {
+  const raw = String(rawContent || '').trim()
+  if (!raw) return null
+  const m = raw.match(/\{[\s\S]*\}/)
+  if (!m) return null
+  let parsed
+  try {
+    parsed = JSON.parse(m[0])
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object') return null
+  const position = parsed.position
+  const confidence = parsed.confidence
+  if (!Number.isInteger(position) || position < 0) return null
+  const conf = Number(confidence)
+  if (!Number.isFinite(conf) || conf < 0 || conf > 1) return null
+  return { position, confidence: conf }
+}
+
+/**
+ * classifAiRoute → opsi terpilih (row MenuGatewayOption) ATAU null.
+ * - null = jatuh ke fallback lama (no-match/parse-fail/out-of-range/error/below-threshold).
+ * - LLM dipanggil via aiChat source:'gateway' (metering AiUsageLog — D7).
+ * - Graceful degradation (D6): SEMUA kegagalan di-catch di sini / pemanggil — tidak crash.
+ */
+async function classifyAiRoute(tenantId, chat, cfg, customerText) {
+  const llm = require('./llm')
+  const plans = require('./plans')
+
+  // Guard 2 lapis pemanggil (defense-in-depth; handleChoice sudah cek toggle):
+  if (!cfg.aiHybrid) return null
+  const plan = await plans.getPlan(tenantId)
+  if (!plan || !plan.featAiRouting) return null // plan ✗ → tanpa AI (juga plan belum ada)
+
+  const aiCfg = await llm.getAiConfig()
+  if (!aiCfg || !aiCfg.hasKey) return null // NO_CONFIG → fallback lama (0 cost, tanpa row)
+
+  const options = Array.isArray(cfg.options) ? cfg.options : []
+  if (options.length === 0) return null
+
+  // ── Bangun prompt (spec §8): opsi bernomor + konteks ──
+  const lines = options.map((o) => {
+    const desc = String(o.aiDescription || '').trim()
+    const context = desc || [String(o.label || '').trim(), String(o.aliases || '').trim()].filter(Boolean).join(' — ')
+    return `${o.position}. ${o.label || '…'} — ${context}`
+  })
+  const system = [
+    'Kamu classifier routing menu WA. Pilih nomor opsi yang paling cocok dengan pesan customer.',
+    'Balas HANYA JSON: {"position": <int>, "confidence": <0..1>}.',
+    'Tidak ada yang cocok → {"position": 0, "confidence": 0}.',
+    'Daftar opsi:',
+    ...lines,
+  ].join('\n')
+
+  // ── Konteks chat minimal (D9): max 8 pesan terakhir, teks saja; media → [media] ──
+  const msgs = await prisma.message.findMany({
+    where: { tenantId, chatId: chat.id, purged: false },
+    select: { direction: true, content: true, mediaPath: true, timestamp: true },
+    orderBy: { id: 'desc' },
+    take: AI_CLASSIFY_MAX_HISTORY,
+  })
+  const history = msgs
+    .reverse()
+    .map((m) => {
+      const who = m.direction === 'out' ? 'CS' : 'Customer'
+      // content terenkripsi at-rest; plaintext dari socket ada di customerText.
+      // Di sini aman: decryptTextSafe; plaintext pesan TERAKHIR = customerText (parameter).
+      let text = m.mediaPath ? '[media]' : decryptTextSafe(m.content)
+      text = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 300)
+      return `${who}: ${text || '[media]'}`
+    })
+  const lastText = String(customerText || '').replace(/\s+/g, ' ').trim().slice(0, 300)
+  const userContent = [history.join('\n'), `Pesan terakhir: "${lastText}"`].filter(Boolean).join('\n')
+
+  const r = await llm.aiChat({
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: userContent },
+    ],
+    timeoutMs: AI_CLASSIFY_TIMEOUT_MS,
+    fallback: true,
+    source: 'gateway', // D7 — metering AiUsageLog (whitelist logAiUsage)
+    tenantId,
+    chatId: chat.id,
+  })
+  if (!r.ok) return null // ok=false → row AiUsageLog ok=false tercatat (D6/D7) → fallback
+
+  const parsed = parseAiRouteJson(r.content)
+  if (!parsed) return null // parse gagal (D4) → fallback lama
+  const { position, confidence } = parsed
+  const opt = options.find(o => o.position === position)
+  if (!opt || position < 1 || position > options.length) return null // out-of-range (D4)
+  const threshold = Number(cfg.aiThreshold)
+  const effThreshold = Number.isFinite(threshold) ? Math.min(AI_THRESHOLD_MAX, Math.max(AI_THRESHOLD_MIN, threshold)) : 0.7
+  if (confidence < effThreshold) return null // D3 — di bawah gate → fallback perilaku lama
+  return opt
 }
 
 // ─── Chip admin: hitung chat awaiting (per tenant) ──────────────────────
@@ -623,6 +766,15 @@ module.exports = {
   composeMenuIntro,
   startFlow,
   handleChoice,
+  // v3.9.25 — AI Hybrid Routing (export utk E2E/unit parity): classifier + parse ketat
+  classifyAiRoute,
+  parseAiRouteJson,
+  executeGatewayChoice,
+  AI_CLASSIFY_TIMEOUT_MS,
+  AI_CLASSIFY_MAX_HISTORY,
+  AI_DESC_MAX_LEN,
+  AI_THRESHOLD_MIN,
+  AI_THRESHOLD_MAX,
   releaseAwaiting,
   countWaiting,
   listWaiting,
