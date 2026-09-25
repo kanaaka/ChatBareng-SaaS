@@ -216,6 +216,7 @@
             <li><strong>Upload</strong>: pilih folder → tombol upload (folder <strong>Link</strong> khusus menyimpan link/tautan).</li>
             <li><strong>Insert ke chat</strong>: klik file → konfirmasi insert (gambar bisa diberi caption) → file terkirim sebagai pesan ke pelanggan.</li>
             <li><strong>Download</strong>: setiap file bisa diunduh ulang kapan pun.</li>
+            <li><strong>Kuota penyimpanan</strong> (v3.9.16) — bar di bagian atas panel menampilkan pemakaian vs kuota paket (mis. 8,3 GB / 10,0 GB). Warna netral = masih banyak, <strong>kuning = mendekati penuh (≥80%)</strong>, <strong>merah = hampir penuh (≥95%)</strong>. Bar ke-update otomatis tiap upload/hapus — dan kalau kuota habis, upload baru ditolak dengan pesan yang jelas.</li>
           </ol>
         </section>
 

@@ -31,6 +31,24 @@
       </div>
     </div>
 
+    <!-- v3.9.16 — Usage kuota penyimpanan Tangan Kanan (current vs plan.tkQuotaBytes).
+         Bar netral → kuning ≥80% → merah ≥95%; refresh otomatis via fetchFolders
+         (mount, upload, delete, socket tk_file_*). quota null = unlimited → teks saja. -->
+    <div v-if="tkQuota" class="px-3 py-2 border-b border-gray-200 flex-shrink-0">
+      <template v-if="tkQuota.quota != null">
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="text-xs font-medium" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">Kuota Tangan Kanan</span>
+          <span class="text-xs tabular-nums" :style="{ color: quotaColor }">{{ fmtBytes(tkQuota.current) }} / {{ fmtBytes(tkQuota.quota) }}</span>
+        </div>
+        <div class="h-1.5 w-full rounded-full overflow-hidden" :style="{ background: 'var(--md-sys-color-surface-container-high)' }">
+          <div class="h-full rounded-full transition-all duration-300" :style="{ width: quotaPercent + '%', background: quotaColor }"></div>
+        </div>
+      </template>
+      <div v-else class="text-xs" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
+        Penyimpanan: {{ fmtBytes(tkQuota.current) }} terpakai · tanpa batas kuota
+      </div>
+    </div>
+
     <!-- Scrollable content -->
     <div class="flex-1 overflow-y-auto">
       <!-- Loading -->
@@ -480,6 +498,36 @@ const insertCaption = ref('') // v0.1.21 — caption editable saat insert image
 const inserting = ref(false)
 const uploadPreview = ref(null) // v0.1.21 — dataURL preview sebelum upload
 const uploadCaption = ref('') // v0.1.21 — caption saat upload image
+
+// v3.9.16 — usage kuota penyimpanan TK (request Kanaka 25/9: "mereka tau kalau
+// sudah mendekati full atau masih banyak"). Fetched via GET /api/tk/quota;
+// di-refresh dari fetchFolders() supaya ke-cover mount/upload/delete/socket events.
+const tkQuota = ref(null) // { current, quota, percent, remaining } | null (gagal → bar hidden)
+
+async function fetchTkQuota() {
+  try {
+    const res = await axios.get(`${API}/api/tk/quota`)
+    tkQuota.value = res.data
+  } catch (e) {
+    console.error('TK quota fetch error:', e)
+    tkQuota.value = null
+  }
+}
+
+const quotaPercent = computed(() => tkQuota.value?.percent ?? 0)
+const quotaColor = computed(() => {
+  const p = tkQuota.value?.percent ?? 0
+  if (p >= 95) return '#DC2626' // merah ≥95% — hampir penuh
+  if (p >= 80) return '#D97706' // kuning ≥80% — mendekati full
+  return 'var(--md-sys-color-primary)' // netral — masih banyak
+})
+
+function fmtBytes(n) {
+  const num = Number(n) || 0
+  if (num >= 1024 * 1024 * 1024) return (num / (1024 * 1024 * 1024)).toFixed(1).replace('.', ',') + ' GB'
+  if (num >= 1024 * 1024) return Math.round(num / (1024 * 1024)) + ' MB'
+  return num + ' B'
+}
 const pendingImageFile = ref(null) // v0.1.21 — File object yang nunggu modal
 const toast = ref(null)
 let toastTimer = null
@@ -535,6 +583,7 @@ function systemFolderIcon(name) {
 
 async function fetchFolders() {
   loading.value = true
+  fetchTkQuota() // v3.9.16 — kuota ikut refresh di SEMUA jalur (mount/upload/delete/socket)
   try {
     const res = await axios.get(`${API}/api/tk/folders`)
     folders.value = res.data.folders || []

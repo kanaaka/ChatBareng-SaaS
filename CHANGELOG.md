@@ -1,3 +1,29 @@
+# v3.9.16 — FITUR: Usage kuota Tangan Kanan di panel tenant (2026-09-25)
+
+**Request (Kanaka 11:41):** tenant bisa lihat sendiri seberapa penuh kuota
+Tangan Kanan mereka ("mereka tau kalau sudah mendekati full atau masih banyak").
+
+**Backend:**
+- `src/routes/tanganKanan.js` — **GET /api/tk/quota** (tenant-scoped): `current`
+  (SUM SharedFile.size), `quota` (plan.tkQuotaBytes; null = unlimited), `percent`
+  (0–100), `remaining`. Sumber angka = `checkTkQuota(tid, 0)` yang sama dipakai
+  guard upload 403 → tampilan gak mungkin nyimpang dari enforce.
+
+**Frontend (TanganKanan.vue):**
+- Bar kuota di bawah search: label "Kuota Tangan Kanan" + "8,3 GB / 10,0 GB" +
+  bar tipis. Warna: netral (primary) → **kuning ≥80%** → **merah ≥95%**.
+  quota null (plan nihil) → teks "tanpa batas kuota".
+- `fetchTkQuota()` dipanggil dari `fetchFolders()` → ke-cover SEMUA jalur refresh
+  (mount, upload, delete, socket `tk_file_created/deleted`) — bar selalu fresh.
+
+**QA (copy 5099, Chrome 18801 raw-CDP):** API shape PASS (9×950MB = 8,35GB dari
+10GB → 83%); visual PASS — bar amber "8,3 GB / 10,0 GB", file list utuh, layout
+bersih.
+**Catatan QA:** seed uji 5GB memicu P2023 (`SharedFile.size` = Int, max ~2,14
+miliar/row) → /folders 500 di COPY DB — ARTIFAK QA, bukan bug produksi (upload TK
+capped 10MB/file via maxMediaSizeMb; mustahil overflow). Backlog: size → BigInt
+kalau suatu saat limit upload naik jauh di atas 2GB.
+
 # v3.9.15 — FIX: Branding live update + load saat SPA login (bug "ParahitaAsik") (2026-09-25)
 
 **Bug (Kanaka report 11:02):** superadmin set brandName tenant jadi "ParahitaAsik" →

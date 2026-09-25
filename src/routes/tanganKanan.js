@@ -57,6 +57,26 @@ function getSystemFolderId(type, folders) {
   return folder?.id || null
 }
 
+// GET /api/tk/quota — v3.9.16: usage kuota penyimpanan TK utk tampilan tenant
+// (bar "mendekati full / masih banyak", request Kanaka 2026-09-25). Tenant-scoped;
+// quota null = unlimited (plan nihil) → frontend tampil teks tanpa batas.
+router.get('/quota', ...rt, async (req, res) => {
+  try {
+    const q = await plans.checkTkQuota(req.tenantId, 0)
+    const current = Number(q.current) || 0
+    const quota = q.quota == null ? null : Number(q.quota)
+    res.json({
+      current,
+      quota,
+      percent: quota ? Math.min(100, Math.round((current / quota) * 100)) : null,
+      remaining: quota == null ? null : Math.max(0, quota - current),
+    })
+  } catch (e) {
+    console.error('TK quota error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // ─── Folders ─────────────────────────────────────────────────────
 
 // GET /api/tk/folders — list folders with files grouped
