@@ -16,6 +16,11 @@ grup.
 - QA kirim manual: Zahrina (single → 200, thread @lid existing), Brandcom PDC
   (group, 200, `waMessageId 3EB085378F9ACB6CCDC9CA`), invalid slot 400, isolasi
   tenant (t12 lihat slot-0 miliknya), partisi s0+s1 == baseline.
+- **Target #3 — Desta (Mazaya CS, 6285645028158@s.whatsapp.net)** (request Kanaka
+  15:30): kirim notif manual → 200, `waMessageId 3EB02CB7CF37B13836C010`,
+  ChatEvent api_message di chat 7565 ✓. Total 3 target: Zahrina, Desta, Brandcom
+  PDC. Notif ke target 1:1 tidak di-persist ke row Message chat CS — by design
+  (API v1 one-way notification; thread CS tidak tercemar notif sistem).
 
 # v3.9.17 — FITUR: Filter chat-list by nomor WA (numberSlot) (2026-09-25)
 
