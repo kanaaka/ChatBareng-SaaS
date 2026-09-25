@@ -392,6 +392,18 @@
             <div v-if="brandingForm.logoPreview" class="mt-2 flex items-center gap-3">
               <img :src="brandingForm.logoPreviewUrl" alt="preview logo" style="max-height: 48px; max-width: 160px; border-radius: 8px;" />
             </div>
+            <!-- v3.9.16b — status logo terpasang + aksi hapus (dulu: sekali pasang tak bisa dihapus) -->
+            <div v-if="brandingModalTenant.logoPath && !brandingForm.logoFile && !brandingForm.removeLogo" class="mt-2 flex items-center gap-2">
+              <span class="text-xs" style="opacity: .75;">Logo terpasang ✓</span>
+              <button
+                class="m3-btn m3-btn--text !min-h-[32px] !text-xs"
+                style="color: var(--md-sys-color-error);"
+                @click="brandingForm.removeLogo = true"
+              >Hapus Logo</button>
+            </div>
+            <div v-else-if="brandingForm.removeLogo" class="mt-2 text-xs" style="color: var(--md-sys-color-error);">
+              Logo akan dihapus saat Simpan Branding. <button class="underline" @click="brandingForm.removeLogo = false">Batal</button>
+            </div>
           </div>
           <!-- Live preview header -->
           <div class="mt-4 p-3 rounded-[var(--md-sys-shape-corner-m)" style="background: var(--md-sys-color-surface-container-high);">
@@ -928,14 +940,14 @@ async function changePassword() {
 
 // ── v3.4 — Modal Branding ──
 const brandingModalTenant = ref(null)
-const brandingForm = ref({ brandName: '', logoFile: null, logoPreview: false, logoPreviewUrl: '' })
+const brandingForm = ref({ brandName: '', logoFile: null, logoPreview: false, logoPreviewUrl: '', removeLogo: false })
 const brandingSaving = ref(false)
 const brandingError = ref('')
 const logoInputRef = ref(null)
 
 function openBrandingModal(t) {
   brandingModalTenant.value = t
-  brandingForm.value = { brandName: t.brandName || '', logoFile: null, logoPreview: false, logoPreviewUrl: '' }
+  brandingForm.value = { brandName: t.brandName || '', logoFile: null, logoPreview: false, logoPreviewUrl: '', removeLogo: false }
   brandingError.value = ''
 }
 function closeBrandingModal() {
@@ -945,6 +957,7 @@ function onLogoPicked(ev) {
   const file = ev.target?.files?.[0] || null
   brandingForm.value.logoFile = file
   brandingForm.value.logoPreview = !!file
+  if (file) brandingForm.value.removeLogo = false // pilih logo baru = batalkan intent hapus
   if (brandingForm.value.logoPreviewUrl) URL.revokeObjectURL(brandingForm.value.logoPreviewUrl)
   brandingForm.value.logoPreviewUrl = file ? URL.createObjectURL(file) : ''
 }
@@ -957,6 +970,8 @@ async function saveBranding() {
     const fd = new FormData()
     fd.append('brandName', brandingForm.value.brandName.trim())
     if (brandingForm.value.logoFile) fd.append('logo', brandingForm.value.logoFile)
+    // v3.9.16b — hapus logo (mutual-exclusive dgn upload baru; backend validasi juga)
+    if (!brandingForm.value.logoFile && brandingForm.value.removeLogo) fd.append('removeLogo', 'true')
     await axios.put(`${API}/api/sa/tenants/${t.id}/branding`, fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })

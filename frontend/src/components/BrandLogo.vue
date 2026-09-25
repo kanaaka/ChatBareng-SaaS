@@ -10,13 +10,13 @@
   -->
   <span :class="['m3-wordmark', sizeClass]" :style="{ color: color || 'inherit' }">
     <img
-      v-if="logoUrl"
-      :src="logoUrl"
+      v-if="logoSrc"
+      :src="logoSrc"
       alt="logo"
       class="brand-logo-img"
       :style="{ height: logoHeight }"
     />
-    <slot v-if="!logoUrl || showTextWithLogo">{{ effectiveText }}</slot>
+    <slot v-if="!logoSrc || showTextWithLogo">{{ effectiveText }}</slot>
     <span v-if="showSuffix" class="brand-suffix">by ChatBareng</span>
   </span>
 </template>
@@ -24,6 +24,7 @@
 <script setup>
 import { computed } from 'vue'
 import { getBranding } from '../utils/branding'
+import { useAuthStore } from '../stores/auth'
 
 const props = defineProps({
   text: { type: String, default: '' }, // kosong → ambil dari branding state (fallback 'ChatBareng')
@@ -37,6 +38,8 @@ const props = defineProps({
 })
 
 const branding = getBranding()
+// v3.9.16b — token utk query-param fetch logo (lihat komentar logoSrc di bawah)
+const auth = useAuthStore()
 
 const effectiveText = computed(() => {
   if (props.text) return props.text
@@ -44,6 +47,15 @@ const effectiveText = computed(() => {
 })
 
 const logoUrl = computed(() => (props.text ? '' : branding.logoUrl))
+// v3.9.16b — /api/branding/logo butuh auth (requireAuthFlexible: Bearer ATAU ?token=).
+// <img> TIDAK bisa membawa header Authorization → fetch logo tanpa token = 401 →
+// yang tampil cuma alt-text "logo" (bug lapor Kanaka 25/9: logo Parahita gak muncul).
+// Solusi: append token dari auth store sebagai query param (didukung endpoint;
+// pola sama dengan download Tangan Kanan). Login page (props.text) tidak terdampak.
+const logoSrc = computed(() => {
+  if (!logoUrl.value || !auth.token) return null
+  return `${logoUrl.value}?token=${encodeURIComponent(auth.token)}`
+})
 const showSuffix = computed(() => props.suffix && !!branding.brandName)
 
 const sizeClass = computed(() => ({

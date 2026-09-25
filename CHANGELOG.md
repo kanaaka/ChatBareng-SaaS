@@ -1,3 +1,32 @@
+# v3.9.16b — FIX: Logo branding gak ke-render + logo gak bisa dihapus (2026-09-25)
+
+**Bug (lapor Kanaka 13:32, logo 512×512 dipasang di tenant Parahita):**
+1. **Logo error di tampilan tenant** — cuma alt-text "logo". Akar: `GET /api/branding/logo`
+   wajib auth (requireAuthFlexible: Bearer ATAU ?token=), tapi frontend pasang logo
+   sebagai `<img :src="logoUrl">` polos — `<img>` tidak bisa membawa header
+   Authorization → fetch tanpa token → 401. File & endpoint sebenarnya sehat
+   (200 + PNG 40KB dengan token; ter-verify via curl).
+2. **Logo sekali pasang tak bisa dihapus** — PUT branding cuma terima upload BARU;
+   tidak ada jalur clear (file + kolom logoPath tetap). Modal SA juga tanpa aksi hapus.
+
+**Fix:**
+- `BrandLogo.vue` — `logoSrc` computed append `?token=` dari auth store (endpoint
+  requireAuthFlexible sudah support query-token; pola sama dgn download Tangan Kanan).
+  Login page (props.text) tak terdampak. NOTE: tambahan `const auth = useAuthStore()`
+  WAJIB (computed pertama me-refer `auth` sebelum deklarasi → runtime undefined).
+- `superadmin.js` PUT branding — opsi `removeLogo` (multipart field "true"), mutual-
+  exclusive dgn upload baru (400 kalau keduanya), idempotent (no-op bila tak ada logo);
+  unlink file disk + `logoPath = null` + detail.logoRemoved; audit tetap `branding_update`.
+- `SuperAdmin.vue` modal Branding — baris status "Logo terpasang ✓" + tombol
+  **Hapus Logo** (dengan batal), auto-cancel kalau admin memilih file baru.
+
+**QA (copy 5099 + prod 5047, Chrome 18801):** E2E removeLogo: 200 + file dihapus
++ logoPath null; idempotent 200; logo+removeLogo bersamaan → 400; re-upload → 200
++ file baru tercatat. Prod: logo Parahita (512×512) fetch `?token=` → 200 PNG 40KB;
+SPA login → `<img class=brand-logo-img>` natural 512×512 complete=true, wordmark
+"by ChatBareng" (teks sengaja hilang saat logo tampil — by design `showTextWithLogo`
+=false; bisa di-on kan kalau diminta).
+
 # v3.9.16 — FITUR: Usage kuota Tangan Kanan di panel tenant (2026-09-25)
 
 **Request (Kanaka 11:41):** tenant bisa lihat sendiri seberapa penuh kuota

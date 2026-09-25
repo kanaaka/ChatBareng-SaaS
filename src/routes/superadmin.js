@@ -852,7 +852,22 @@ router.put(
         detail.logo = { path: filePath, size: req.file.size, mime }
       }
 
-      if (brandNameApplied === null && !logoApplied && req.body.brandName === undefined) {
+      // ── v3.9.16b — removeLogo: hapus logo terpasang (file disk + field) ──
+      // Bug: sekalinya pasang logo gak bisa dihilangin (lapor Kanaka 25/9).
+      const removeLogo = req.body.removeLogo === 'true' || req.body.removeLogo === '1'
+      if (removeLogo && req.file) {
+        return res.status(400).json({ error: 'Kirim logo BARU ATAU removeLogo — bukan keduanya' })
+      }
+      let logoRemoved = false
+      if (removeLogo && tenant.logoPath) {
+        if (fs.existsSync(tenant.logoPath)) {
+          try { fs.unlinkSync(tenant.logoPath) } catch {}
+        }
+        logoRemoved = true
+        detail.logoRemoved = true
+      }
+
+      if (brandNameApplied === null && !logoApplied && !logoRemoved && req.body.brandName === undefined) {
         return res.status(400).json({ error: 'Tidak ada yang diupdate (kirim brandName dan/atau logo)' })
       }
 
@@ -862,6 +877,7 @@ router.put(
         data.brandName = brandNameApplied
       }
       if (logoApplied) data.logoPath = logoApplied
+      if (logoRemoved) data.logoPath = null
 
       if (Object.keys(data).length === 0) {
         return res.status(400).json({ error: 'Tidak ada perubahan branding yang valid' })
