@@ -1,3 +1,50 @@
+# v3.9.20 — ENHANCEMENT: Per-Chart Date Ranges + Custom + All Time (2026-09-25)
+
+**Request (Kanaka 17:59):** "Yang resolved vs open juga di kasih date range dong yang
+response time juga. Sama semua date range nya tambahin custom dan all time."
+Implementasi round-2 (round-1 Dory mati mid-run 39m27s — helper backend sudah jadi,
+lanjutan verified via git status).
+
+**Backend (`src/routes/superadmin.js` — additive murni, ZERO migration):**
+- `parseSaRange(req)` diperluas: `today|7d|30d` (behavior existing preserved) + **`all`**
+  (window = all time) + **`custom`** (`?from=YYYY-MM-DD&to=YYYY-MM-DD` tanggal WIB;
+  validasi format kalender, `from <= to`, `to <= hari ini WIB`, span inklusif <= 366 hari
+  → invalid = **400** dgn pesan jelas). Helper baru: `saWibDateListBetween(from,to)`,
+  `saAllTimeStartDateStr()` (anchor `MIN(COALESCE(firstIncomingAt, createdAt))`),
+  `saStatsWindow(range)` → `{ todayStr, sinceIso|null, untilIso|null, dates[] }`
+  (since inklusif / until eksklusif; all & custom = null-filtered di sisi tsb).
+- `GET /api/sa/stats/trends` — window via `saStatsWindow`: filter
+  `COALESCE(firstIncomingAt, createdAt) >= sinceIso` (+ `< untilIso` utk custom);
+  dates zero-fill dari sumbu window (all = dari hari data pertama); custom echo `from/to`.
+- `GET /api/sa/stats/avg-response` — window sama pada `firstIncomingAt`; hari tanpa
+  data = null; `avgTotal` = agregat window (sum/sum), null bila kosong; grouping
+  tetap epoch-ms style `col/1000,'unixepoch','+07:00'` (lesson v3.9.19).
+- `GET /api/sa/stats/resolution` — **SEMANTICS FIX (pie 0% legacy):** window pindah ke
+  `COALESCE(firstIncomingAt, createdAt)`; `resolved` = COUNT dengan
+  `status='resolved' OR resolvedAt IS NOT NULL` → chat legacy Cekat.AI (resolvedAt NULL,
+  status 'resolved', era pra-v3.9.14) ikut terhitung; `open` = total − resolved.
+- Pesan 400 invalid range di-update: `range harus today|7d|30d|all|custom`;
+  error spesifik custom (format/urutan/span) diteruskan dari `parseSaRange`.
+
+**Frontend (`frontend/src/views/SaOverview.vue`):**
+- Shared `range` ref dipecah jadi 3 state: `trendRange` / `respRange` / `pieRange`
+  (default '7d') — tiap panel (Trend Chat / Avg Response / Resolved vs Open) punya
+  bar tab sendiri: Hari Ini | 7 Hari | 30 Hari | All Time | Custom (reuse `.sa-tab`).
+- Pilih Custom → row date-picker: 2 `<input type=date>` (default from = today−29 WIB,
+  to = today, max = hari ini) + tombol "Terapkan"; invalid (kosong/from > to) →
+  pesan inline, TIDAK fetch.
+- Perubahan range 1 panel HANYA refetch panel itu (cards/sparkline/delta logic tetap
+  pakai trends today/7d/30d); delta trend hidden (null) utk all & custom; axios params
+  `{ range, from, to }` utk custom; caption pie menyesuaikan window:
+  "Hari ini (WIB)" / "7 hari terakhir" / "30 hari terakhir" / "All time" / "dd MMM – dd MMM".
+
+**QA (port 5099 DB copy, WA_DISABLED=1):**
+- E2E `scripts/e2e-v3919.cjs` + section L (v3.9.20): trends/avg-response/resolution
+  `all` & `custom` (dates monotonic/aligned, total >= 7d, percentResolved > 0 —
+  legacy resolved terhitung) + 6 invalid case (tanpa from/to, from>to, format bogus,
+  span > 366) → **70/70 PASS** (54 regresi lama + 16 baru).
+- `npx vite build` exit 0; `node --check` superadmin.js + e2e-v3919.cjs OK.
+
 # v3.9.19 — ENHANCEMENT: SuperAdmin Dashboard Rework (2026-09-25)
 
 **Request (Kanaka 15:39, spec approved 15:40–15:50 "GO, sidebar 4 item + ganti

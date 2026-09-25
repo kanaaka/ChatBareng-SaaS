@@ -668,12 +668,58 @@ router.get('/stats', ...sa, async (req, res) => {
 // Server berjalan UTC → grouping per hari dikonversi ke WIB (UTC+7, Asia/Jakarta)
 // di query (strftime modifier '+07:00'); grouping HARUS di SQL, bukan JS offset.
 
-/** Range query-param → { days, label }. Invalid → null (caller balas 400). */
+/** Regex + util tanggal 'YYYY-MM-DD' (WIB) — v3.9.20 (additive). */
+const SA_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+
+/** Tanggal WIB hari ini (YYYY-MM-DD). */
+function saTodayWibStr() {
+  return new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)
+}
+
+/** 'YYYY-MM-DD' valid sebagai tanggal kalender? (menolak 2026-02-30, 2026-13-01, dst.) */
+function saIsValidDateStr(s) {
+  if (!SA_DATE_RE.test(s)) return false
+  const ms = Date.parse(`${s}T00:00:00Z`)
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === s
+}
+
+/** Midnight WIB (dalam ms UTC) untuk tanggal 'YYYY-MM-DD'. */
+function saWibMidnightMs(dateStr) {
+  return Date.UTC(
+    Number(dateStr.slice(0, 4)), Number(dateStr.slice(5, 7)) - 1, Number(dateStr.slice(8, 10))
+  ) - 7 * 60 * 60 * 1000
+}
+
+/**
+ * Range query-param → descriptor (v3.9.20).
+ * - today|7d|30d → { days, label } (behavior existing preserved)
+ * - all          → { days: null, label: 'all' }
+ * - custom       → { days: null, label: 'custom', from, to } — WAJIB ?from=YYYY-MM-DD&to=YYYY-MM-DD
+ *                  (WIB; from<=to; to<=hari ini; span inklusif <=366 hari) — invalid → { error }
+ * - unknown      → null (caller balas 400)
+ */
 function parseSaRange(req) {
   const raw = String(req.query.range || '7d').toLowerCase()
   if (raw === 'today') return { days: 1, label: 'today' }
   if (raw === '7d') return { days: 7, label: '7d' }
   if (raw === '30d') return { days: 30, label: '30d' }
+  if (raw === 'all') return { days: null, label: 'all' }
+  if (raw === 'custom') {
+    const from = String(req.query.from || '').trim()
+    const to = String(req.query.to || '').trim()
+    if (!SA_DATE_RE.test(from) || !SA_DATE_RE.test(to)) {
+      return { error: 'range=custom wajib parameter ?from=YYYY-MM-DD&to=YYYY-MM-DD (tanggal WIB)' }
+    }
+    if (!saIsValidDateStr(from) || !saIsValidDateStr(to)) {
+      return { error: 'Tanggal from/to bukan tanggal kalender yang valid (format YYYY-MM-DD)' }
+    }
+    if (from > to) return { error: 'Parameter from harus <= to' }
+    const todayStr = saTodayWibStr()
+    if (to > todayStr) return { error: `Parameter to tidak boleh di masa depan (maksimal ${todayStr} WIB)` }
+    const spanDays = Math.round((saWibMidnightMs(to) - saWibMidnightMs(from)) / 86400000) + 1
+    if (spanDays > 366) return { error: 'Span rentang tanggal custom maksimal 366 hari' }
+    return { days: null, label: 'custom', from, to }
+  }
   return null
 }
 
@@ -706,57 +752,124 @@ function saWibDateList(days) {
   return out
 }
 
-// GET /api/sa/stats/trends?range=today|7d|30d — jumlah chat baru per hari (semua
+// ───────────────────────── v3.9.20 — PER-CHART DATE RANGES (additive) ─────────────────────────
+
+/** Daftar tanggal WIB (YYYY-MM-DD) oldest → newest antara dua tanggal, inklusif.
+ * v3.9.20 round-2 BUGFIX: jangan pakai saWibMidnightMs (UTC−7h → toISOString
+ * balikin D−1 → sumbu tanggal geser sehari, total/zero-fill salah). Label tanggal
+ * kalender murni — aritmetika string-date UTC midnight, grouping SQL map 1:1. */
+function saWibDateListBetween(fromStr, toStr) {
+  const start = Date.UTC(Number(fromStr.slice(0, 4)), Number(fromStr.slice(5, 7)) - 1, Number(fromStr.slice(8, 10)))
+  const end = Date.UTC(Number(toStr.slice(0, 4)), Number(toStr.slice(5, 7)) - 1, Number(toStr.slice(8, 10)))
+  const out = []
+  for (let ms = start; ms <= end; ms += 86400000) {
+    out.push(new Date(ms).toISOString().slice(0, 10))
+  }
+  return out
+}
+
+/** Tanggal WIB (YYYY-MM-DD) data Chat pertama (all time) — null bila tabel kosong.
+ * Anchor = COALESCE(firstIncomingAt, createdAt), konsisten dengan window trends. */
+async function saAllTimeStartDateStr() {
+  const rows = await prisma.$queryRawUnsafe(
+    'SELECT MIN(COALESCE("firstIncomingAt", "createdAt")) AS mn FROM Chat'
+  )
+  const mn = rows?.[0]?.mn
+  if (mn == null) return null
+  return new Date(Number(mn) + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)
+}
+
+/**
+ * v3.9.20 — Window + sumbu tanggal untuk range apa pun (today|7d|30d|all|custom).
+ * Return { todayStr, sinceIso|null, untilIso|null, dates[] }.
+ * sinceIso/untilIso = batas window (since inklusif, until eksklusif); null = tanpa
+ * filter di sisi itu. dates = daftar harian WIB penuh (caller zero-fill dari map).
+ */
+async function saStatsWindow(range) {
+  const todayStr = saTodayWibStr()
+  if (range.label === 'all') {
+    const startStr = await saAllTimeStartDateStr()
+    const from = startStr && startStr < todayStr ? startStr : todayStr
+    return { todayStr, sinceIso: null, untilIso: null, dates: saWibDateListBetween(from, todayStr) }
+  }
+  if (range.label === 'custom') {
+    return {
+      todayStr,
+      sinceIso: new Date(saWibMidnightMs(range.from)).toISOString(),
+      untilIso: new Date(saWibMidnightMs(range.to) + 86400000).toISOString(),
+      dates: saWibDateListBetween(range.from, range.to),
+    }
+  }
+  // today | 7d | 30d — perilaku existing (window berakhir terbuka sisi atas)
+  const { sinceIso } = saWibWindow(range.days)
+  return { todayStr, sinceIso, untilIso: null, dates: saWibDateList(range.days) }
+}
+
+// GET /api/sa/stats/trends?range=today|7d|30d|all|custom — jumlah chat baru per hari (semua
 // tenant), grouped WIB. Sumber tanggal = COALESCE(firstIncomingAt, createdAt)
 // (chat import/seed bisa firstIncomingAt lebih tua dari createdAt — pakai yang
 // tersedia). dates selalu penuh (hari kosong = 0) — frontend tanpa zero-fill.
-// Shape: { range, today, dates: [...WIB], counts: [...], total }
+// v3.9.20: all = tanpa filter sejak (dates dari data pertama); custom = from/to
+// WIB (since <= t < until). Shape: { range, today, dates: [...WIB], counts: [...], total
+// (+from, to utk custom) }
 router.get('/stats/trends', ...sa, async (req, res) => {
   try {
     const range = parseSaRange(req)
-    if (!range) return res.status(400).json({ error: 'range harus today|7d|30d' })
-    const { sinceIso, todayStr } = saWibWindow(range.days)
+    if (range?.error) return res.status(400).json({ error: range.error })
+    if (!range) return res.status(400).json({ error: 'range harus today|7d|30d|all|custom' })
+    const { sinceIso, untilIso, todayStr, dates } = await saStatsWindow(range)
+    const conds = []
+    const params = []
+    if (sinceIso != null) { conds.push('COALESCE("firstIncomingAt", "createdAt") >= ?'); params.push(new Date(sinceIso)) }
+    if (untilIso != null) { conds.push('COALESCE("firstIncomingAt", "createdAt") < ?'); params.push(new Date(untilIso)) }
+    const whereSql = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
     const rows = await prisma.$queryRawUnsafe(`
       SELECT strftime('%Y-%m-%d', COALESCE("firstIncomingAt", "createdAt")/1000, 'unixepoch', '+07:00') AS day,
              COUNT(*) AS cnt
       FROM Chat
-      WHERE COALESCE("firstIncomingAt", "createdAt") >= ?
+      ${whereSql}
       GROUP BY day ORDER BY day ASC
-    `, new Date(sinceIso))
+    `, ...params)
     const map = new Map(rows.map((r) => [String(r.day), Number(r.cnt)]))
-    const dates = saWibDateList(range.days)
-    const counts = dates.map((d) => map.get(d) || 0)
+    const counts = dates.map((d) => map.get(d) || 0) // zero-fill dari sumbu window
     const total = counts.reduce((a, b) => a + b, 0)
-    res.json({ range: range.label, today: todayStr, dates, counts, total })
+    const payload = { range: range.label, today: todayStr, dates, counts, total }
+    if (range.label === 'custom') { payload.from = range.from; payload.to = range.to }
+    res.json(payload)
   } catch (e) {
     console.error('[SA] Stats trends error:', e)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
 
-// GET /api/sa/stats/avg-response?range=today|7d|30d — rata-rata firstResponseAt −
-// firstIncomingAt (MENIT) per hari, semua tenant, grouped WIB. Chat tanpa
-// firstResponseAt (belum dibalas) dikecualikan — bukan dihitung 0.
-// Shape: { range, dates, avgMinutes: [n|null...], avgTotal: n|null }
-// avgTotal = agregat window (sum durasi / sum n), BUKAN mean-of-means.
+// GET /api/sa/stats/avg-response?range=today|7d|30d|all|custom — rata-rata
+// firstResponseAt − firstIncomingAt (MENIT) per hari, semua tenant, grouped WIB.
+// Chat tanpa firstResponseAt (belum dibalas) dikecualikan — bukan dihitung 0.
+// v3.9.20: window semantics = trends (since <= firstIncomingAt < until; all = tanpa
+// filter). Shape: { range, dates, avgMinutes: [n|null...], avgTotal: n|null
+// (+from, to utk custom) }. avgTotal = agregat window (sum durasi / sum n),
+// BUKAN mean-of-means.
 router.get('/stats/avg-response', ...sa, async (req, res) => {
   try {
     const range = parseSaRange(req)
-    if (!range) return res.status(400).json({ error: 'range harus today|7d|30d' })
-    const { sinceIso } = saWibWindow(range.days)
+    if (range?.error) return res.status(400).json({ error: range.error })
+    if (!range) return res.status(400).json({ error: 'range harus today|7d|30d|all|custom' })
+    const { sinceIso, untilIso, dates } = await saStatsWindow(range)
+    // Base filter selalu ada (all/custom/today) + window opsional
+    const conds = ['"firstIncomingAt" IS NOT NULL', '"firstResponseAt" IS NOT NULL', '"firstResponseAt" >= "firstIncomingAt"']
+    const params = []
+    if (sinceIso != null) { conds.push('"firstIncomingAt" >= ?'); params.push(new Date(sinceIso)) }
+    if (untilIso != null) { conds.push('"firstIncomingAt" < ?'); params.push(new Date(untilIso)) }
+    const whereSql = `WHERE ${conds.join(' AND ')}`
     const rows = await prisma.$queryRawUnsafe(`
       SELECT strftime('%Y-%m-%d', "firstIncomingAt"/1000, 'unixepoch', '+07:00') AS day,
              AVG((julianday("firstResponseAt"/1000, 'unixepoch') - julianday("firstIncomingAt"/1000, 'unixepoch')) * 1440.0) AS avgMin,
              COUNT(*) AS n
       FROM Chat
-      WHERE "firstIncomingAt" IS NOT NULL
-        AND "firstResponseAt" IS NOT NULL
-        AND "firstResponseAt" >= "firstIncomingAt"
-        AND "firstIncomingAt" >= ?
+      ${whereSql}
       GROUP BY day ORDER BY day ASC
-    `, new Date(sinceIso))
+    `, ...params)
     const map = new Map(rows.map((r) => [String(r.day), { avg: Number(r.avgMin), n: Number(r.n) }]))
-    const dates = saWibDateList(range.days)
     const avgMinutes = dates.map((d) => {
       const v = map.get(d)
       return v ? Math.round(v.avg * 10) / 10 : null // null = belum ada data hari itu
@@ -765,34 +878,47 @@ router.get('/stats/avg-response', ...sa, async (req, res) => {
     let sumN = 0
     for (const [, v] of map) { sumMin += v.avg * v.n; sumN += v.n }
     const avgTotal = sumN > 0 ? Math.round((sumMin / sumN) * 10) / 10 : null
-    res.json({ range: range.label, dates, avgMinutes, avgTotal })
+    const payload = { range: range.label, dates, avgMinutes, avgTotal }
+    if (range.label === 'custom') { payload.from = range.from; payload.to = range.to }
+    res.json(payload)
   } catch (e) {
     console.error('[SA] Stats avg-response error:', e)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
 
-// GET /api/sa/stats/resolution?range=today|7d|30d — resolved vs open (+percent).
-// resolved = chat dengan resolvedAt dalam window; open = chat dalam window yang
-// belum resolved (window-scoped biar konsisten dgn chart lain — chat lama di
-// luar window tidak dihitung).
-// Shape: { range, resolved, open, percentResolved, percentOpen }
+// GET /api/sa/stats/resolution?range=today|7d|30d|all|custom — resolved vs open
+// (+percent). v3.9.20: window pada COALESCE(firstIncomingAt, createdAt) — chats
+// yang MASUK dalam window; resolved = subset dgn status='resolved' OR
+// resolvedAt IS NOT NULL (chat legacy Cekat.AI: resolvedAt NULL tapi status
+// 'resolved' ikut terhitung → fix pie 0%); open = total − resolved. all = tanpa
+// filter. Shape: { range, resolved, open, percentResolved, percentOpen
+// (+from, to utk custom) }
 router.get('/stats/resolution', ...sa, async (req, res) => {
   try {
     const range = parseSaRange(req)
-    if (!range) return res.status(400).json({ error: 'range harus today|7d|30d' })
-    const { sinceIso } = saWibWindow(range.days)
-    const since = new Date(sinceIso)
-    const resolved = await prisma.chat.count({ where: { resolvedAt: { gte: since } } })
-    const open = await prisma.chat.count({
-      where: {
-        createdAt: { gte: since },
-        OR: [{ resolvedAt: null }, { status: { not: 'resolved' } }],
-      },
-    })
-    const total = resolved + open
+    if (range?.error) return res.status(400).json({ error: range.error })
+    if (!range) return res.status(400).json({ error: 'range harus today|7d|30d|all|custom' })
+    const { sinceIso, untilIso } = await saStatsWindow(range)
+    const conds = []
+    const params = []
+    if (sinceIso != null) { conds.push('COALESCE("firstIncomingAt", "createdAt") >= ?'); params.push(new Date(sinceIso)) }
+    if (untilIso != null) { conds.push('COALESCE("firstIncomingAt", "createdAt") < ?'); params.push(new Date(untilIso)) }
+    const whereSql = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
+    const rows = await prisma.$queryRawUnsafe(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'resolved' OR "resolvedAt" IS NOT NULL THEN 1 ELSE 0 END) AS resolved
+      FROM Chat
+      ${whereSql}
+    `, ...params)
+    const total = Number(rows?.[0]?.total || 0)
+    const resolved = Number(rows?.[0]?.resolved || 0)
+    const open = total - resolved
     const pct = (n) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0)
-    res.json({ range: range.label, resolved, open, percentResolved: pct(resolved), percentOpen: pct(open) })
+    const payload = { range: range.label, resolved, open, percentResolved: pct(resolved), percentOpen: pct(open) }
+    if (range.label === 'custom') { payload.from = range.from; payload.to = range.to }
+    res.json(payload)
   } catch (e) {
     console.error('[SA] Stats resolution error:', e)
     res.status(500).json({ error: 'Internal server error' })

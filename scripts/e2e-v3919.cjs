@@ -195,6 +195,74 @@ async function main() {
   const st = await api('GET', '/api/sa/stats', undefined, saTok)
   check('K1 GET /stats → 200 (5 metric cards)', st.status === 200 && Number.isFinite(st.data?.tenants), JSON.stringify(st.data))
 
+  // ── L. v3.9.20 — Per-chart date ranges: all + custom (+ invalid cases) ──
+  // WIB date util (mirror backend): today WIB + N hari lalu
+  const wibToday = () => new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const wibDaysAgo = (n) => {
+    const t = new Date(Date.now() + 7 * 60 * 60 * 1000)
+    return new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate()) - n * 86400000)
+      .toISOString().slice(0, 10)
+  }
+  const TODAY = wibToday()
+  const D20 = wibDaysAgo(20) // from utk custom 21 hari (span inklusif)
+
+  // L1 — trends all
+  const trAll = await api('GET', '/api/sa/stats/trends?range=all', undefined, saTok)
+  check('L1 trends all → 200', trAll.status === 200, `status=${trAll.status}`)
+  check('L2 trends all dates monotonic (strict naik) + counts aligned',
+    Array.isArray(trAll.data?.dates) && trAll.data.dates.length >= 1
+    && trAll.data.dates.every((d, i) => i === 0 || String(d) > String(trAll.data.dates[i - 1]))
+    && trAll.data.dates.length === trAll.data.counts?.length,
+    `n=${trAll.data?.dates?.length} first=${trAll.data?.dates?.[0]} last=${trAll.data?.dates?.at(-1)}`)
+  check('L3 trends all total >= total 7d', Number(trAll.data?.total) >= Number(tr7.data?.total),
+    `all=${trAll.data?.total} 7d=${tr7.data?.total}`)
+
+  // L4 — trends custom (20 hari lalu → hari ini WIB = 21 hari)
+  const trCus = await api('GET', `/api/sa/stats/trends?range=custom&from=${D20}&to=${TODAY}`, undefined, saTok)
+  check('L4 trends custom → 200 + dates.length = span (21)',
+    trCus.status === 200 && trCus.data?.dates?.length === 21 && trCus.data?.counts?.length === 21,
+    `status=${trCus.status} n=${trCus.data?.dates?.length} from=${D20} to=${TODAY}`)
+  check('L5 trends custom total >= 0 + echo from/to',
+    Number(trCus.data?.total) >= 0 && trCus.data?.from === D20 && trCus.data?.to === TODAY,
+    `total=${trCus.data?.total}`)
+
+  // L6 — avg-response all & custom
+  const avAll = await api('GET', '/api/sa/stats/avg-response?range=all', undefined, saTok)
+  check('L6 avg-response all → 200, avgTotal number|null, avgMinutes aligned dates',
+    avAll.status === 200 && (avAll.data?.avgTotal === null || Number.isFinite(avAll.data?.avgTotal))
+    && avAll.data?.dates?.length === avAll.data?.avgMinutes?.length,
+    `status=${avAll.status} avgTotal=${avAll.data?.avgTotal} n=${avAll.data?.dates?.length}`)
+  const avCus = await api('GET', `/api/sa/stats/avg-response?range=custom&from=${D20}&to=${TODAY}`, undefined, saTok)
+  check('L7 avg-response custom → 200, avgMinutes.length = 21',
+    avCus.status === 200 && avCus.data?.avgMinutes?.length === 21, `status=${avCus.status} n=${avCus.data?.avgMinutes?.length}`)
+
+  // L8 — resolution all (legacy resolved ±2.504 → percentResolved > 0)
+  const rsAll = await api('GET', '/api/sa/stats/resolution?range=all', undefined, saTok)
+  check('L8 resolution all → 200, percentResolved > 0 (legacy resolved terhitung)',
+    rsAll.status === 200 && rsAll.data?.percentResolved > 0,
+    `status=${rsAll.status} pct=${rsAll.data?.percentResolved} resolved=${rsAll.data?.resolved} open=${rsAll.data?.open}`)
+  check('L9 resolution all pctResolved + pctOpen ≈ 100',
+    Math.abs((rsAll.data?.percentResolved || 0) + (rsAll.data?.percentOpen || 0) - 100) < 0.5,
+    `pct=${rsAll.data?.percentResolved}/${rsAll.data?.percentOpen}`)
+  const rsCus = await api('GET', `/api/sa/stats/resolution?range=custom&from=${D20}&to=${TODAY}`, undefined, saTok)
+  check('L10 resolution custom → 200 + shape utuh',
+    rsCus.status === 200 && Number.isFinite(rsCus.data?.resolved) && Number.isFinite(rsCus.data?.open),
+    `status=${rsCus.status}`)
+
+  // L11 — invalid custom cases → 400
+  const iv1 = await api('GET', '/api/sa/stats/trends?range=custom', undefined, saTok)
+  check('L11 custom tanpa from/to → 400', iv1.status === 400, `status=${iv1.status}`)
+  const iv2 = await api('GET', `/api/sa/stats/trends?range=custom&from=${TODAY}&to=${D20}`, undefined, saTok)
+  check('L12 custom from > to → 400', iv2.status === 400, `status=${iv2.status}`)
+  const iv3 = await api('GET', '/api/sa/stats/trends?range=custom&from=20-hari-lalu&to=bogus', undefined, saTok)
+  check('L13 custom format bogus → 400', iv3.status === 400, `status=${iv3.status}`)
+  const iv4 = await api('GET', `/api/sa/stats/trends?range=custom&from=${wibDaysAgo(400)}&to=${TODAY}`, undefined, saTok)
+  check('L14 custom span > 366 → 400', iv4.status === 400, `status=${iv4.status}`)
+  const iv5 = await api('GET', '/api/sa/stats/avg-response?range=custom', undefined, saTok)
+  check('L15 avg-response custom tanpa from/to → 400', iv5.status === 400, `status=${iv5.status}`)
+  const iv6 = await api('GET', '/api/sa/stats/resolution?range=custom', undefined, saTok)
+  check('L16 resolution custom tanpa from/to → 400', iv6.status === 400, `status=${iv6.status}`)
+
   console.log(`\n=== e2e-v3919: ${pass} PASS / ${fails.length} FAIL ===`)
   if (fails.length) { console.log('FAILED:', fails.join(' | ')); process.exitCode = 1 }
   await prisma.$disconnect()

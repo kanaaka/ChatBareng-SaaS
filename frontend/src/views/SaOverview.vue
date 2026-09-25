@@ -1,11 +1,12 @@
 <script setup>
-// v3.9.19 — View Overview: dashboard SuperAdmin.
+// v3.9.20 — View Overview: dashboard SuperAdmin.
 // 5 metric cards (GET /api/sa/stats) + delta % vs periode lalu (dihitung frontend
-// dari trends API range yg sama vs window sebelumnya via counts 30d split),
-// chart trend chat (line/area, tab Hari Ini/7d/30d), avg response line,
+// dari trends API), chart trend chat (line/area), avg response line,
 // pie donut Resolved vs Open, card aksen ungu "Chat hari ini" + sparkline 7 titik.
+// v3.9.20: tiap chart punya range SENDIRI (today|7d|30d|all|custom) + bar tab
+// masing-masing; cards/sparkline/delta tetap pakai trends today/7d/30d (fixed).
 // Chart.js di-import dynamic (tree-shaken; register otomatis di modul chart helper).
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import axios from 'axios'
 import { Chart } from 'chart.js/auto'
 import { useAuthStore } from '../stores/auth'
@@ -17,20 +18,40 @@ const stats = ref(null)
 const loading = ref(true)
 const error = ref('')
 
-// ── Trends (line/area) ──
-const range = ref('7d') // default 7d per spec §4.2
-const trend = ref(null) // { dates, counts, total }
-const RANGES = [
+// ── v3.9.20 — Per-chart date ranges: tiap panel punya range sendiri ──
+// (cards/sparkline/delta TIDAK terpengaruh — tetap today/7d/30d dari trends)
+const RANGE_TABS = [
   { key: 'today', label: 'Hari Ini' },
   { key: '7d', label: '7 Hari' },
   { key: '30d', label: '30 Hari' },
+  { key: 'all', label: 'All Time' },
+  { key: 'custom', label: 'Custom' },
 ]
-
-// ── Avg response (line) ──
+const trend = ref(null) // { dates, counts, total }
 const avgResp = ref(null) // { dates, avgMinutes, avgTotal }
-
-// ── Resolution (donut) ──
 const resolution = ref(null) // { resolved, open, percentResolved, percentOpen }
+const trendRange = ref('7d')
+const respRange = ref('7d')
+const pieRange = ref('7d')
+
+// Tanggal WIB util (frontend mirror logika backend v3.9.20)
+function wibTodayStr() {
+  return new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)
+}
+function wibDaysAgoStr(n) {
+  const t = new Date(Date.now() + 7 * 60 * 60 * 1000)
+  return new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate()) - n * 86400000)
+    .toISOString().slice(0, 10)
+}
+const todayStr = wibTodayStr()
+
+// State date-picker Custom per panel (default: from = today−29 WIB, to = today)
+function makeCustomState() {
+  return { from: wibDaysAgoStr(29), to: wibTodayStr(), error: '' }
+}
+const trendCustom = reactive(makeCustomState())
+const respCustom = reactive(makeCustomState())
+const pieCustom = reactive(makeCustomState())
 
 // ── Card ungu: chat hari ini + sparkline (7 titik terakhir dari 7d trends) ──
 const todayChat = ref(0)
@@ -83,6 +104,27 @@ const pieLegendLabel = computed(() => {
   return `Resolved ${r.percentResolved}% · Open ${r.percentOpen}%`
 })
 
+// ── v3.9.20 — label window utk caption pie (menyesuaikan pieRange) ──
+const MONTHS_ID = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des']
+function shortDateID(d) {
+  try {
+    const [, m, day] = d.split('-')
+    return `${String(day).padStart(2, '0')} ${MONTHS_ID[Number(m) - 1] || m}`
+  } catch {
+    return d
+  }
+}
+const pieWindowLabel = computed(() => {
+  switch (pieRange.value) {
+    case 'today': return 'Hari ini (WIB)'
+    case '7d': return '7 hari terakhir'
+    case '30d': return '30 hari terakhir'
+    case 'all': return 'All time'
+    case 'custom': return pieCustom.from && pieCustom.to ? `${shortDateID(pieCustom.from)} – ${shortDateID(pieCustom.to)}` : 'Custom'
+    default: return ''
+  }
+})
+
 // ── Delta % vs periode lalu (frontend, dari trends range sama) ──
 // trends hanya return window [since, today] — utk delta kita bandingkan setengah
 // window pertama vs kedua (7d → 3-4 hari; 30d → 15-15). today tak ada delta.
@@ -95,25 +137,56 @@ function deltaFor(counts) {
   return Math.round(((cur - prev) / prev) * 1000) / 10
 }
 
-const trendDelta = computed(() => (range.value === 'today' ? null : deltaFor(trend.value?.counts)))
+// Delta chart trend: hidden utk today (tak ada periode pembanding) DAN utk
+// all/custom (v3.9.20 — window tidak sebanding dgn periode lalu)
+const trendDelta = computed(() => {
+  if (['today', 'all', 'custom'].includes(trendRange.value)) return null
+  return deltaFor(trend.value?.counts)
+})
 
 // Delta metric cards: bandingkan chat 7d terakhir vs 7d sebelumnya (2 window dari 30d)
 const chatDelta = ref(null)
 const msgDelta = ref(null) // pesan tak punya trends API → null (tanpa delta)
+
+// Fetch chart satu-satu (v3.9.20): range panel tak mengganggu panel lain.
+// axios params: { range } — utk custom tambah from/to.
+function chartParams(rangeVal, customState) {
+  const params = { range: rangeVal }
+  if (rangeVal === 'custom' && customState) {
+    params.from = customState.from
+    params.to = customState.to
+  }
+  return params
+}
+
+// Validasi custom client-side: from/to terisi + from <= to (jangan fetch kalau invalid)
+function customInvalid(c) {
+  return !c.from || !c.to || c.from > c.to
+}
+
+async function fetchTrend() {
+  const res = await axios.get(`${API}/api/sa/stats/trends`, { params: chartParams(trendRange.value, trendCustom) })
+  trend.value = res.data
+}
+async function fetchAvg() {
+  const res = await axios.get(`${API}/api/sa/stats/avg-response`, { params: chartParams(respRange.value, respCustom) })
+  avgResp.value = res.data
+}
+async function fetchPie() {
+  const res = await axios.get(`${API}/api/sa/stats/resolution`, { params: chartParams(pieRange.value, pieCustom) })
+  resolution.value = res.data
+}
 
 async function loadOverview() {
   loading.value = true
   try {
     const [s, t, a, r] = await Promise.all([
       axios.get(`${API}/api/sa/stats`),
-      axios.get(`${API}/api/sa/stats/trends`, { params: { range: range.value } }),
-      axios.get(`${API}/api/sa/stats/avg-response`, { params: { range: range.value } }),
-      axios.get(`${API}/api/sa/stats/resolution`, { params: { range: range.value } }),
+      fetchTrend(),
+      fetchAvg(),
+      fetchPie(),
     ])
     stats.value = s.data
-    trend.value = t.data
-    avgResp.value = a.data
-    resolution.value = r.data
 
     // Card ungu: chat hari ini dari trends today + sparkline dari 7d
     const [tToday, t7] = await Promise.all([
@@ -140,6 +213,53 @@ async function loadOverview() {
   } finally {
     loading.value = false
   }
+}
+
+// ── v3.9.20 — set range 1 panel → refetch HANYA panel itu ──
+async function refreshPanel(which) {
+  try {
+    if (which === 'trend') await fetchTrend()
+    else if (which === 'avg') await fetchAvg()
+    else if (which === 'pie') await fetchPie()
+    renderCharts()
+  } catch (e) {
+    error.value = e.response?.data?.error || 'Gagal memuat statistik'
+  }
+}
+
+function setTrendRange(key) {
+  if (key === 'custom') { trendRange.value = 'custom'; trendCustom.error = ''; return } // pilih tab → tampil picker, fetch saat Terapkan
+  trendRange.value = key
+  refreshPanel('trend')
+}
+function setRespRange(key) {
+  if (key === 'custom') { respRange.value = 'custom'; respCustom.error = ''; return }
+  respRange.value = key
+  refreshPanel('avg')
+}
+function setPieRange(key) {
+  if (key === 'custom') { pieRange.value = 'custom'; pieCustom.error = ''; return }
+  pieRange.value = key
+  refreshPanel('pie')
+}
+
+function applyTrendCustom() {
+  if (customInvalid(trendCustom)) { trendCustom.error = 'Rentang tidak valid: isi kedua tanggal dan pastikan From ≤ To'; return }
+  trendCustom.error = ''
+  trendRange.value = 'custom'
+  refreshPanel('trend')
+}
+function applyRespCustom() {
+  if (customInvalid(respCustom)) { respCustom.error = 'Rentang tidak valid: isi kedua tanggal dan pastikan From ≤ To'; return }
+  respCustom.error = ''
+  respRange.value = 'custom'
+  refreshPanel('avg')
+}
+function applyPieCustom() {
+  if (customInvalid(pieCustom)) { pieCustom.error = 'Rentang tidak valid: isi kedua tanggal dan pastikan From ≤ To'; return }
+  pieCustom.error = ''
+  pieRange.value = 'custom'
+  refreshPanel('pie')
 }
 
 function destroyCharts() {
@@ -255,11 +375,6 @@ function renderCharts() {
   })
 }
 
-function setRange(key) {
-  range.value = key
-  loadOverview()
-}
-
 // format angka pendek (1,2rb)
 function fmtNum(n) {
   return Number(n || 0).toLocaleString('id-ID')
@@ -298,9 +413,7 @@ onMounted(() => {
           <div>
             <div class="sa-hero__label">Chat hari ini</div>
             <div class="sa-hero__num">{{ fmtNum(todayChat) }}</div>
-            <div class="sa-hero__sub">
-              {{ range === 'today' ? 'chat baru masuk hari ini (WIB)' : `total ${fmtNum(trend?.total)} chat dalam ${range === '7d' ? '7' : '30'} hari terakhir` }}
-            </div>
+            <div class="sa-hero__sub">chat baru masuk hari ini (WIB)</div>
           </div>
           <div class="sa-spark">
             <canvas ref="sparkCanvas" height="56"></canvas>
@@ -337,7 +450,8 @@ onMounted(() => {
 
       <!-- Charts grid -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <!-- Trend chat -->
+        <!-- v3.9.20 — bar tab range per panel (reuse .sa-tab) -->
+<!-- Trend chat -->
         <div class="sa-panel">
           <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
             <h2 class="text-base font-semibold" :style="{ color: 'var(--md-sys-color-on-surface)' }">
@@ -346,32 +460,75 @@ onMounted(() => {
                 {{ trendDelta >= 0 ? '↑' : '↓' }} {{ Math.abs(trendDelta) }}%
               </span>
             </h2>
-            <div class="flex gap-1">
+            <div class="flex gap-1 flex-wrap">
               <button
-                v-for="r in RANGES" :key="r.key"
+                v-for="r in RANGE_TABS" :key="r.key"
                 class="sa-tab"
-                :class="{ 'sa-tab--active': range === r.key }"
-                @click="setRange(r.key)"
+                :class="{ 'sa-tab--active': trendRange === r.key }"
+                @click="setTrendRange(r.key)"
               >{{ r.label }}</button>
             </div>
+          </div>
+          <div v-if="trendRange === 'custom'" class="sa-custom-row">
+            <input v-model="trendCustom.from" type="date" class="sa-date" :max="todayStr" aria-label="Tanggal mulai">
+            <span class="sa-date-sep">–</span>
+            <input v-model="trendCustom.to" type="date" class="sa-date" :max="todayStr" aria-label="Tanggal akhir">
+            <button class="m3-btn m3-btn--tonal sa-apply-btn" @click="applyTrendCustom">Terapkan</button>
+            <span v-if="trendCustom.error" class="sa-custom-err">{{ trendCustom.error }}</span>
           </div>
           <div class="sa-chart-box"><canvas ref="trendCanvas"></canvas></div>
         </div>
 
         <!-- Pie Resolved vs Open -->
         <div class="sa-panel">
-          <h2 class="text-base font-semibold mb-3" :style="{ color: 'var(--md-sys-color-on-surface)' }">Resolved vs Open</h2>
+          <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <h2 class="text-base font-semibold" :style="{ color: 'var(--md-sys-color-on-surface)' }">Resolved vs Open</h2>
+            <div class="flex gap-1 flex-wrap">
+              <button
+                v-for="r in RANGE_TABS" :key="r.key"
+                class="sa-tab"
+                :class="{ 'sa-tab--active': pieRange === r.key }"
+                @click="setPieRange(r.key)"
+              >{{ r.label }}</button>
+            </div>
+          </div>
+          <div v-if="pieRange === 'custom'" class="sa-custom-row">
+            <input v-model="pieCustom.from" type="date" class="sa-date" :max="todayStr" aria-label="Tanggal mulai">
+            <span class="sa-date-sep">–</span>
+            <input v-model="pieCustom.to" type="date" class="sa-date" :max="todayStr" aria-label="Tanggal akhir">
+            <button class="m3-btn m3-btn--tonal sa-apply-btn" @click="applyPieCustom">Terapkan</button>
+            <span v-if="pieCustom.error" class="sa-custom-err">{{ pieCustom.error }}</span>
+          </div>
           <div class="sa-chart-box sa-chart-box--pie"><canvas ref="pieCanvas"></canvas></div>
-          <div class="text-center text-sm mt-2" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">{{ pieLegendLabel }}</div>
+          <div class="text-center text-sm mt-2" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
+            {{ pieLegendLabel }}<template v-if="pieWindowLabel"> — {{ pieWindowLabel }}</template>
+          </div>
         </div>
 
         <!-- Avg response time -->
         <div class="sa-panel lg:col-span-2">
           <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
             <h2 class="text-base font-semibold" :style="{ color: 'var(--md-sys-color-on-surface)' }">Avg Response Time</h2>
-            <span class="sa-pill" style="background: #ede9fe; color: #5b21b6;">
-              Total: {{ fmtMinute(avgResp?.avgTotal) }}
-            </span>
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="sa-pill" style="background: #ede9fe; color: #5b21b6;">
+                Total: {{ fmtMinute(avgResp?.avgTotal) }}
+              </span>
+              <div class="flex gap-1 flex-wrap">
+                <button
+                  v-for="r in RANGE_TABS" :key="r.key"
+                  class="sa-tab"
+                  :class="{ 'sa-tab--active': respRange === r.key }"
+                  @click="setRespRange(r.key)"
+                >{{ r.label }}</button>
+              </div>
+            </div>
+          </div>
+          <div v-if="respRange === 'custom'" class="sa-custom-row">
+            <input v-model="respCustom.from" type="date" class="sa-date" :max="todayStr" aria-label="Tanggal mulai">
+            <span class="sa-date-sep">–</span>
+            <input v-model="respCustom.to" type="date" class="sa-date" :max="todayStr" aria-label="Tanggal akhir">
+            <button class="m3-btn m3-btn--tonal sa-apply-btn" @click="applyRespCustom">Terapkan</button>
+            <span v-if="respCustom.error" class="sa-custom-err">{{ respCustom.error }}</span>
           </div>
           <div class="sa-chart-box"><canvas ref="avgCanvas"></canvas></div>
         </div>
@@ -458,6 +615,38 @@ onMounted(() => {
   color: var(--md-sys-color-on-primary-container);
   border-color: transparent;
   font-weight: 600;
+}
+/* v3.9.20 — custom date-picker row */
+.sa-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  font-size: 0.8rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.sa-date {
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-s);
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+  padding: 6px 10px;
+  min-height: 32px;
+  font-size: 0.8rem;
+}
+.sa-apply-btn {
+  min-height: 32px;
+  font-size: 0.8rem;
+  padding: 4px 14px;
+}
+.sa-custom-err {
+  color: #991b1b;
+  font-weight: 500;
+  width: 100%;
+}
+.sa-date-sep {
+  color: var(--md-sys-color-on-surface-variant);
 }
 .sa-chart-box {
   position: relative;
