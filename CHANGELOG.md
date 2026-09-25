@@ -1,3 +1,55 @@
+# v3.9.14 — FITUR: Quote Reply (WhatsApp contextInfo) (2026-09-25)
+
+**Konteks:** Pelanggan di WA asli sering quote-reply; CS sebelumnya kehilangan seluruh
+konteks pesan yang di-quote. v3.9.14 membawa quote 2 arah: chip konteks di bubble CS +
+`contextInfo` asli WhatsApp di stanza keluar (pelanggan lihat preview quote standar).
+Spec: `docs/spec-v3.9.14-quote-reply.md`.
+
+**Backend:**
+- `prisma/schema.prisma` — 4 kolom ADDITIVE nullable di `Message`:
+  `quotedWaMessageId` (stanzaId in / waMessageId target out),
+  `quotedParticipantJid` (penulis quoted, grup; 1:1 null), `quotedSnippet`
+  (**terenkripsi** `encryptText`, ≤200 char — chip selamat walau pesan asal di-purge),
+  `quotedType` (`text|image|video|audio|sticker|document`). Migration
+  `20260925100000_message_quote` (4×ALTER ADD COLUMN — additive-only, tidak ada
+  kolom/tabel lama disentuh; aman `migrate deploy`). Tanpa index baru (resolve
+  read-time pakai `@@index([waMessageId])` existing).
+- `src/wa/pool.js` — helper `extractQuote(msg)` (baca `contextInfo` generik;
+  snippet dari `conversation`/`extendedTextMessage.text`/caption/`document.fileName`,
+  truncate 200; `@lid` disimpan mentah) + `quotedColumnsFromExtract` (persist inbound
+  1:1 & grup) + `buildQuotedShape` (broadcast plaintext + `dbMessageId` resolve
+  same-chat via waMessageId; null bila purged) + `sendMessageForTenant` opsi ketiga
+  `quoted` → `sock.sendMessage(waJid, {text}, {quoted})` (API Baileys terverifikasi).
+- `src/services/groups.js` — persist quoted cols pesan grup masuk + broadcast bawa
+  shape `quoted`.
+- `src/routes/chats.js` — `POST /:id/reply` menerima `replyToMessageId` opsional;
+  guard 400: target tak ada / cross-chat / cross-tenant / `purged=true` / tanpa
+  `waMessageId` (row failed/legacy — JANGAN pernah fake stanzaId); persist 4 kolom
+  quoted (snippet terenkripsi); payload `quoted` shape §6 (plaintext snippet +
+  `dbMessageId`); kolom quoted mentah di-strip dari payload (ciphertext tidak bocor);
+  `POST /:id/media` + `replyToMessageId` → **400 eksplisit** (media-quote P1).
+
+**Frontend:**
+- `ChatDetail.vue` — chip quote di bubble (ikon tipe + penulis + snippet; klik →
+  scroll-to-original + highlight bila `dbMessageId` ada), affordance Reply
+  (hover desktop / tombol mobile, hidden pada bubble gagal), composer quote chip
+  (penulis + snippet + ✕ batal; satu pending reply — reply baru menggantikan).
+- `Dashboard.vue` — state `pendingQuote` + handler; chip clear saat SUKSES dan GAGAL
+  kirim (spec §7.3); `{name}`/template tetap jalan saat quote pending.
+- `stores/chats.js` — `sendReply(chatId, content, replyToMessageId)`.
+
+**E2E & regresi (DB copy 5099, WA_DISABLED=1):** `scripts/e2e-v3914.cjs` **40/40 PASS**
+(reply roundtrip + decrypt-verify, guard 400 lengkap, media+replyTo 400, extractQuote
+unit incl. media-quote + truncate 200, read payload shape, isolasi tenant) + regresi
+v3.9.13 **39/39**, v3.9.11 **10/10**, v3.9.4/v3.9.5/v3.9.6 **SEMUA PASS**, v3.9.9
+**10/10 PASS**; `vite build` exit 0; post-verify row DB: quotedSnippet decrypt = konten
+target (lesson #4).
+
+**Catatan deploy:** additive-only → `npx prisma migrate deploy` aman; tidak ada perubahan
+seed. Visual chip/scroll = QA Alita/Kanaka.
+
+---
+
 ## v3.9.13 — FITUR: Public API v1 — API keys per-tenant (2026-09-24)
 
 **Konteks:** Aplikasi eksternal (mis. program antrean) kini bisa kirim pesan WA

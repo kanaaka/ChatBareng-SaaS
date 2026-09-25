@@ -317,6 +317,18 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
           </svg>
         </button>
+        <!-- v3.9.14 — Reply affordance: hover desktop / tombol kecil mobile (keluarga dgn aksi favorit).
+             Hidden pada bubble gagal (tanpa waMessageId) & bubble sendiri yg belum terkirim. -->
+        <button
+          v-if="canQuote(msg)"
+          @click="$emit('start-reply', msg)"
+          :class="['absolute top-8 text-gray-400 hover:text-wa-green opacity-0 group-hover:opacity-100 transition-opacity', msg.direction === 'in' ? '-right-6' : '-left-6']"
+          title="Reply dengan quote"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6-6m-6 6l6 6" />
+          </svg>
+        </button>
         <!-- v0.14.0 — pengirim grup: nama/HP participant (additive; 1:1 tidak berubah) -->
         <!-- v0.14.4 — label jadi tombol HANYA utk bubble 'in' grup dgn participantJid;
              pesanan lama (participantJid null) tetap teks biasa. stopPropagation agar
@@ -391,6 +403,20 @@
             </div>
           </template>
         </div>
+        <!-- v3.9.14 — quote chip di atas isi bubble (inbound maupun outbound);
+             klik bawa dbMessageId → scroll-to-original + highlight; tanpa → no-op -->
+        <button
+          v-if="msg.quoted"
+          type="button"
+          :class="['mb-1 flex items-stretch gap-1.5 rounded border-l-4 max-w-[280px] text-left', msg.direction === 'in' ? 'bg-gray-50 border-blue-400' : 'bg-black/5 border-emerald-500']"
+          @click="msg.quoted.dbMessageId ? $emit('jump-to', msg.quoted.dbMessageId) : undefined"
+        >
+          <span class="py-1 pl-1.5 flex items-start text-xs leading-4 opacity-70">{{ quoteTypeIcon(msg.quoted.type) }}</span>
+          <span class="py-1 pr-2 min-w-0">
+            <span class="block text-xs font-medium text-blue-700 truncate">{{ quoteAuthorLabel(msg.quoted) }}</span>
+            <span class="block text-xs text-gray-600 truncate">{{ msg.quoted.snippet || '[Media]' }}</span>
+          </span>
+        </button>
         <div v-if="msg.direction === 'out'" class="text-xs text-green-700 mb-0.5">
           <span v-if="msg.isAuto" class="inline-flex items-center gap-1 mr-1 px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 text-[10px] align-middle">⚙️ Otomatis</span>
           @{{ msg.senderName }}
@@ -604,6 +630,22 @@
         </svg>
       </button>
 
+      <!-- v3.9.14 — composer quote chip (1 pending reply; ✕ = batal) -->
+      <div v-if="pendingQuote" class="absolute bottom-full left-2 right-2 mb-1">
+        <div class="flex items-stretch gap-1.5 rounded-lg border-l-4 border-blue-400 bg-[var(--md-sys-color-surface-container-high)] px-2 py-1.5 shadow-sm max-w-md">
+          <span class="py-0.5 flex items-start text-xs leading-4 opacity-70">{{ quoteTypeIcon(pendingQuote.type) }}</span>
+          <span class="py-0.5 min-w-0 flex-1">
+            <span class="block text-xs font-medium text-blue-700 truncate">{{ quoteAuthorLabel(pendingQuote) }}</span>
+            <span class="block text-xs text-gray-600 truncate">{{ pendingQuote.snippet || '[Media]' }}</span>
+          </span>
+          <button
+            @click="$emit('cancel-reply')"
+            class="self-center ml-1 text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-black/5"
+            title="Batal reply"
+          >✕</button>
+        </div>
+      </div>
+
       <!-- Reply input with slash flyout -->
       <div class="flex-1 relative min-w-0">
         <div v-if="showTemplateFlyout" class="absolute bottom-full left-0 mb-1 bg-[var(--md-sys-color-surface-container)] border border-[var(--md-sys-color-outline-variant)] rounded-lg shadow-xl z-30 w-72">
@@ -697,6 +739,8 @@ const props = defineProps({
   selectedTemplateIndex: { type: Number, default: 0 },
   // Transfer
   transferUsers: { type: Array, default: () => [] },
+  // v3.9.14 — quote reply pending di composer (null = tidak ada reply pending)
+  pendingQuote: { type: Object, default: null },
   // v0.10.0 — Fitur B (catatan) + D (terjadwal) — state di Dashboard, render di sini
   notes: { type: Array, default: () => [] },
   notesLoading: { type: Boolean, default: false },
@@ -716,6 +760,7 @@ const emit = defineEmits([
   'add-note', 'delete-note', 'update:noteDraft', // v0.10.0 — Fitur B
   'toggle-favorites', 'toggle-favorite', 'jump-to',
   'toggle-search', 'close-search', 'update:searchQuery', 'update:replyText',
+  'start-reply', 'cancel-reply', // v3.9.14 — quote reply
   'add-tag', 'remove-tag', 'create-tag', 'open-contact-edit',
 ])
 
@@ -773,6 +818,36 @@ function messageSenderLabel(msg) {
   if (contact?.name) return contact.name
   if (msg.senderName && msg.senderName !== 'Unknown' && msg.senderName !== 'me') return msg.senderName
   return `+${digits}`
+}
+
+// ═══ v3.9.14 — Quote Reply helpers ═══
+const QUOTE_ICONS = { text: '💬', image: '📷', video: '🎥', audio: '🎤', sticker: '🖼️', document: '📄' }
+function quoteTypeIcon(type) {
+  return QUOTE_ICONS[type] || '💬'
+}
+function quoteAuthorLabel(quoted) {
+  // author via dbMessageId → senderName row asal; else participant (grup); else default
+  if (quoted.dbMessageId) {
+    const orig = props.messages?.find(m => m.id === quoted.dbMessageId)
+    if (orig) {
+      if (orig.direction === 'out') return orig.senderName ? '@' + orig.senderName : 'kamu'
+      return messageSenderLabel(orig) || orig.senderName || 'pelanggan'
+    }
+  }
+  if (quoted.participantJid) {
+    const digits = String(quoted.participantJid).split('@')[0]
+    if (digits) {
+      const contact = props.chat?.participants?.find(p => p.phone === digits)
+      if (contact?.name) return contact.name
+      return `+${digits}`
+    }
+  }
+  return 'pelanggan'
+}
+// Reply affordance hanya pada bubble yang bisa di-quote: punya waMessageId (bukan
+// failed/legacy) & bukan bubble sendiri yang masih pending (status != failed).
+function canQuote(msg) {
+  return !!msg?.waMessageId && msg.status !== 'failed'
 }
 
 const canTransfer = computed(() => !!props.chat.assignedTo && (props.chat.assignedToId === auth.user.id || auth.isAdmin))

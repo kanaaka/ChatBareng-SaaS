@@ -54,8 +54,9 @@ export const useChatsStore = defineStore('chats', {
         this.loadingMessages = false
       }
     },
-    async sendReply(chatId, content) {
-      const res = await axios.post(`${API}/api/chats/${chatId}/reply`, { content })
+    // v3.9.14 — replyToMessageId opsional utk quote reply
+    async sendReply(chatId, content, replyToMessageId = null) {
+      const res = await axios.post(`${API}/api/chats/${chatId}/reply`, { content, ...(replyToMessageId ? { replyToMessageId } : {}) })
       // Dedup: only push if not already added by socket event
       const exists = this.currentMessages.some(m =>
         m.id === res.data.message.id ||

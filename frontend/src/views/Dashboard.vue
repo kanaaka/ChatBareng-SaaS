@@ -194,6 +194,7 @@
             :note-draft="noteDraft"
             :scheduled="chatScheduled"
             :scheduled-loading="scheduledLoading"
+            :pending-quote="pendingQuote"
             @update:replyText="replyText = $event"
             @update:noteDraft="noteDraft = $event"
             @update:searchQuery="searchQuery = $event; onSearchInput()"
@@ -217,6 +218,8 @@
             @toggle-favorites="toggleFavoritesPanel"
             @toggle-favorite="toggleFavorite"
             @jump-to="jumpToMessage"
+            @start-reply="startQuotedReply"
+            @cancel-reply="cancelQuotedReply"
             @toggle-search="toggleSearchBar"
             @close-search="closeSearchBar"
             @add-tag="addTag"
@@ -806,6 +809,27 @@ function scrollToBottom() {
   chatDetailRef.value?.scrollToBottom()
 }
 
+// ═══ v3.9.14 — Quote Reply state & handlers ═══
+// Satu pending reply per waktu; reply baru menggantikan yang lama (spec §7.2).
+// Chip clear saat SUKSES maupun GAGAL kirim (pesan tetap tersimpan 'failed' —
+// user kirim ulang tanpa quote; spec §7.3).
+const pendingQuote = ref(null)
+function startQuotedReply(msg) {
+  if (!msg || !msg.waMessageId || msg.status === 'failed') return
+  pendingQuote.value = {
+    dbMessageId: msg.id,
+    waMessageId: msg.waMessageId,
+    participantJid: msg.participantJid || null,
+    snippet: (msg.content && String(msg.content)) || (msg.mediaType ? `[${msg.mediaType.charAt(0).toUpperCase() + msg.mediaType.slice(1)}]` : ''),
+    type: msg.mediaType || 'text',
+    direction: msg.direction,
+    senderName: msg.senderName || null,
+  }
+}
+function cancelQuotedReply() {
+  pendingQuote.value = null
+}
+
 // ─── Reply / media (logika v0.1.x identik) ────────────
 async function sendReply() {
   if (!replyText.value.trim() || sending.value) return
@@ -816,15 +840,18 @@ async function sendReply() {
   }
   sending.value = true
   try {
-    await chats.sendReply(currentChat.value.id, replyText.value)
+    await chats.sendReply(currentChat.value.id, replyText.value, pendingQuote.value?.dbMessageId || null)
     currentMessages.value = chats.currentMessages
     replyText.value = ''
+    pendingQuote.value = null // v3.9.14 — chip clear on success
     showTemplateFlyout.value = false
     templateMatches.value = []
     socketStore.emitStopTyping(currentChat.value.id, auth.user.id)
     scrollToBottom()
   } catch (e) {
     console.error('Send reply error:', e)
+    pendingQuote.value = null // v3.9.14 — chip clear on failure juga (spec §7.3)
+    toastStore.show({ icon: '⚠️', title: 'Gagal mengirim', message: e.response?.data?.error || e.message })
   } finally {
     sending.value = false
   }

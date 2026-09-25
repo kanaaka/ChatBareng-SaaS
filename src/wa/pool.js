@@ -717,7 +717,9 @@ async function sendMessageForTenant(tenantId, waJid, text, opts = {}) {
   if (!sock) {
     throw notConnectedError(config.waDisabled ? WA_DISABLED_MSG : (slot ? slotNotConnectedMessage(tenantId, slot) : WA_NOT_CONNECTED_MSG))
   }
-  const result = await sock.sendMessage(waJid, { text })
+  // v3.9.14 — quoted passthrough (WAMessage minimal dari target Message row) →
+  // Baileys isi contextInfo (stanzaId + participant + quotedMessage proto).
+  const result = await sock.sendMessage(waJid, { text }, opts.quoted ? { quoted: opts.quoted } : undefined)
   return result
 }
 
@@ -792,6 +794,120 @@ function extractText(msg) {
   if (msg.message?.conversation) return msg.message.conversation
   if (msg.message?.extendedTextMessage?.text) return msg.message.extendedTextMessage.text
   return null
+}
+
+// ═══ v3.9.14 — Quote Reply (WhatsApp contextInfo) ═══
+// Ekstrak contextInfo dari pesan masuk secara generik (key pertama yang membawa
+// contextInfo — extendedTextMessage = kasus 99%). Return kolom quoted utk persist
+// ATAU null bila bukan quote-reply.
+const QUOTED_TYPE_BY_KEY = {
+  conversation: 'text',
+  extendedTextMessage: 'text',
+  imageMessage: 'image',
+  videoMessage: 'video',
+  audioMessage: 'audio',
+  stickerMessage: 'sticker',
+  documentMessage: 'document',
+}
+
+/**
+ * extractQuote(msg) → null | { quotedWaMessageId, quotedParticipantJid, quotedType, snippetPlain }
+ * - snippetPlain: plaintext ≤200 char (BELUM dienkripsi — pemanggil encryptText)
+ * - participant TIDAK di-resolve (@lid disimpan mentah — v3.5 LID mapping jalurnya sendiri)
+ */
+function extractQuote(msg) {
+  try {
+    const m = msg?.message
+    if (!m) return null
+    // key pesan pembawa contextInfo (extendedTextMessage 99%, fallback: key lain)
+    const carrierKey = Object.keys(m).find((k) => m[k] && typeof m[k] === 'object' && m[k].contextInfo)
+    if (!carrierKey) return null
+    const ctx = m[carrierKey].contextInfo
+    const stanzaId = ctx.stanzaId || null
+    if (!stanzaId) return null // bukan quote-reply (mis. reply-link UI-only tanpa stanzaId)
+    const quotedProto = ctx.quotedMessage || null
+    if (!quotedProto) return null
+    const quotedKey = Object.keys(quotedProto).find((k) => QUOTED_TYPE_BY_KEY[k])
+    if (!quotedKey) return null // proto eksotis (poll/template) → P1 skip, chip fallback saja
+
+    // Snippet plaintext: conversation / extendedTextMessage.text / media caption
+    // (proto conversation = string langsung; extendedText di .text — WAJIB beda!)
+    const q = quotedProto[quotedKey]
+    let snippetPlain = null
+    if (quotedKey === 'conversation') {
+      snippetPlain = typeof q === 'string' ? q : String(q?.conversation || '')
+    } else if (quotedKey === 'extendedTextMessage') {
+      snippetPlain = String(q?.text || '')
+    } else if (q?.caption) {
+      snippetPlain = String(q.caption)
+    } else if (quotedKey === 'documentMessage' && q?.fileName) {
+      snippetPlain = String(q.fileName)
+    }
+    const type = QUOTED_TYPE_BY_KEY[quotedKey]
+    snippetPlain = (snippetPlain || `[${type.charAt(0).toUpperCase() + type.slice(1)}]`).slice(0, 200)
+
+    return {
+      quotedWaMessageId: String(stanzaId),
+      quotedParticipantJid: ctx.participant ? String(ctx.participant) : null,
+      quotedType: type,
+      snippetPlain,
+    }
+  } catch {
+    return null // quote parsing GAK PERNAH bikin pesan masuk gagal persist
+  }
+}
+
+/** Kolom quoted utk prisma.message.create (null → undefined biar Prisma default) */
+function quotedColumnsFromExtract(extracted) {
+  if (!extracted) return {}
+  const { encryptText } = require('../services/textCrypto')
+  return {
+    quotedWaMessageId: extracted.quotedWaMessageId,
+    quotedParticipantJid: extracted.quotedParticipantJid,
+    quotedSnippet: encryptText(extracted.snippetPlain),
+    quotedType: extracted.quotedType,
+  }
+}
+
+/**
+ * broadcast payload pesan: content plaintext + quoted shape v3.9.14 (plaintext
+ * snippet dekrip on-the-fly + dbMessageId resolve same-chat via waMessageId).
+ * Fire-and-forget resolve — gagal lookup → dbMessageId null (chip snippet-only).
+ * Kolom quoted mentah (incl. quotedSnippet ciphertext) di-strip — cuma shape `quoted`.
+ */
+async function buildBroadcastPayload(dbMsg) {
+  const { decryptTextSafe } = require('../services/textCrypto')
+  const payload = { ...dbMsg, content: decryptTextSafe(dbMsg.content) }
+  delete payload.quotedWaMessageId
+  delete payload.quotedParticipantJid
+  delete payload.quotedSnippet
+  delete payload.quotedType
+  payload.quoted = await buildQuotedShape(dbMsg)
+  return payload
+}
+
+async function buildQuotedShape(dbMsg) {
+  if (!dbMsg || !dbMsg.quotedWaMessageId) return null
+  try {
+    const { decryptTextSafe } = require('../services/textCrypto')
+    let dbMessageId = null
+    try {
+      const orig = await prisma.message.findFirst({
+        where: { chatId: dbMsg.chatId, waMessageId: dbMsg.quotedWaMessageId },
+        select: { id: true, purged: true },
+      })
+      if (orig && !orig.purged) dbMessageId = orig.id
+    } catch {}
+    return {
+      waMessageId: dbMsg.quotedWaMessageId,
+      participantJid: dbMsg.quotedParticipantJid || null,
+      snippet: dbMsg.quotedSnippet ? decryptTextSafe(dbMsg.quotedSnippet) : null,
+      type: dbMsg.quotedType || 'text',
+      dbMessageId,
+    }
+  } catch {
+    return null
+  }
 }
 
 // ─── v3.5 — LID ↔ Phone routing helpers ─────────────────────────────
@@ -1122,11 +1238,15 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
   const senderName = msg.key.fromMe ? 'me' : (msg.pushName || 'Unknown')
   const dbTimestamp = msg.messageTimestamp ? new Date(msg.messageTimestamp * 1000) : new Date()
 
+  // v3.9.14 — quote-reply masuk: ekstrak contextInfo SEKALI di sini (dipakai jalur
+  // 1:1 maupun grup via ctx.quoteCols).
+  const quoteCols = quotedColumnsFromExtract(extractQuote(msg))
+
   // ── Grup: jalur terpisah (@g.us) — persist pesan grup via services/groups ──
   if (chatId.endsWith('@g.us')) {
     try {
       const groupsSvc = require('../services/groups')
-      await groupsSvc.handleIncomingGroupMessage(tid, msg, { waJid: chatId, text: effectiveText || null, mediaType, mediaPath, mediaMime, mediaSize, dbTimestamp, senderName, numberSlot: inboxSlot })
+      await groupsSvc.handleIncomingGroupMessage(tid, msg, { waJid: chatId, text: effectiveText || null, mediaType, mediaPath, mediaMime, mediaSize, dbTimestamp, senderName, numberSlot: inboxSlot, quoteCols })
     } catch (e) {
       console.error('[WA] Group message handler error (non-fatal):', e.message)
     }
@@ -1332,6 +1452,7 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
   }
 
   // Save message (content terenkripsi at-rest)
+  // v3.9.14 — quote-reply masuk: persist 4 kolom quoted (+ snippet terenkripsi)
   const dbMsg = await prisma.message.create({
     data: {
       tenantId: tid,
@@ -1346,6 +1467,7 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
       waMessageId: msg.key.id,
       timestamp: dbTimestamp,
       status: msg.key.fromMe ? 'sent' : 'delivered',
+      ...quoteCols,
     },
   })
 
@@ -1385,7 +1507,8 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
     : (firstMessageCounted ? (chat.unreadCount || 0) : ((chat.unreadCount || 0) + 1))
 
   // Broadcast scoped ke room tenant (plaintext utk UI)
-  broadcast.emitToTenant(tid, 'new_message', { chatId: chat.id, message: { ...dbMsg, content: decryptTextSafe(dbMsg.content) } })
+  // v3.9.14 — payload bawa quoted shape konsisten dgn REST (§6 spec)
+  broadcast.emitToTenant(tid, 'new_message', { chatId: chat.id, message: buildBroadcastPayload(dbMsg) })
   broadcast.emitToTenant(tid, 'chat_update', {
     chatId: chat.id,
     lastMessage: preview,
@@ -1626,6 +1749,10 @@ module.exports = {
   normalizePhoneForContact,
   sendMessageForTenant,
   sendMediaForTenant,
+  // v3.9.14 — Quote Reply
+  extractQuote,
+  quotedColumnsFromExtract,
+  buildQuotedShape,
   WA_NOT_CONNECTED_MSG,
   WA_DISABLED_MSG,
   // v3.9 — multi-nomor per-slot

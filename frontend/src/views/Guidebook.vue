@@ -177,6 +177,20 @@
           </ol>
         </section>
 
+        <!-- Balas dengan Quote (v3.9.14) -->
+        <section class="m3-card p-5 sm:p-6 mb-4">
+          <h2 class="text-lg font-semibold mb-2">💬 Balas dengan Quote</h2>
+          <ol class="guide-steps">
+            <li><strong>Quote bubble pelanggan</strong> — hover/tekan bubble → tombol <strong>Reply</strong>. Chip quote muncul di atas composer (klik ✕ untuk batal; reply baru menggantikan yang lama).</li>
+            <li>Pesan terkirim membawa <strong>quote asli WhatsApp</strong> — pelanggan melihat persis bubble mana yang kamu jawab, seperti reply di WA biasa.</li>
+            <li><strong>Pelanggan mereply pesan kita</strong> → bubble-nya tampil dengan chip konteks (penulis + cuplikan + ikon tipe). Ketuk chip untuk lompat ke pesan asalnya.</li>
+            <li>Quote untuk balasan <strong>teks</strong>; kirim media belum bisa di-quote, dan bubble yang gagal terkirim tidak bisa di-reply. Berlaku di chat 1:1 &amp; grup.</li>
+          </ol>
+          <div class="guide-tip">
+            💡 <strong>Tip:</strong> Konteks quote tetap tampil walau pesan asalnya sudah dihapus dari riwayat — cuplikannya tersimpan di pesan balasan itu sendiri.
+          </div>
+        </section>
+
         <!-- Template pesan -->
         <section class="m3-card p-5 sm:p-6 mb-4">
           <h2 class="text-lg font-semibold mb-2">⚡ Template Pesan</h2>

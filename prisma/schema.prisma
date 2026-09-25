@@ -288,7 +288,17 @@ model Message {
   // v0.14.0 — Manajemen Grup (additive kolom): pengirim asli di chat grup
   // (full JID dari msg.participant). 1:1 tetap NULL.
   participantJid String?
-  favorites   FavoriteMessage[]
+  // ═══ v3.9.14 — Quote Reply (WhatsApp contextInfo, ADDITIVE kolom) ═══
+  // quotedWaMessageId: contextInfo.stanzaId (inbound) / waMessageId target (outbound).
+  // quotedParticipantJid: full JID penulis pesan yang di-quote (grup; 1:1 null).
+  // quotedSnippet: plaintext snippet ≤200 char TERENKRIPSI (encryptText) — fallback
+  //   chip quote saat pesan asal sudah di-purge/hilang.
+  // quotedType: text|image|video|audio|sticker|document — ikon chip.
+  quotedWaMessageId   String?
+  quotedParticipantJid String?
+  quotedSnippet       String?
+  quotedType          String?
+  favorites           FavoriteMessage[]
 
   @@index([tenantId])
   @@index([chatId, timestamp])

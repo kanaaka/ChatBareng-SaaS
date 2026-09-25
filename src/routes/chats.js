@@ -161,6 +161,91 @@ async function detachContactKeepIdentity(tx, tenantId, chatId) {
   return tx.contact.updateMany({ where: { id: contact.id, chatId }, data: { chatId: null } })
 }
 
+// ═══ v3.9.14 — Quote Reply (WhatsApp contextInfo) ═══
+
+/**
+ * Strip kolom quoted mentah (incl. quotedSnippet ciphertext) dari pesan utk payload
+ * API — quote cuma keluar via shape `quoted` (§6). TIDAK pernah bocor ciphertext.
+ */
+function stripRawQuotedColumns(messageLike) {
+  if (!messageLike || typeof messageLike !== 'object') return messageLike
+  const out = { ...messageLike }
+  delete out.quotedWaMessageId
+  delete out.quotedParticipantJid
+  delete out.quotedSnippet
+  delete out.quotedType
+  return out
+}
+
+/**
+ * Shape `quoted` utk payload API (§6 spec): plaintext snippet (dekrip on-the-fly)
+ * + dbMessageId resolve same-chat via waMessageId (null bila purged/hilang).
+ * Return null bila pesan tanpa quote.
+ */
+async function buildQuotedPayload(dbMsg) {
+  if (!dbMsg || !dbMsg.quotedWaMessageId) return null
+  try {
+    let dbMessageId = null
+    try {
+      const orig = await prisma.message.findFirst({
+        where: { chatId: dbMsg.chatId, waMessageId: dbMsg.quotedWaMessageId },
+        select: { id: true, purged: true },
+      })
+      if (orig && !orig.purged) dbMessageId = orig.id
+    } catch {}
+    return {
+      waMessageId: dbMsg.quotedWaMessageId,
+      participantJid: dbMsg.quotedParticipantJid || null,
+      snippet: dbMsg.quotedSnippet ? decryptTextSafe(dbMsg.quotedSnippet) : null,
+      type: dbMsg.quotedType || 'text',
+      dbMessageId,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Validasi target quote utk /:id/reply → return { ok, message?, error? }.
+ * Guard (spec §5.1): ada, same chatId+tenantId, purged=false, punya waMessageId
+ * nyata (row failed/legacy → 400 — JANGAN pernah fake stanzaId).
+ */
+async function resolveQuoteTarget(tenantId, chatId, replyToMessageId) {
+  const target = await prisma.message.findFirst({ where: { id: replyToMessageId, tenantId, chatId } })
+  if (!target) return { ok: false, status: 400, error: 'Pesan yang di-reply tidak ditemukan di chat ini' }
+  if (target.purged) return { ok: false, status: 400, error: 'Pesan yang di-reply sudah dihapus' }
+  if (!target.waMessageId) return { ok: false, status: 400, error: 'Pesan tidak dapat di-quote' }
+  return { ok: true, message: target }
+}
+
+/**
+ * protoFromRow(target) — WAMessage minimal utk Baileys `quoted` (spec §5.2).
+ * text → { conversation }; media → proto media minimal (+caption bila ada).
+ * WA render placeholder chip utk media — acceptable & standard.
+ */
+function protoFromRow(target) {
+  const text = target.content ? decryptTextSafe(target.content) : null
+  if (target.mediaType) {
+    switch (target.mediaType) {
+      case 'image': return { imageMessage: { ...(text ? { caption: text } : {}) } }
+      case 'video': return { videoMessage: { ...(text ? { caption: text } : {}) } }
+      case 'audio': return { audioMessage: {} }
+      case 'sticker': return { stickerMessage: {} }
+      case 'document': return { documentMessage: { ...(text ? { caption: text } : {}) } }
+      default: return { conversation: text || '' }
+    }
+  }
+  return { conversation: text || '' }
+}
+
+/** Snippet plaintext ≤200 utk kolom quotedSnippet outbound (fallback '[Type]' media tanpa caption) */
+function quoteSnippetFromTarget(target) {
+  const type = target.mediaType || 'text'
+  let snippet = target.content ? decryptTextSafe(target.content) : null
+  if (!snippet) snippet = `[${type.charAt(0).toUpperCase() + type.slice(1)}]`
+  return String(snippet).slice(0, 200)
+}
+
 // GET /api/chats - list chats
 router.get('/', ...rt, async (req, res) => {
   try {
@@ -712,6 +797,16 @@ router.get('/:id', ...rt, async (req, res) => {
     decMessagesInPlace(messages)
     decChatPreview(chat)
 
+    // v3.9.14 — quoted shape per message (null bila tanpa quote; snippet-only bila asal purged);
+    // kolom quoted mentah di-strip dari payload (ciphertext cuma di DB)
+    for (const m of messages) {
+      m.quoted = await buildQuotedPayload(m)
+      delete m.quotedWaMessageId
+      delete m.quotedParticipantJid
+      delete m.quotedSnippet
+      delete m.quotedType
+    }
+
     res.json({
       chat,
       messages: messages.reverse(), // chronological order
@@ -909,6 +1004,14 @@ router.post('/:id/reply', ...rt, replyValidation, async (req, res) => {
   try {
     const chatId = req.params.id
     const { content } = req.body
+    // v3.9.14 — optional replyToMessageId (ChatBareng Message.id) utk quote reply
+    let replyToMessageId = null
+    if (req.body.replyToMessageId !== undefined && req.body.replyToMessageId !== null) {
+      replyToMessageId = Number(req.body.replyToMessageId)
+      if (!Number.isInteger(replyToMessageId) || replyToMessageId <= 0) {
+        return res.status(400).json({ error: 'replyToMessageId harus berupa ID pesan (angka) yang valid' })
+      }
+    }
 
     // Check chat exists
     const chat = await prisma.chat.findFirst({ where: { id: Number(chatId), tenantId: req.tenantId } })
@@ -920,6 +1023,15 @@ router.post('/:id/reply', ...rt, replyValidation, async (req, res) => {
     // Lock: only the assigned CS or admin can reply
     if (chat.assignedToId && chat.assignedToId !== req.user.id && req.user.role !== 'admin') {
       return res.status(403).json({ error: 'This chat is assigned to another agent. Release it first before replying.' })
+    }
+
+    // v3.9.14 — quote guard (spec §5.1): target ada + same chat+tenant + purged=false +
+    // punya waMessageId nyata → selain itu 400 VALIDATION (JANGAN fake stanzaId)
+    let quoteTarget = null
+    if (replyToMessageId !== null) {
+      const q = await resolveQuoteTarget(req.tenantId, chat.id, replyToMessageId)
+      if (!q.ok) return res.status(q.status).json({ error: q.error })
+      quoteTarget = q.message
     }
 
     // Personalization: replace {name} with contact name or remove if null
@@ -940,9 +1052,21 @@ router.post('/:id/reply', ...rt, replyValidation, async (req, res) => {
     // Send via pool per-tenant (v3 — WA_DISABLED → error jelas)
     // v3.9 — ATURAN TUNGGAL reply: keluar via nomor ASAL chat (numberSlot);
     // slot mati → GAGAL dgn pesan jelas, JANGAN fallback ke nomor lain (owner 18:24).
+    // v3.9.14 — quoted WAMessage minimal dari target row → Baileys contextInfo.
     const replySlot = Number(chat.numberSlot) || 0
+    const quotedWaMessage = quoteTarget
+      ? {
+          key: {
+            remoteJid: chat.waJid,
+            fromMe: quoteTarget.direction === 'out',
+            id: quoteTarget.waMessageId,
+            ...(quoteTarget.participantJid ? { participant: quoteTarget.participantJid } : {}),
+          },
+          message: protoFromRow(quoteTarget),
+        }
+      : undefined
     let waSendError = null // v3.9 fix BUG-6: alasan gagal per-slot ke CS (bukan cuma di log)
-    const waResult = await wa.sendMessageForTenant(req.tenantId, chat.waJid, personalizedContent, { slot: replySlot }).catch((err) => {
+    const waResult = await wa.sendMessageForTenant(req.tenantId, chat.waJid, personalizedContent, { slot: replySlot, quoted: quotedWaMessage }).catch((err) => {
       console.error('[Chats] WA send error (non-fatal, tetap simpan):', err.message)
       waSendError = err.message
       return null
@@ -951,6 +1075,7 @@ router.post('/:id/reply', ...rt, replyValidation, async (req, res) => {
     // (message tersimpan status 'failed' seperti pola existing; error jelas di log).
 
     // Save message to DB — v0.11.0: content dienkripsi at-rest
+    // v3.9.14 — kolom quoted persist (snippet terenkripsi ≤200; survive purge asal)
     const message = await prisma.message.create({
       data: {
         tenantId: req.tenantId,
@@ -961,6 +1086,14 @@ router.post('/:id/reply', ...rt, replyValidation, async (req, res) => {
         senderId: req.user.id,
         waMessageId: waResult?.key?.id || null,
         status: waResult ? 'sent' : 'failed',
+        ...(quoteTarget
+          ? {
+              quotedWaMessageId: quoteTarget.waMessageId,
+              quotedParticipantJid: quoteTarget.participantJid || null,
+              quotedSnippet: encryptText(quoteSnippetFromTarget(quoteTarget)),
+              quotedType: quoteTarget.mediaType || 'text',
+            }
+          : {}),
       },
     })
 
@@ -1007,7 +1140,8 @@ router.post('/:id/reply', ...rt, replyValidation, async (req, res) => {
     // v0.11.0 — broadcast & response membawa PLAINTEXT (dekrip payload ciphertext)
     // v0.12.1 — payload bawa assignedToId & status chat (toast gate frontend);
     // sinkron dgn auto-reopen di atas (row `chat` bisa stale setelah update)
-    const messageOut = { ...message, content: decContent(message.content) }
+    const messageOut = stripRawQuotedColumns({ ...message, content: decContent(message.content) })
+    messageOut.quoted = await buildQuotedPayload(message) // v3.9.14 — quoted shape (§6)
     broadcast.emitToTenant(req.tenantId, 'new_message', { chatId: chat.id, assignedToId: (reopenedFromResolved ? null : chat.assignedToId) ?? null, status: reopenedFromResolved ? 'open' : chat.status, message: messageOut })
     broadcast.emitToTenant(req.tenantId, 'chat_update', {
       chatId: chat.id,
@@ -1033,6 +1167,11 @@ router.post('/:id/media', ...rt, upload.single('file'), async (req, res) => {
 
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' })
+    }
+
+    if (req.body.replyToMessageId !== undefined && req.body.replyToMessageId !== null && String(req.body.replyToMessageId).trim() !== '') {
+      // v3.9.14 — quote reply via media TIDAK didukung P1 → 400 eksplisit (bukan silent ignore)
+      return res.status(400).json({ error: 'Quote reply (replyToMessageId) belum didukung untuk media (P1) — kirim teks dengan quote, atau media tanpa quote' })
     }
 
     let caption = req.body.caption || null
@@ -1157,7 +1296,8 @@ router.post('/:id/media', ...rt, upload.single('file'), async (req, res) => {
     // v0.11.0 — broadcast & response membawa PLAINTEXT (dekrip payload ciphertext)
     // v0.12.1 — payload bawa assignedToId & status chat (toast gate frontend);
     // sinkron dgn auto-reopen di atas (row `chat` bisa stale setelah update)
-    const messageOut = { ...message, content: decContent(message.content) }
+    const messageOut = stripRawQuotedColumns({ ...message, content: decContent(message.content) })
+    messageOut.quoted = null // v3.9.14 — media P1 tanpa quote
     broadcast.emitToTenant(req.tenantId, 'new_message', { chatId: chat.id, assignedToId: (reopenedFromResolved ? null : chat.assignedToId) ?? null, status: reopenedFromResolved ? 'open' : chat.status, message: messageOut })
     broadcast.emitToTenant(req.tenantId, 'chat_update', {
       chatId: chat.id,

@@ -1123,7 +1123,7 @@ async function assignPic(user, tenantId, chatId, picUserIdRaw) {
 // ═══════════════════════════════════════════════════════════════════════
 async function handleIncomingGroupMessage(tenantId, msg, ctx) {
   try {
-    const { text, mediaType, mediaPath, mediaMime, mediaSize, dbTimestamp, senderName } = ctx
+    const { text, mediaType, mediaPath, mediaMime, mediaSize, dbTimestamp, senderName, quoteCols } = ctx
     let chat = ctx.chatRow
     // v3.9.2 K1-A — grup = 1 baris (TIDAK per-slot): findFirst by (tenantId, waJid).
     if (!chat) chat = await prisma.chat.findFirst({ where: { tenantId, waJid: ctx.waJid }, orderBy: { id: 'asc' } })
@@ -1153,6 +1153,7 @@ async function handleIncomingGroupMessage(tenantId, msg, ctx) {
         timestamp: dbTimestamp,
         status: fromMe ? 'sent' : 'delivered',
         participantJid: fromMe ? null : participantJid, // out = agent → nama CS dari senderName
+        ...quoteCols, // v3.9.14 — quote-reply masuk (kolom quoted additive; {} bila bukan quote)
       },
     })
 
@@ -1182,11 +1183,14 @@ async function handleIncomingGroupMessage(tenantId, msg, ctx) {
     })
 
     const rooms = await groupAudienceRooms(tenantId, chat.picUserId)
+    // v3.9.14 — quoted shape plaintext (plaintext snippet + dbMessageId) utk chip UI
+    const { buildQuotedShape } = require('../wa/pool')
+    const quotedShape = await buildQuotedShape(dbMsg).catch(() => null)
     const msgPayload = {
       chatId,
       assignedToId: chat.assignedToId ?? null,
       status: reopened ? 'open' : chat.status,
-      message: { ...dbMsg, content: text }, // broadcast plaintext (pola v0.11.0)
+      message: { ...dbMsg, content: text, quoted: quotedShape }, // broadcast plaintext (pola v0.11.0)
     }
     for (const room of rooms) {
       broadcast.emitToRoom(room, 'new_message', msgPayload)
