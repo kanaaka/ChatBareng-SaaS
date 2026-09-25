@@ -1,3 +1,80 @@
+# v3.9.19 — ENHANCEMENT: SuperAdmin Dashboard Rework (2026-09-25)
+
+**Request (Kanaka 15:39, spec approved 15:40–15:50 "GO, sidebar 4 item + ganti
+password P1"):** UI superadmin "barebones banget, kacaw di mobile" — rework jadi
+dashboard modern ala referensi H-care (sidebar + metric cards + charts grid).
+Implementasi round-3 (round-2 Dory mati 6m49s — lanjut verified via git status).
+
+**Backend (`src/routes/superadmin.js` — additive murni, ZERO migration):**
+- 3 endpoint stats BARU (round-2, diverifikasi + **BUGFIX WIB grouping**):
+  - `GET /api/sa/stats/trends?range=today|7d|30d` — jumlah chat baru/hari,
+    sumber `COALESCE(firstIncomingAt, createdAt)`, shape `{ range, today, dates, counts, total }`
+  - `GET /api/sa/stats/avg-response?range=…` — rata-rata `firstResponseAt −
+    firstIncomingAt` (menit) per hari, hari tanpa data = null (bukan 0),
+    shape `{ range, dates, avgMinutes, avgTotal }` (avgTotal = agregat window,
+    BUKAN mean-of-means)
+  - `GET /api/sa/stats/resolution?range=…` — resolved vs open (window-scoped),
+    shape `{ range, resolved, open, percentResolved, percentOpen }`
+  - **BUGFIX (round-3, lesson #4):** datetime di SQLite tersimpan sebagai **INTEGER
+    ms epoch** — `strftime('%Y-%m-%d', col, '+07:00')` tanpa modifier unixepoch
+    balikin NULL utk semua row → semua chart selalu 0. Fix: `col/1000, 'unixepoch',
+    '+07:00'` (+ `julianday(col/1000,'unixepoch')` utk avg-response). Post-verify:
+    trends sum 2585 chats (bukan lagi 0), avgTotal 14.4 menit.
+- 2 endpoint branding platform BARU (additive): `GET/PUT /api/sa/platform-branding`
+  — brandName global platform (sidebar superadmin), validasi 2–50 char / "" = reset.
+  **DEVIASI spec §7 ("disimpan AppConfig"):** AppConfig tidak punya kolom brandName
+  dan zero-migration ter-locked (§9) → disimpan di SaAuditLog (row permanen,
+  tak ter-purge per spec §2, queryable findFirst action=`platform_branding`),
+  detailJson `{ brandName, platformBrand, reset }`. Audit trail ikut tercatat.
+
+**Frontend (split + 4 view):**
+- `SuperAdmin.vue` 1229 baris → **shell 1.1 KB** (SaSidebar + `<router-view>`);
+  semua state & handler logic di-preservasi pindah ke child views.
+- `SaSidebar.vue` (BARU round-2, fix 2 bug round-3: nav Overview item tadinya ke
+  `/superadmin` yang kini redirect → tak pernah active; isActive pakai startsWith):
+  4 item (Overview | Tenants | Audit Log | Pengaturan), desktop fixed 240px,
+  mobile <768px drawer hamburger + backdrop, brandName platform via
+  GET /api/sa/platform-branding (fallback ChatBareng).
+- `SaOverview.vue` (BARU round-2, fix 1 bug round-3: `</template>` inner block
+  hilang → build gagal): card aksen ungu "Chat hari ini" + sparkline 7 titik,
+  5 metric cards (delta % vs 7d lalu dihitung frontend), chart Trend Chat
+  (Chart.js line/area, tab Hari Ini/7d/30d), pie donut Resolved vs Open,
+  avg-response line; chart.js ^4.5.1; warna chart + token M3 (dark mode ikut).
+- `SaTenants.vue` (BARU round-2, verified utuh): SEMUA konten existing (list
+  tenant, 10 tombol/row, 4 modal numbers/validity/plan/branding + API keys,
+  admin form, purge confirm) + search box + chip filter status + pagination
+  client-side 20/50/100 (endpoint GET /api/sa/tenants TIDAK diubah).
+- `SaAudit.vue` (BARU round-3): audit log — filter action + tenant, cursor
+  pagination (`?before=`), detail collapsible `<details>`, muat lebih.
+- `SaPengaturan.vue` (BARU round-3): ganti password SA (POST
+  `/api/auth/change-password` existing, logic preserved dari v3.1.1) + branding
+  platform (PUT /api/sa/platform-branding) + placeholder P2 "Pricing & payment
+  gateway: dibangun bertahap — v3.9.20+" dan "AI provider key".
+- `router.js`: /superadmin = shell + 4 child route `/superadmin/overview|tenants|
+  audit|pengaturan` (meta auth+superadmin per-child preserved), redirect
+  `/superadmin` → `/superadmin/overview`. Guard superadmin guardRest tak berubah.
+
+**QA (port 5099 DB copy, WA_DISABLED=1):**
+- E2E `scripts/e2e-v3919.cjs` — **54/54 PASS** (shape 3 endpoint + data real,
+  validasi/round-trip/reset platform-branding, audit filter+cursor, ganti password
+  round-trip + restore, tenant isolation admin-impersonate 403, split router shape).
+- Regressions ALL PASS di copy DB: **v3.9.13 39/39, v3.9.14 40/40, v3.9.11 10/10,
+  v3.9.4 22/22, v3.9.5 13/13, v3.9.6 15/15, v3.9.9 4/4**.
+- `npx vite build` exit 0 (SaOverview 216KB/74KB gzip incl. Chart.js tree-shaken).
+- node --check superadmin.js + e2e-v3919.cjs OK.
+- Post-verify lesson #4: fresh API call — trends { dates 7, counts 7, sum 2585 },
+  avg-response { avgMinutes 7 elemen, avgTotal 14.4 }, resolution { resolved 0,
+  open 2585, percentResolved 0 } — data BENAR, bukan cuma "ok".
+
+**Catatan deploy (Alita):**
+- Zero migration — semua chart dihitung dari tabel Chat existing; storage branding
+  platform = row SaAuditLog (existing table, additive row).
+- Login limiter ketat (15/minute) — E2E beruntun bisa kena 429; tunggu window reset.
+- Visual QA (Chrome 18801, ALITA): sidebar 4 item render + Overview cards/charts/
+  pie/sparkline/card ungu + Tenants search/filter/pagination + Audit filter/cursor
+  + Pengaturan (ganti password, branding platform round-trip) + mobile drawer
+  hamburger + dark mode charts.
+
 # v3.9.18b — ENHANCEMENT: WA notify multi-target (2026-09-25)
 
 **Request (Kanaka 14:54):** tim Parahita juga mulai pakai ChatBareng — notif tunnel

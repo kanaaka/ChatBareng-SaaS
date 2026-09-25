@@ -663,6 +663,142 @@ router.get('/stats', ...sa, async (req, res) => {
   }
 })
 
+// ═══════════════════════ v3.9.19 — STATISTIK TREND (additive murni) ═══════════════════════
+// Semua chart dihitung dari tabel Chat existing — ZERO migration (spec §9 invariant).
+// Server berjalan UTC → grouping per hari dikonversi ke WIB (UTC+7, Asia/Jakarta)
+// di query (strftime modifier '+07:00'); grouping HARUS di SQL, bukan JS offset.
+
+/** Range query-param → { days, label }. Invalid → null (caller balas 400). */
+function parseSaRange(req) {
+  const raw = String(req.query.range || '7d').toLowerCase()
+  if (raw === 'today') return { days: 1, label: 'today' }
+  if (raw === '7d') return { days: 7, label: '7d' }
+  if (raw === '30d') return { days: 30, label: '30d' }
+  return null
+}
+
+/**
+ * WIB window utk range: hari "hari ini" mengikuti tanggal WIB (bukan UTC).
+ * Window = N hari kalender WIB terakhir (inclusive hari ini).
+ * Return { sinceIso, todayStr } — sinceIso = midnight WIB hari ke-N.
+ */
+function saWibWindow(days) {
+  const nowWibMs = Date.now() + 7 * 60 * 60 * 1000
+  const todayStr = new Date(nowWibMs).toISOString().slice(0, 10) // shifted = WIB clock
+  const todayStartMs = Date.UTC(
+    Number(todayStr.slice(0, 4)), Number(todayStr.slice(5, 7)) - 1, Number(todayStr.slice(8, 10))
+  ) - 7 * 60 * 60 * 1000 // midnight WIB hari ini dalam ms UTC
+  return {
+    todayStr,
+    sinceIso: new Date(todayStartMs - (days - 1) * 86400000).toISOString(),
+  }
+}
+
+/** Daftar tanggal WIB (YYYY-MM-DD) oldest → today utk window (selalu penuh). */
+function saWibDateList(days) {
+  const out = []
+  const nowWibMs = Date.now() + 7 * 60 * 60 * 1000
+  const iso = new Date(nowWibMs).toISOString()
+  const todayUtcMidnight = Date.UTC(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10)))
+  for (let i = days - 1; i >= 0; i--) {
+    out.push(new Date(todayUtcMidnight - i * 86400000).toISOString().slice(0, 10))
+  }
+  return out
+}
+
+// GET /api/sa/stats/trends?range=today|7d|30d — jumlah chat baru per hari (semua
+// tenant), grouped WIB. Sumber tanggal = COALESCE(firstIncomingAt, createdAt)
+// (chat import/seed bisa firstIncomingAt lebih tua dari createdAt — pakai yang
+// tersedia). dates selalu penuh (hari kosong = 0) — frontend tanpa zero-fill.
+// Shape: { range, today, dates: [...WIB], counts: [...], total }
+router.get('/stats/trends', ...sa, async (req, res) => {
+  try {
+    const range = parseSaRange(req)
+    if (!range) return res.status(400).json({ error: 'range harus today|7d|30d' })
+    const { sinceIso, todayStr } = saWibWindow(range.days)
+    const rows = await prisma.$queryRawUnsafe(`
+      SELECT strftime('%Y-%m-%d', COALESCE("firstIncomingAt", "createdAt")/1000, 'unixepoch', '+07:00') AS day,
+             COUNT(*) AS cnt
+      FROM Chat
+      WHERE COALESCE("firstIncomingAt", "createdAt") >= ?
+      GROUP BY day ORDER BY day ASC
+    `, new Date(sinceIso))
+    const map = new Map(rows.map((r) => [String(r.day), Number(r.cnt)]))
+    const dates = saWibDateList(range.days)
+    const counts = dates.map((d) => map.get(d) || 0)
+    const total = counts.reduce((a, b) => a + b, 0)
+    res.json({ range: range.label, today: todayStr, dates, counts, total })
+  } catch (e) {
+    console.error('[SA] Stats trends error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/sa/stats/avg-response?range=today|7d|30d — rata-rata firstResponseAt −
+// firstIncomingAt (MENIT) per hari, semua tenant, grouped WIB. Chat tanpa
+// firstResponseAt (belum dibalas) dikecualikan — bukan dihitung 0.
+// Shape: { range, dates, avgMinutes: [n|null...], avgTotal: n|null }
+// avgTotal = agregat window (sum durasi / sum n), BUKAN mean-of-means.
+router.get('/stats/avg-response', ...sa, async (req, res) => {
+  try {
+    const range = parseSaRange(req)
+    if (!range) return res.status(400).json({ error: 'range harus today|7d|30d' })
+    const { sinceIso } = saWibWindow(range.days)
+    const rows = await prisma.$queryRawUnsafe(`
+      SELECT strftime('%Y-%m-%d', "firstIncomingAt"/1000, 'unixepoch', '+07:00') AS day,
+             AVG((julianday("firstResponseAt"/1000, 'unixepoch') - julianday("firstIncomingAt"/1000, 'unixepoch')) * 1440.0) AS avgMin,
+             COUNT(*) AS n
+      FROM Chat
+      WHERE "firstIncomingAt" IS NOT NULL
+        AND "firstResponseAt" IS NOT NULL
+        AND "firstResponseAt" >= "firstIncomingAt"
+        AND "firstIncomingAt" >= ?
+      GROUP BY day ORDER BY day ASC
+    `, new Date(sinceIso))
+    const map = new Map(rows.map((r) => [String(r.day), { avg: Number(r.avgMin), n: Number(r.n) }]))
+    const dates = saWibDateList(range.days)
+    const avgMinutes = dates.map((d) => {
+      const v = map.get(d)
+      return v ? Math.round(v.avg * 10) / 10 : null // null = belum ada data hari itu
+    })
+    let sumMin = 0
+    let sumN = 0
+    for (const [, v] of map) { sumMin += v.avg * v.n; sumN += v.n }
+    const avgTotal = sumN > 0 ? Math.round((sumMin / sumN) * 10) / 10 : null
+    res.json({ range: range.label, dates, avgMinutes, avgTotal })
+  } catch (e) {
+    console.error('[SA] Stats avg-response error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/sa/stats/resolution?range=today|7d|30d — resolved vs open (+percent).
+// resolved = chat dengan resolvedAt dalam window; open = chat dalam window yang
+// belum resolved (window-scoped biar konsisten dgn chart lain — chat lama di
+// luar window tidak dihitung).
+// Shape: { range, resolved, open, percentResolved, percentOpen }
+router.get('/stats/resolution', ...sa, async (req, res) => {
+  try {
+    const range = parseSaRange(req)
+    if (!range) return res.status(400).json({ error: 'range harus today|7d|30d' })
+    const { sinceIso } = saWibWindow(range.days)
+    const since = new Date(sinceIso)
+    const resolved = await prisma.chat.count({ where: { resolvedAt: { gte: since } } })
+    const open = await prisma.chat.count({
+      where: {
+        createdAt: { gte: since },
+        OR: [{ resolvedAt: null }, { status: { not: 'resolved' } }],
+      },
+    })
+    const total = resolved + open
+    const pct = (n) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0)
+    res.json({ range: range.label, resolved, open, percentResolved: pct(resolved), percentOpen: pct(open) })
+  } catch (e) {
+    console.error('[SA] Stats resolution error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // ═══════════════════════ v3.4 — PLAN & KUOTA ═══════════════════════
 
 // GET /api/sa/tenants/:id/plan — plan + usage
@@ -1088,6 +1224,56 @@ router.post('/impersonate/:tenantId', ...sa, async (req, res) => {
     res.json({ token, tenant: { id: tenant.id, name: tenant.name }, expiresIn: '30m' })
   } catch (e) {
     console.error('[SA] Impersonate error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ═══════════════════════ v3.9.19 — BRANDING PLATFORM (additive murni) ═══════════════════════
+// brandName GLOBAL platform (sidebar superadmin). Spec §7 bilang "disimpan AppConfig",
+// TAPI AppConfig TIDAK punya kolom brandName dan ZERO-migration ter-locked (§9) —
+// jadi disimpan di SaAuditLog (row permanen, TIDAK pernah di-purge — spec §2; tidak
+// pernah dihapus siapa pun, queryable findFirst). Penyimpanan via audit() = trail
+// platform_branding ikut tercatat (audit memang wajib utk aksi SA).
+// NOTE utk Alita/audit round-3: ini DEVIASI KECIL dari spec (AppConfig → SaAuditLog)
+// dgn alasan zero-migration; endpoint shape tetap { brandName } seperti spec.
+const PLATFORM_BRAND_ACTION = 'platform_branding'
+
+// GET /api/sa/platform-branding — { brandName } (null/absen = default "ChatBareng")
+router.get('/platform-branding', ...sa, async (req, res) => {
+  try {
+    const row = await prisma.saAuditLog.findFirst({
+      where: { action: PLATFORM_BRAND_ACTION },
+      orderBy: { id: 'desc' },
+    })
+    let brandName = null
+    if (row?.detailJson) {
+      try { brandName = JSON.parse(row.detailJson)?.brandName ?? null } catch { brandName = null }
+    }
+    res.json({ brandName: brandName || null })
+  } catch (e) {
+    console.error('[SA] Platform branding GET error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// PUT /api/sa/platform-branding — JSON { brandName }: 2-50 char ATAU "" (reset ke default)
+router.put('/platform-branding', ...sa, async (req, res) => {
+  try {
+    const bn = String(req.body?.brandName ?? '').trim()
+    if (bn.length > 0 && (bn.length < 2 || bn.length > 50)) {
+      return res.status(400).json({ error: 'brandName harus 2-50 karakter (atau "" untuk reset)' })
+    }
+    const applied = bn === '' ? null : bn
+    // detail key = brandName (GET /platform-branding membaca detailJson.brandName —
+    // harus konsisten; jangan pakai key lain, lesson #4 post-verify data beneran).
+    await saAudit.audit(req.user, PLATFORM_BRAND_ACTION, null, null, {
+      platformBrand: applied,
+      brandName: applied, // key yg dibaca GET /platform-branding (sinkron!)
+      reset: bn === '',
+    })
+    res.json({ brandName: applied })
+  } catch (e) {
+    console.error('[SA] Platform branding PUT error:', e)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

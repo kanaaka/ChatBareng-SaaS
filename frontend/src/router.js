@@ -54,7 +54,20 @@ const routes = [
   { path: '/blast/history', redirect: to => ({ path: '/blast', query: { tab: 'riwayat' } }) },
   { path: '/blast/progress/:id', name: 'BlastProgress', component: () => import('./views/BlastProgress.vue'), meta: { auth: true, feature: 'blast' } },
   // v3.0 — Superadmin platform (owner): daftar tenant + buat tenant/admin + suspend
-  { path: '/superadmin', name: 'SuperAdmin', component: () => import('./views/SuperAdmin.vue'), meta: { auth: true, superadmin: true } },
+  // v3.9.19 — DIPILAH: /superadmin = AdminShell (SaSidebar) + 4 child view
+  // (Overview | Tenants | Audit Log | Pengaturan). Meta auth+superadmin dipertahankan
+  // persis; redirect '' → /superadmin/overview (dashboard baru = default).
+  {
+    path: '/superadmin',
+    component: () => import('./views/SuperAdmin.vue'),
+    children: [
+      { path: '', redirect: '/superadmin/overview' },
+      { path: '/superadmin/overview', name: 'SuperAdminOverview', component: () => import('./views/SaOverview.vue'), meta: { auth: true, superadmin: true } },
+      { path: '/superadmin/tenants', name: 'SuperAdminTenants', component: () => import('./views/SaTenants.vue'), meta: { auth: true, superadmin: true } },
+      { path: '/superadmin/audit', name: 'SuperAdminAudit', component: () => import('./views/SaAudit.vue'), meta: { auth: true, superadmin: true } },
+      { path: '/superadmin/pengaturan', name: 'SuperAdminPengaturan', component: () => import('./views/SaPengaturan.vue'), meta: { auth: true, superadmin: true } },
+    ],
+  },
 ]
 
 const router = createRouter({
