@@ -1,3 +1,30 @@
+# v3.9.22 — ENHANCEMENT: Timestamp pesan terakhir di chat list (request Kanaka 2026-09-25)
+
+**Request:** chat list ChatBareng gak nunjukin waktu pesan terakhir (kayak WhatsApp biasa) — di
+bubble dalam chatbox kelihatan, di list gak. (Paringan kasus: LID mentah di chat list
+outbound-initiated = **LET IT BE** per Kanaka — self-heal via pushName backfill saat balasan
+pertama, mergeLidIntoPhoneChat cegah chat dobel; gak perlu fix.)
+
+**Implementasi (Alita langsung — trivial lane, 2 file frontend, ZERO backend, ZERO migration):**
+- `frontend/src/utils/format.js` — helper baru `formatListTime(ts)` konvensi WA: hari ini =
+  jam `HH.MM` (locale id-ID di-pin, mis. "19.35"); kemarin = "Kemarin"; tahun ini = `dd/MM`;
+  tahun lain = `dd/MM/yy`; invalid → ''. (v1 pakai `[]` locale = ikut browser QA "07:35 PM"
+  en-US → di-pin id-ID biar konsisten gaya WA.)
+- `frontend/src/views/ChatListPane.vue` — time chip `text-[11px] text-gray-400` di kolom kanan
+  row chat (di atas badge unread, pola WA), render `chat.lastMessageAt` via formatListTime.
+- Data SUDAH ada di payload list (findMany full-row, orderBy lastMessageAt) + socket store
+  udah update `lastMessageAt` reaktif tiap pesan baru/chat_update → chip live tanpa ubah backend.
+
+**QA (Chrome 18801 raw-CDP, copy DB 5099):**
+- QA user `qacs22` (cs tenant 8, dibuat di COPY DB via Prisma + SELECT-back verify) + 2 chat
+  assigned (5617 lastMessageAt 19:35 WIB hari ini; 7669 = 25 Jul) → chip **"19.35"** utk chat
+  hari ini + **"25/07"** utk chat lama ✅ (probe DOM + image-verified).
+- Layout rapi: no overlap/cut-off; unread badge & @assignee tetap utuh; preview truncate normal.
+- `npx vite build` exit 0 (`index-Bm38TVqR.js`); prod 5047 serve build baru TANPA restart
+  (server jalan dari app dir — pola v3.9.16), health 200.
+- QA setup note: user.create scalar `tenantId` sempat ditolak generated client copy (stale) →
+  fallback pola app superadmin.js L461 (data tanpa `name` — field gak ada di model User).
+
 # v3.9.21 — ENHANCEMENT: Dashboard Polish — 4 quirks live-QA Kanaka (2026-09-25)
 
 **Request (Kanaka 19:20):** 4 quirks dari live-QA dashboard SuperAdmin: brand sidebar

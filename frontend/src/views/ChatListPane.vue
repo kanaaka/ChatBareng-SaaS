@@ -183,6 +183,8 @@
               </div>
             </div>
             <div class="flex flex-col items-end gap-1 ml-2">
+              <!-- v3.9.22 — timestamp pesan terakhir di chat list (konvensi WA: hari ini = jam, kemarin/dst = tanggal) -->
+              <span v-if="chat.lastMessageAt" class="text-[11px] text-gray-400 whitespace-nowrap">{{ formatListTime(chat.lastMessageAt) }}</span>
               <span v-if="chat.unreadCount > 0" class="bg-wa-green text-white text-xs px-2 py-0.5 rounded-full">
                 {{ chat.unreadCount }}
               </span>
@@ -244,7 +246,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 import { useChatsStore } from '../stores/chats'
-import { getInitials, formatTime, tagColorClass, tagDotClass, highlightSearchTerm } from '../utils/format'
+import { getInitials, formatTime, formatListTime, tagColorClass, tagDotClass, highlightSearchTerm } from '../utils/format'
 import M3TextField from '../components/M3TextField.vue'
 
 const API = import.meta.env.VITE_API_URL || ''

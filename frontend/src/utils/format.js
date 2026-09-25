@@ -12,6 +12,23 @@ export function formatTime(ts) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
+// v3.9.22 — waktu pesan terakhir utk chat list (konvensi WA):
+// hari ini = HH.MM · kemarin = "Kemarin" · tahun ini = dd/MM · tahun lain = dd/MM/yy
+export function formatListTime(ts) {
+  if (!ts) return ''
+  const d = new Date(ts)
+  if (isNaN(d.getTime())) return ''
+  const now = new Date()
+  const sameDate = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+  if (sameDate(d, now)) return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1)
+  if (sameDate(d, yesterday)) return 'Kemarin'
+  const dd = String(d.getDate()).padStart(2, '0')
+  const MM = String(d.getMonth() + 1).padStart(2, '0')
+  if (d.getFullYear() === now.getFullYear()) return `${dd}/${MM}`
+  return `${dd}/${MM}/${String(d.getFullYear()).slice(-2)}`
+}
+
 export function formatPhone(phone) {
   if (!phone) return ''
   if (phone.length >= 15 || (!phone.startsWith('62') && !phone.startsWith('0') && !phone.startsWith('+'))) {
