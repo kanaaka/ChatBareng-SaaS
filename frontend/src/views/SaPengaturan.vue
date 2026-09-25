@@ -81,18 +81,115 @@
       </div>
     </div>
 
+    <!-- ── v3.9.23 — AI Assistant (Ollama Cloud + fallback lokal) ── -->
+    <div class="sa-panel mb-6">
+      <h2 class="text-lg font-semibold mb-1" :style="{ color: 'var(--md-sys-color-on-surface)' }">AI Assistant</h2>
+      <p class="text-sm mb-4" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
+        Provider AI (Ollama Cloud) untuk fitur Summary Sesi. API key disimpan terenkripsi dan tidak pernah tampil utuh.
+      </p>
+      <div class="grid gap-3 max-w-md">
+        <M3TextField v-model="aiForm.cloudBaseUrl" label="Base URL cloud (default https://ollama.com)" type="text" maxlength="200" />
+        <M3TextField v-model="aiForm.cloudModel" label="Model cloud (mis. glm-5.3-flash)" type="text" maxlength="100" />
+
+        <!-- API key: password input; placeholder masked bila sudah ada + tombol Ganti Key -->
+        <div class="flex items-end gap-2">
+          <div class="flex-1">
+            <M3TextField
+              v-if="aiKeyEditing || !aiForm.hasKey"
+              v-model="aiKeyDraft"
+              label="API key (min 20 karakter)"
+              type="password"
+              autocomplete="new-password"
+            />
+            <div v-else class="text-sm" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }" style="min-height: 40px; display: flex; align-items: center;">
+              API key tersimpan: <code class="ml-1 px-1.5 py-0.5 rounded bg-black/5">{{ aiForm.keyMasked }}</code>
+            </div>
+          </div>
+          <button v-if="aiForm.hasKey && !aiKeyEditing" type="button" class="m3-btn m3-btn--tonal !min-h-[40px]" @click="aiKeyEditing = true; aiKeyDraft = ''">
+            Ganti Key
+          </button>
+          <button v-else-if="aiKeyEditing" type="button" class="m3-btn m3-btn--tonal !min-h-[40px]" @click="aiKeyEditing = false; aiKeyDraft = ''">
+            Batal
+          </button>
+        </div>
+
+        <div class="flex flex-wrap gap-2">
+          <button type="button" class="m3-btn m3-btn--tonal !min-h-[40px]" :disabled="aiTesting" @click="testAiConnection">
+            {{ aiTesting ? 'Menguji…' : 'Tes Koneksi' }}
+          </button>
+          <button type="button" class="m3-btn m3-btn--tonal !min-h-[40px]" :disabled="aiLoadingModels" @click="loadAiModels('cloud')">
+            {{ aiLoadingModels ? 'Memuat…' : 'Muat Daftar Model' }}
+          </button>
+          <select v-if="aiModels.length" v-model="aiForm.cloudModel" class="m3-btn m3-btn--tonal !min-h-[40px]" style="max-width: 240px;">
+            <option v-for="m in aiModels" :key="m.name" :value="m.name">{{ m.name }}</option>
+          </select>
+        </div>
+
+        <label class="text-sm font-medium" style="margin-top: 8px;">Format default platform</label>
+        <select v-model="aiForm.defaultPreset" class="px-3 py-2.5 rounded-[var(--md-sys-shape-corner-s)] text-sm border" style="border-color: var(--md-sys-color-outline); background: var(--md-sys-color-surface-container-lowest); color: var(--md-sys-color-on-surface);">
+          <option v-for="p in AI_PRESETS" :key="p.key" :value="p.key">{{ p.label }}</option>
+        </select>
+
+        <!-- Sub-panel Fallback Lokal -->
+        <div class="rounded-[var(--md-sys-shape-corner-m)] p-4" style="background: var(--md-sys-color-surface-container-lowest); margin-top: 8px;">
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <div class="text-sm font-semibold">Fallback Ollama Lokal</div>
+              <div class="text-xs" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
+                Dipakai otomatis kalau cloud gagal (jaringan/timeout). {{ aiLocalStatus }}
+              </div>
+            </div>
+            <M3Switch :model-value="aiForm.fallbackEnabled" :disabled="aiSaving" @update:model-value="aiForm.fallbackEnabled = $event" />
+          </div>
+          <div v-if="aiForm.fallbackEnabled" class="grid gap-3 mt-3">
+            <M3TextField v-model="aiForm.localBaseUrl" label="Base URL lokal (default http://127.0.0.1:11434)" type="text" maxlength="200" />
+            <div class="flex flex-wrap gap-2 items-center">
+              <button type="button" class="m3-btn m3-btn--tonal !min-h-[40px]" :disabled="aiLoadingLocalModels" @click="loadAiModels('local')">
+                {{ aiLoadingLocalModels ? 'Memuat…' : 'Muat Model Lokal' }}
+              </button>
+              <select v-if="aiLocalModels.length" v-model="aiForm.localModel" class="px-2 py-2 rounded-[var(--md-sys-shape-corner-s)] text-sm border" style="border-color: var(--md-sys-color-outline); background: var(--md-sys-color-surface-container-lowest); max-width: 240px;">
+                <option :value="null">— pilih model lokal —</option>
+                <option v-for="m in aiLocalModels" :key="m.name" :value="m.name">{{ m.name }}</option>
+              </select>
+              <select v-model="aiPullModel" class="px-2 py-2 rounded-[var(--md-sys-shape-corner-s)] text-sm border" style="border-color: var(--md-sys-color-outline); background: var(--md-sys-color-surface-container-lowest);">
+                <option value="qwen3:4b">qwen3:4b</option>
+                <option value="qwen2.5:3b-instruct">qwen2.5:3b-instruct</option>
+                <option value="llama3.2:3b">llama3.2:3b</option>
+              </select>
+              <button type="button" class="m3-btn m3-btn--tonal !min-h-[40px]" :disabled="aiPulling" @click="pullLocalModel">
+                {{ aiPulling ? 'Memulai…' : 'Pasang Model' }}
+              </button>
+            </div>
+            <p v-if="aiPullHint" class="text-xs" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">{{ aiPullHint }}</p>
+          </div>
+        </div>
+
+        <div v-if="aiTestResult" class="text-sm" :class="aiTestResult.ok ? 'text-green-600' : 'text-red-600'">{{ aiTestResult.text }}</div>
+        <div v-if="aiError" class="flex items-start gap-2 text-sm rounded-[var(--md-sys-shape-corner-s)] p-3"
+          style="background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container);"
+          role="alert">
+          <span aria-hidden="true">⚠️</span>
+          <span>{{ aiError }}</span>
+        </div>
+        <div v-if="aiSuccess" class="flex items-start gap-2 text-sm rounded-[var(--md-sys-shape-corner-s)] p-3"
+          style="background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container);"
+          role="status">
+          <span aria-hidden="true">✓</span>
+          <span>{{ aiSuccess }}</span>
+        </div>
+        <div class="flex justify-end">
+          <button type="button" class="m3-btn m3-btn--filled !min-h-[40px]" :disabled="aiSaving" @click="saveAiConfig">
+            {{ aiSaving ? 'Menyimpan…' : 'Simpan AI Assistant' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Placeholder P2 (spec §7 — bukan kosong, tulis status backlog) ── -->
     <div class="sa-panel mb-6 sa-muted-panel">
       <h2 class="text-lg font-semibold mb-1" :style="{ color: 'var(--md-sys-color-on-surface)' }">Pricing &amp; Payment Gateway</h2>
       <p class="text-sm" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
         Definisi paket editable &amp; payment gateway: dibangun bertahap — v3.9.20+
-      </p>
-    </div>
-
-    <div class="sa-panel sa-muted-panel">
-      <h2 class="text-lg font-semibold mb-1" :style="{ color: 'var(--md-sys-color-on-surface)' }">AI Provider Key</h2>
-      <p class="text-sm" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
-        AI provider key platform (untuk fitur AI internal): dibangun nanti — backlog P2
       </p>
     </div>
   </div>
@@ -110,6 +207,8 @@
 import { ref, onMounted } from 'vue'
 import axios from 'axios'
 import M3TextField from '../components/M3TextField.vue'
+// v3.9.23 — AI Assistant (fallback toggle) — M3Switch
+import M3Switch from '../components/M3Switch.vue'
 
 const API = import.meta.env.VITE_API_URL || ''
 
@@ -188,8 +287,164 @@ async function savePlatformBranding() {
   }
 }
 
+// ── v3.9.23 — AI Assistant (Ollama Cloud + fallback lokal) ──
+const AI_PRESETS = [
+  { key: 'standard', label: 'Standard (4 blok)' },
+  { key: 'ringkas', label: 'Ringkas (1 paragraf)' },
+  { key: 'handoff', label: 'Handoff shift' },
+  { key: 'medis', label: 'Medis (klinik)' },
+  { key: 'penjualan', label: 'Penjualan' },
+  { key: 'keluhan', label: 'Keluhan' },
+]
+
+const aiForm = ref({
+  cloudBaseUrl: '',
+  cloudModel: '',
+  hasKey: false,
+  keyMasked: null,
+  localBaseUrl: '',
+  localModel: null,
+  fallbackEnabled: false,
+  defaultPreset: 'standard',
+})
+const aiKeyEditing = ref(false)
+const aiKeyDraft = ref('')
+const aiSaving = ref(false)
+const aiTesting = ref(false)
+const aiLoadingModels = ref(false)
+const aiLoadingLocalModels = ref(false)
+const aiModels = ref([])
+const aiLocalModels = ref([])
+const aiTestResult = ref(null) // { ok, text }
+const aiLocalStatus = ref('')
+const aiPullModel = ref('qwen3:4b')
+const aiPulling = ref(false)
+const aiPullHint = ref('')
+const aiError = ref('')
+const aiSuccess = ref('')
+
+async function loadAiConfig() {
+  try {
+    const { data } = await axios.get(`${API}/api/sa/ai-config`)
+    aiForm.value = {
+      cloudBaseUrl: data.cloudBaseUrl || '',
+      cloudModel: data.cloudModel || '',
+      hasKey: !!data.hasKey,
+      keyMasked: data.keyMasked || null,
+      localBaseUrl: data.localBaseUrl || '',
+      localModel: data.localModel || null,
+      fallbackEnabled: !!data.fallbackEnabled,
+      defaultPreset: data.defaultPreset || 'standard',
+    }
+  } catch (e) {
+    aiError.value = e.response?.data?.error || 'Gagal memuat konfigurasi AI'
+  }
+}
+
+async function saveAiConfig() {
+  aiError.value = ''
+  aiSuccess.value = ''
+  aiSaving.value = true
+  try {
+    const body = {
+      cloudBaseUrl: aiForm.value.cloudBaseUrl,
+      cloudModel: aiForm.value.cloudModel,
+      localBaseUrl: aiForm.value.localBaseUrl,
+      localModel: aiForm.value.localModel,
+      fallbackEnabled: !!aiForm.value.fallbackEnabled,
+      defaultPreset: aiForm.value.defaultPreset,
+    }
+    // Key hanya dikirim kalau user sedang mengganti (field terisi) — else keep.
+    if (aiKeyEditing.value && aiKeyDraft.value.trim()) {
+      body.apiKey = aiKeyDraft.value
+    }
+    const { data } = await axios.put(`${API}/api/sa/ai-config`, body)
+    aiForm.value = {
+      cloudBaseUrl: data.cloudBaseUrl || '',
+      cloudModel: data.cloudModel || '',
+      hasKey: !!data.hasKey,
+      keyMasked: data.keyMasked || null,
+      localBaseUrl: data.localBaseUrl || '',
+      localModel: data.localModel || null,
+      fallbackEnabled: !!data.fallbackEnabled,
+      defaultPreset: data.defaultPreset || 'standard',
+    }
+    aiKeyEditing.value = false
+    aiKeyDraft.value = ''
+    aiSuccess.value = 'Konfigurasi AI disimpan'
+  } catch (e) {
+    aiError.value = e.response?.data?.error || 'Gagal menyimpan konfigurasi AI'
+  } finally {
+    aiSaving.value = false
+  }
+}
+
+async function testAiConnection() {
+  aiTestResult.value = null
+  aiError.value = ''
+  aiTesting.value = true
+  try {
+    const body = { baseUrl: aiForm.value.cloudBaseUrl, model: aiForm.value.cloudModel }
+    if (aiKeyEditing.value && aiKeyDraft.value.trim()) body.apiKey = aiKeyDraft.value
+    // apiKey tidak dikirim → server pakai key stored
+    const { data } = await axios.post(`${API}/api/sa/ai-config/test`, body)
+    if (data.ok) {
+      aiTestResult.value = { ok: true, text: `OK — ${(data.latencyMs / 1000).toFixed(1)}s · ${data.model}` }
+    } else {
+      aiTestResult.value = { ok: false, text: data.message || 'Tes gagal' }
+    }
+  } catch (e) {
+    aiTestResult.value = { ok: false, text: e.response?.data?.error || 'Tes gagal' }
+  } finally {
+    aiTesting.value = false
+  }
+}
+
+async function loadAiModels(scope) {
+  aiError.value = ''
+  if (scope === 'cloud') {
+    aiLoadingModels.value = true
+  } else {
+    aiLoadingLocalModels.value = true
+  }
+  try {
+    const baseUrl = scope === 'cloud' ? aiForm.value.cloudBaseUrl : aiForm.value.localBaseUrl
+    const { data } = await axios.get(`${API}/api/sa/ai-config/models`, { params: { scope, baseUrl: baseUrl || undefined } })
+    if (scope === 'cloud') {
+      aiModels.value = data.models || []
+      if (!aiModels.value.length) aiError.value = 'Daftar model kosong dari server'
+    } else {
+      aiLocalModels.value = data.models || []
+      aiLocalStatus.value = aiLocalModels.value.length ? `Ollama lokal: tersedia ✓` : 'Ollama lokal: tidak terdeteksi'
+    }
+  } catch (e) {
+    if (scope === 'cloud') aiModels.value = []
+    else aiLocalModels.value = []
+    if (scope === 'local') aiLocalStatus.value = 'Ollama lokal: tidak terdeteksi'
+    aiError.value = e.response?.data?.error || `Gagal memuat daftar model (${scope})`
+  } finally {
+    aiLoadingModels.value = false
+    aiLoadingLocalModels.value = false
+  }
+}
+
+async function pullLocalModel() {
+  aiError.value = ''
+  aiPulling.value = true
+  aiPullHint.value = ''
+  try {
+    const { data } = await axios.post(`${API}/api/sa/ai-config/local-pull`, { model: aiPullModel.value })
+    aiPullHint.value = `Unduhan "${data.model}" berjalan di background — cek status via Muat Model Lokal.`
+  } catch (e) {
+    aiError.value = e.response?.data?.error || 'Gagal memulai unduhan model'
+  } finally {
+    aiPulling.value = false
+  }
+}
+
 onMounted(() => {
   loadPlatformBranding()
+  loadAiConfig()
 })
 </script>
 

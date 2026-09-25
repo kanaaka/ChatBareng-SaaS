@@ -152,6 +152,78 @@
           />
         </div>
       </div>
+
+      <!-- v3.9.23 — Format Summary AI: admin tenant mandiri (6 preset + custom instruksi);
+           CS read-only indikator mode. customText non-kosong = menang atas preset. -->
+      <div class="bg-white rounded-lg shadow-sm p-6">
+        <div class="flex items-start justify-between gap-4 mb-3 flex-wrap">
+          <div class="min-w-0">
+            <h2 class="text-lg font-semibold mb-1">Format Summary AI</h2>
+            <p class="text-sm text-gray-500">Format ringkasan sesi yang dibuat AI (tombol 🤖 di chat). Admin tenant yang atur; CS hanya lihat.</p>
+          </div>
+          <span :class="['text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0', tplMode === 'custom' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-600']">
+            Mode: {{ tplMode === 'custom' ? 'instruksi sendiri' : 'preset ' + tplForm.presetKey }}
+          </span>
+        </div>
+
+        <div v-if="!auth.isAdmin" class="text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-lg p-3">
+          👁️ Mode read-only — hanya admin yang bisa mengubah format summary.
+        </div>
+
+        <template v-else>
+          <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+            <label
+              v-for="p in AI_PRESETS"
+              :key="p.key"
+              :class="['flex items-center gap-2 px-3 py-2 rounded-lg border text-sm cursor-pointer', tplForm.presetKey === p.key && tplMode !== 'custom' ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:bg-gray-50']"
+              :title="p.desc"
+            >
+              <input type="radio" :value="p.key" v-model="tplForm.presetKey" class="accent-green-600" />
+              <span class="text-sm truncate">{{ p.label }}</span>
+            </label>
+          </div>
+
+          <div class="mt-4">
+            <label class="block text-sm font-medium text-gray-700 mb-1">Instruksi sendiri (bahasa bebas — menang atas preset)</label>
+            <textarea
+              v-model="tplForm.customText"
+              rows="3"
+              maxlength="1000"
+              placeholder="Mis. 'Ringkas dalam poin-poin singkat, sebutkan nama produk yang ditanyakan dan estimasi harganya.'"
+              class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-1 focus:ring-wa-green focus:border-transparent resize-y"
+            ></textarea>
+            <div class="flex items-center justify-between mt-1">
+              <span class="text-xs text-gray-400">{{ (tplForm.customText || '').length }}/1000 karakter</span>
+              <button
+                type="button"
+                v-if="tplForm.customText"
+                @click="tplForm.customText = ''"
+                class="text-xs text-gray-400 hover:text-gray-600"
+              >kosongkan (kembali ke preset)</button>
+            </div>
+          </div>
+
+          <!-- Uji-dengan-contoh: preview box (DRAFT — belum disimpan) -->
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              @click="testSummaryTemplate"
+              :disabled="tplTesting"
+              class="px-3 py-1.5 bg-blue-100 text-blue-700 rounded-lg text-sm hover:bg-blue-200 disabled:opacity-50"
+            >{{ tplTesting ? 'Menguji…' : '🧪 Uji dengan contoh' }}</button>
+            <button
+              @click="saveSummaryTemplate"
+              :disabled="tplSaving"
+              class="px-4 py-2 bg-wa-green text-white rounded-lg text-sm font-medium hover:bg-green-600 disabled:opacity-50"
+            >{{ tplSaving ? 'Menyimpan…' : 'Simpan' }}</button>
+          </div>
+          <div v-if="tplPreview" class="mt-3 border border-gray-200 rounded-lg p-3 bg-gray-50">
+            <div class="text-xs text-gray-400 mb-1">Preview (contoh transkrip, bukan data pelanggan) · {{ tplPreview.templateUsed }} · {{ ((tplPreview.latencyMs || 0) / 1000).toFixed(1) }}s</div>
+            <div class="text-sm text-gray-800 whitespace-pre-line" style="overflow-wrap: anywhere;">{{ tplPreview.summaryText }}</div>
+          </div>
+          <p v-if="tplError" class="text-red-600 text-sm mt-2">{{ tplError }}</p>
+          <p v-if="tplSuccess" class="text-green-600 text-sm mt-2">{{ tplSuccess }}</p>
+        </template>
+      </div>
     </div>
   </PageShell>
 </template>
@@ -175,6 +247,73 @@ const toast = useToastStore()
 // ── v0.12.10 — Read receipts (centang biru): admin-only, universal, default OFF ──
 const receiptsEnabled = ref(false)
 const receiptsSaving = ref(false)
+
+// ═══ v3.9.23 — Format Summary AI (admin tenant; CS read-only) ═══
+const AI_PRESETS = [
+  { key: 'standard', label: 'Standard (4 blok)', desc: 'Ringkasan · Kebutuhan · Tindakan · Status & langkah' },
+  { key: 'ringkas', label: 'Ringkas', desc: 'Satu paragraf 3–5 kalimat' },
+  { key: 'handoff', label: 'Handoff shift', desc: 'Serah terima antar CS' },
+  { key: 'medis', label: 'Medis', desc: 'Keluhan pasien, layanan, tindak lanjut' },
+  { key: 'penjualan', label: 'Penjualan', desc: 'Minat, keberatan, closing' },
+  { key: 'keluhan', label: 'Keluhan', desc: 'Komplain, urgensi, solusi' },
+]
+const tplForm = ref({ presetKey: 'standard', customText: '' })
+const tplMode = ref('preset') // 'preset' | 'custom'
+const tplSaving = ref(false)
+const tplTesting = ref(false)
+const tplPreview = ref(null)
+const tplError = ref('')
+const tplSuccess = ref('')
+
+async function loadSummaryTemplate() {
+  try {
+    const { data } = await axios.get(`${API}/api/settings/summary-template`)
+    tplForm.value = { presetKey: data.presetKey || 'standard', customText: data.customText || '' }
+    tplMode.value = data.customText ? 'custom' : 'preset'
+  } catch (e) {
+    // belum pernah diset → default standard (silent)
+  }
+}
+
+async function saveSummaryTemplate() {
+  tplError.value = ''
+  tplSuccess.value = ''
+  tplSaving.value = true
+  try {
+    const { data } = await axios.put(`${API}/api/settings/summary-template`, {
+      presetKey: tplForm.value.presetKey,
+      customText: tplForm.value.customText || null,
+    })
+    tplForm.value = { presetKey: data.presetKey, customText: data.customText || '' }
+    tplMode.value = data.customText ? 'custom' : 'preset'
+    tplSuccess.value = 'Format summary disimpan'
+  } catch (e) {
+    tplError.value = e.response?.data?.error || 'Gagal menyimpan format summary'
+  } finally {
+    tplSaving.value = false
+  }
+}
+
+async function testSummaryTemplate() {
+  tplError.value = ''
+  tplTesting.value = true
+  tplPreview.value = null
+  try {
+    const body = {}
+    if (tplForm.value.customText) {
+      body.customText = tplForm.value.customText
+      body.presetKey = tplForm.value.presetKey
+    } else {
+      body.presetKey = tplForm.value.presetKey
+    }
+    const { data } = await axios.post(`${API}/api/settings/summary-template/preview`, body)
+    tplPreview.value = data
+  } catch (e) {
+    tplError.value = e.response?.data?.error || 'Gagal menguji format — coba lagi'
+  } finally {
+    tplTesting.value = false
+  }
+}
 
 async function loadAppConfig() {
   try {
@@ -402,6 +541,7 @@ onMounted(() => {
   fetchStatus()
   fetchAgents()
   loadAppConfig()
+  loadSummaryTemplate()
   socketStore.on('wa_status', onWaStatus)
   pollTimer = setInterval(fetchStatus, 10000)
 })

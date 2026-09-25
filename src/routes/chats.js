@@ -1765,4 +1765,246 @@ router.get('/:id/search', ...rt, async (req, res) => {
   }
 })
 
+// ═══════════════════════════════════════════════════════════════════
+// v3.9.23 — AI CHAT SUMMARY (additive murni — spec §D).
+// Template diatur MANDIRI oleh admin tenant (Kanaka 21:25): 6 preset + custom
+// instruksi bebas (≤1000 char). RAIL anti-halusinasi SELALU ditambahkan.
+// JANGAN ubah endpoint/handler existing di file ini (blok di bawah = tambahan).
+// ═══════════════════════════════════════════════════════════════════
+const llmService = require('../services/llm')
+const saAudit = require('../services/saAudit')
+
+// Cooldown 30 detik per chat (in-memory Map chatId→ts) → 429 {retryAfter}.
+const SUMMARY_COOLDOWN_MS = 30 * 1000
+const summaryLastAt = new Map()
+// Guard CS/admin utk endpoint template (admin tenant; CS read-only).
+const stAdmin = [requireAuth, requireTenant, requireAdmin]
+
+function sanitizeCustomText(v) {
+  if (v === undefined || v === null) return { ok: true, value: null }
+  if (typeof v !== 'string') return { ok: false, error: 'customText harus string' }
+  const t = v.trim()
+  if (t.length > llmService.CUSTOM_TEXT_MAX) {
+    return { ok: false, error: `Instruksi sendiri maksimal ${llmService.CUSTOM_TEXT_MAX} karakter (saat ini ${t.length})` }
+  }
+  return { ok: true, value: t || null }
+}
+
+/** Transcript window sesuai spec (locked): timestamp > resolvedAt (NULL = semua),
+ *  order asc, cap 200 pesan terakhir / 20.000 char (potong dari depan + marker). */
+async function loadSummaryWindow(tenantId, chat) {
+  const where = { tenantId, chatId: chat.id, purged: false, content: { not: null } }
+  if (chat.resolvedAt) where.timestamp = { gt: chat.resolvedAt }
+  // Ambil 200 TERAKHIR dgn orderBy desc lalu reverse → order asc tanpa full-scan tail.
+  const rows = await prisma.message.findMany({
+    where,
+    orderBy: { timestamp: 'desc' },
+    take: 200,
+    select: { id: true, direction: true, content: true, senderName: true, timestamp: true, participantJid: true },
+  })
+  rows.reverse()
+  // v0.11.0 — isi pesan tersimpan ciphertext → dekrip utk payload LLM (pattern decMessagesInPlace)
+  for (const m of rows) {
+    if (m.content != null) m.content = decryptTextSafe(m.content)
+  }
+  const MAX_CHARS = 20000
+  let totalChars = 0
+  const kept = []
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const len = (rows[i].content || '').length
+    if (totalChars + len > MAX_CHARS && kept.length > 0) break
+    totalChars += len
+    kept.push(rows[i])
+  }
+  kept.reverse()
+  const trimmed = kept.length < rows.length
+  const from = kept[0]?.timestamp || null
+  const to = kept[kept.length - 1]?.timestamp || null
+  let transcript = kept
+    .map((m) => {
+      const who = m.direction === 'in' ? 'Customer' : `CS (${m.senderName || 'agent'})`
+      return `[${new Date(m.timestamp).toISOString()}] ${who}: ${m.content}`
+    })
+    .join('\n')
+  if (kept.length < rows.length) transcript = '(pesan awal dipotong)\n' + transcript
+  return {
+    transcript,
+    window: {
+      messageCount: kept.length,
+      from,
+      to,
+      trimmed,
+      totalInWindow: rows.length,
+    },
+  }
+}
+
+/** Jalankan LLM utk satu chat (window + template + rail) → {ok,…} atau error code. */
+async function runSummaryForChat(chat, tplRow, aiCfg) {
+  const { transcript, window: win } = await loadSummaryWindow(chat.tenantId, chat)
+  if (!transcript || transcript.replace('(pesan awal dipotong)', '').trim() === '') {
+    return { err: { status: 400, code: 'EMPTY_WINDOW', message: 'Tidak ada pesan untuk dirangkum di window ini.' } }
+  }
+  const template = llmService.resolveTemplate(tplRow, aiCfg)
+  const meta =
+    `Kontak: ${chat.contactName || chat.contactPhone}\n` +
+    `Nomor: ${chat.contactPhone}\n` +
+    `Status chat: ${chat.status === 'resolved' ? 'resolved' : 'open'}\n` +
+    `Tanggal: ${new Date().toISOString()}`
+  const messages = [
+    { role: 'system', content: llmService.buildSystemPrompt(template) },
+    { role: 'user', content: `${meta}\n\n=== PERCAKAPAN ===\n${transcript}\n=== AKHIR PERCAKAPAN ===` },
+  ]
+  const r = await llmService.aiChat({ messages })
+  if (!r.ok) return { err: { status: 502, code: r.code, message: r.message } }
+  return {
+    summaryText: r.content,
+    templateUsed: template.kind === 'custom' ? 'custom' : template.presetKey,
+    model: r.model,
+    viaFallback: !!r.viaFallback,
+    latencyMs: r.latencyMs,
+    window: { messageCount: win.messageCount, from: win.from, to: win.to },
+  }
+}
+
+// GET /api/chats/settings/summary-template — guard admin tenant (stAdmin).
+// Row belum ada → default {presetKey:'standard', customText:null} (belum pernah diset).
+router.get('/settings/summary-template', ...stAdmin, async (req, res) => {
+  try {
+    const row = await prisma.tenantSummaryTemplate.findUnique({ where: { tenantId: req.tenantId } })
+    return res.json({
+      presetKey: row?.presetKey && llmService.PRESET_KEYS.includes(row.presetKey) ? row.presetKey : 'standard',
+      customText: row?.customText || null,
+    })
+  } catch (e) {
+    console.error('Summary-template GET error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// PUT /api/chats/settings/summary-template — body {presetKey, customText?}
+// → validasi presetKey ∈ PRESET_KEYS + customText ≤1000 (null/'' = clear custom).
+// Response = row final {presetKey, customText}. Audit summary_template_update
+// (tenant name, tanpa isi template — spec §D).
+router.put('/settings/summary-template', ...stAdmin, async (req, res) => {
+  try {
+    const presetKey = String(req.body?.presetKey || '').trim()
+    if (!llmService.PRESET_KEYS.includes(presetKey)) {
+      return res.status(400).json({ error: `presetKey harus salah satu: ${llmService.PRESET_KEYS.join(', ')}` })
+    }
+    const cust = sanitizeCustomText(req.body?.customText)
+    if (!cust.ok) return res.status(400).json({ error: cust.error })
+    const customText = cust.value
+    const row = await prisma.tenantSummaryTemplate.upsert({
+      where: { tenantId: req.tenantId },
+      update: { presetKey, customText },
+      create: { tenantId: req.tenantId, presetKey, customText },
+    })
+    let tenantName = null
+    try {
+      const t = await prisma.tenant.findUnique({ where: { id: req.tenantId } })
+      tenantName = t?.name || null
+    } catch {}
+    saAudit.audit(req.user, 'summary_template_update', req.tenantId, tenantName, {
+      presetKey, hasCustom: !!customText,
+    })
+    return res.json({ presetKey: row.presetKey, customText: row.customText || null })
+  } catch (e) {
+    console.error('Summary-template PUT error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/chats/summary-preview — DRAFT (belum disave): body {presetKey?, customText?}}
+// → jalankan dgn transcript CONTOH baked-in (bukan data pelanggan) →
+// {summaryText, latencyMs, templateUsed, model}. Guard tenant admin (CS → 403).
+router.post('/summary-preview', ...stAdmin, async (req, res) => {
+  try {
+    let presetKey = req.body?.presetKey
+    let customText
+    if (presetKey !== undefined) {
+      presetKey = String(presetKey || '').trim()
+      if (!llmService.PRESET_KEYS.includes(presetKey)) {
+        return res.status(400).json({ error: `presetKey harus salah satu: ${llmService.PRESET_KEYS.join(', ')}` })
+      }
+    }
+    const cust = sanitizeCustomText(req.body?.customText)
+    if (!cust.ok) return res.status(400).json({ error: cust.error })
+    customText = cust.value
+    // Draft row virtual: customText non-kosong menang; kalau tidak ada keduanya →
+    // pakai row tersimpan tenant (fallback AiConfig.defaultPreset di resolveTemplate).
+    const tplRow = customText
+      ? { presetKey: presetKey || 'standard', customText }
+      : presetKey
+        ? { presetKey, customText: null }
+        : await prisma.tenantSummaryTemplate.findUnique({ where: { tenantId: req.tenantId } })
+    const aiCfg = await llmService.getAiConfig()
+    if (!aiCfg || !aiCfg.cloudBaseUrl || !aiCfg.cloudModel || !aiCfg.apiKey) {
+      return res.status(400).json({ error: 'AI belum dikonfigurasi. Hubungi admin platform.', code: 'NO_CONFIG' })
+    }
+    const template = llmService.resolveTemplate(tplRow, aiCfg)
+    const SAMPLE_TRANSCRIPT = [
+      '[2026-09-25T10:00:00.000Z] Customer: Halo, mau tanya ketersediaan produk A size M?',
+      '[2026-09-25T10:01:00.000Z] CS (agent): Halo! Stok produk A ukuran M masih tersedia ya. Harganya Rp 150.000.',
+      '[2026-09-25T10:03:00.000Z] Customer: Bisa kirim hari ini ke Bandung?',
+      '[2026-09-25T10:05:00.000Z] CS (agent): Bisa, order sebelum jam 15.00 masuk pengiriman hari ini. Mau saya buatkan pesanannya?',
+      '[2026-09-25T10:06:00.000Z] Customer: OK, dipesankan ya. Terima kasih.',
+    ].join('\n')
+    const messages = [
+      { role: 'system', content: llmService.buildSystemPrompt(template) },
+      {
+        role: 'user',
+        content: `Kontak: Contoh Pelanggan\nNomor: 628000000000\nStatus chat: open\nTanggal: ${new Date().toISOString()}\n\n=== PERCAKAPAN ===\n${SAMPLE_TRANSCRIPT}\n=== AKHIR PERCAKAPAN ===`,
+      },
+    ]
+    const r = await llmService.aiChat({ messages })
+    if (!r.ok) return res.status(502).json({ error: r.message, code: r.code })
+    return res.json({
+      summaryText: r.content,
+      latencyMs: r.latencyMs,
+      templateUsed: template.kind === 'custom' ? 'custom' : template.presetKey,
+      model: r.model,
+      viaFallback: !!r.viaFallback,
+    })
+  } catch (e) {
+    console.error('Summary-template preview error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/chats/:id/summary — auth + tenant scope existing (rt).
+// Chat milik tenant lain → 404. Window kosong → 400 WINDOW_EMPTY.
+// Cooldown 30s/chat → 429 {retryAfter:30}. Config belum ada → 400 NO_CONFIG.
+router.post('/:id/summary', ...rt, async (req, res) => {
+  try {
+    const chatId = Number(req.params.id)
+    const chat = await prisma.chat.findFirst({ where: { id: chatId, tenantId: req.tenantId } })
+    if (!chat) return res.status(404).json({ error: 'Chat tidak ditemukan' })
+    if (!canAccessChat(req.user, chat)) return accessDenied(res)
+
+    const last = summaryLastAt.get(chatId) || 0
+    const since = Date.now() - last
+    if (since < SUMMARY_COOLDOWN_MS) {
+      return res.status(429).json({ retryAfter: Math.ceil((SUMMARY_COOLDOWN_MS - since) / 1000) })
+    }
+
+    const aiCfg = await llmService.getAiConfig()
+    if (!aiCfg || !aiCfg.cloudBaseUrl || !aiCfg.cloudModel || !aiCfg.apiKey) {
+      return res.status(400).json({ error: 'AI belum dikonfigurasi. Hubungi admin platform.', code: 'NO_CONFIG' })
+    }
+
+    const tplRow = await prisma.tenantSummaryTemplate.findUnique({ where: { tenantId: req.tenantId } })
+    const r = await runSummaryForChat(chat, tplRow, aiCfg)
+    if (r.err) {
+      if (r.err.code === 'EMPTY_WINDOW') return res.status(400).json({ error: r.err.message, code: r.err.code })
+      return res.status(r.err.status).json({ error: r.err.message, code: r.err.code })
+    }
+    summaryLastAt.set(chatId, Date.now())
+    res.json(r)
+  } catch (e) {
+    console.error('Chat summary error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 module.exports = router

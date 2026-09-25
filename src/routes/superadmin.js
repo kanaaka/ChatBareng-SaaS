@@ -1497,4 +1497,210 @@ router.put('/platform-branding', ...sa, async (req, res) => {
   }
 })
 
+// ═══════════════════════ v3.9.23 — AI ASSISTANT (Ollama Cloud, additive murni) ═══════════════════════
+// Spec docs/spec-v3.9.23-ai-summary.md §C. Key TIDAK PERNAH full ke response —
+// hanya hasKey + keyMasked (last4). PUT apiKey null/absent = keep. Disimpan
+// ENCRYPTED (textCrypto.encryptText, pola ciphertext pesan). Audit TANPA secret.
+const llmService = require('../services/llm')
+const { encryptText } = require('../services/textCrypto')
+
+const AI_KEY_MIN = 20
+// Anti-injection utk nama model (spec §C5): aman utk spawn `ollama pull` juga.
+const AI_MODEL_RE = /^[a-zA-Z0-9._:\-\/]+$/
+const AI_BASEURL_RE = /^https?:\/\//i
+
+function maskKey(key) {
+  if (!key || typeof key !== 'string') return null
+  return '••••' + key.slice(-4)
+}
+
+/** Response shape GET/PUT ai-config (key TIDAK PERNAH full). */
+function aiConfigJson(cfg) {
+  return {
+    cloudBaseUrl: cfg?.cloudBaseUrl || llmService.DEFAULT_CLOUD_BASE_URL,
+    cloudModel: cfg?.cloudModel || llmService.DEFAULT_CLOUD_MODEL,
+    hasKey: !!cfg?.apiKey,
+    keyMasked: cfg?.apiKey ? maskKey(cfg.apiKey) : null,
+    localBaseUrl: cfg?.localBaseUrl || llmService.DEFAULT_LOCAL_BASE_URL,
+    localModel: cfg?.localModel || null,
+    fallbackEnabled: !!cfg?.fallbackEnabled,
+    defaultPreset: cfg?.defaultPreset || 'standard',
+  }
+}
+
+// GET /api/sa/ai-config — { cloudBaseUrl, cloudModel, hasKey, keyMasked, localBaseUrl,
+// localModel, fallbackEnabled, defaultPreset } (row belum ada → default, hasKey false)
+router.get('/ai-config', ...sa, async (req, res) => {
+  try {
+    const cfg = await llmService.getAiConfig()
+    res.json(aiConfigJson(cfg))
+  } catch (e) {
+    console.error('[SA] ai-config GET error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// PUT /api/sa/ai-config — body {cloudBaseUrl?, cloudModel?, apiKey?|null(=keep),
+// localBaseUrl?, localModel?, fallbackEnabled?, defaultPreset?} → response shape GET.
+// apiKey string ≥20 char (disimpan ENCRYPTED); null/undefined = keep; '' = hapus key.
+router.put('/ai-config', ...sa, async (req, res) => {
+  try {
+    const b = req.body || {}
+    const data = {}
+    if (b.cloudBaseUrl !== undefined) {
+      const u = String(b.cloudBaseUrl).trim().replace(/\/+$/, '')
+      if (u && !AI_BASEURL_RE.test(u)) return res.status(400).json({ error: 'cloudBaseUrl harus diawali http(s)://' })
+      if (u && u.length > 200) return res.status(400).json({ error: 'cloudBaseUrl maksimal 200 karakter' })
+      if (u) data.cloudBaseUrl = u
+    }
+    if (b.cloudModel !== undefined) {
+      const m = String(b.cloudModel).trim()
+      if (!m) return res.status(400).json({ error: 'cloudModel tidak boleh kosong' })
+      if (!AI_MODEL_RE.test(m)) return res.status(400).json({ error: 'Format model tidak valid' })
+      if (m.length > 100) return res.status(400).json({ error: 'cloudModel maksimal 100 karakter' })
+      data.cloudModel = m
+    }
+    if (b.localBaseUrl !== undefined) {
+      const u = String(b.localBaseUrl).trim().replace(/\/+$/, '')
+      if (u && !AI_BASEURL_RE.test(u)) return res.status(400).json({ error: 'localBaseUrl harus diawali http(s)://' })
+      if (u && u.length > 200) return res.status(400).json({ error: 'localBaseUrl maksimal 200 karakter' })
+      if (u) data.localBaseUrl = u
+    }
+    if (b.localModel !== undefined) {
+      const m = b.localModel == null ? '' : String(b.localModel).trim()
+      if (m && !AI_MODEL_RE.test(m)) return res.status(400).json({ error: 'Format model lokal tidak valid' })
+      if (m.length > 100) return res.status(400).json({ error: 'localModel maksimal 100 karakter' })
+      data.localModel = m || null
+    }
+    if (b.fallbackEnabled !== undefined) {
+      if (typeof b.fallbackEnabled !== 'boolean') return res.status(400).json({ error: 'fallbackEnabled harus boolean' })
+      data.fallbackEnabled = b.fallbackEnabled
+    }
+    if (b.defaultPreset !== undefined) {
+      const p = String(b.defaultPreset).trim()
+      if (!llmService.PRESET_KEYS.includes(p)) {
+        return res.status(400).json({ error: `defaultPreset harus salah satu: ${llmService.PRESET_KEYS.join(', ')}` })
+      }
+      data.defaultPreset = p
+    }
+    let keyStored = false
+    let keyCleared = false
+    if (b.apiKey !== undefined && b.apiKey !== null) {
+      const k = String(b.apiKey)
+      if (k.trim() === '') {
+        data.apiKeyEnc = null // eksplisit hapus key
+        keyCleared = true
+      } else if (k.length < AI_KEY_MIN) {
+        return res.status(400).json({ error: `API key minimal ${AI_KEY_MIN} karakter` })
+      } else {
+        data.apiKeyEnc = encryptText(k) // ENCRYPTED — pola ciphertext pesan
+        keyStored = true
+      }
+    }
+    const updated = await prisma.aiConfig.upsert({
+      where: { id: 1 },
+      update: data,
+      create: { id: 1, ...data },
+    })
+    console.log(`[SA] ai-config diupdate by @${req.user.username}: keys=${Object.keys(data).filter((k) => k !== 'apiKeyEnc').join(',') || '-'} apiKey=${keyStored ? 'diganti' : keyCleared ? 'dihapus' : 'keep'} (plaintext TIDAK di-log)`)
+    await saAudit.audit(req.user, 'ai_config_update', null, null, {
+      cloudBaseUrl: updated.cloudBaseUrl,
+      cloudModel: updated.cloudModel,
+      hasKey: !!updated.apiKeyEnc,
+      localBaseUrl: updated.localBaseUrl,
+      localModel: updated.localModel || null,
+      fallbackEnabled: !!updated.fallbackEnabled,
+      defaultPreset: updated.defaultPreset,
+      keyAction: keyStored ? 'set' : keyCleared ? 'clear' : 'keep',
+    })
+    const cfg = await llmService.getAiConfig()
+    res.json(aiConfigJson(cfg))
+  } catch (e) {
+    console.error('[SA] ai-config PUT error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/sa/ai-config/test — body {baseUrl?, apiKey?|null(=stored), model?}
+// → aiTestConnection: {ok, latencyMs, model} / {ok:false, code, message}.
+router.post('/ai-config/test', ...sa, async (req, res) => {
+  try {
+    const b = req.body || {}
+    const cfg = await llmService.getAiConfig()
+    const baseUrl = String(b.baseUrl || cfg?.cloudBaseUrl || llmService.DEFAULT_CLOUD_BASE_URL).trim().replace(/\/+$/, '')
+    if (!AI_BASEURL_RE.test(baseUrl)) return res.status(400).json({ error: 'baseUrl harus diawali http(s)://' })
+    // apiKey kosong/null/absent = pakai key stored (TIDAK pernah di-echo balik).
+    let apiKey = typeof b.apiKey === 'string' && b.apiKey.trim() ? b.apiKey : cfg?.apiKey || null
+    if (typeof b.apiKey === 'string' && b.apiKey.trim() && b.apiKey.length < AI_KEY_MIN) {
+      return res.status(400).json({ error: `API key minimal ${AI_KEY_MIN} karakter` })
+    }
+    const model = String(b.model || cfg?.cloudModel || llmService.DEFAULT_CLOUD_MODEL).trim()
+    if (!AI_MODEL_RE.test(model)) return res.status(400).json({ error: 'Format model tidak valid' })
+    const r = await llmService.aiTestConnection({ baseUrl, apiKey, model })
+    await saAudit.audit(req.user, 'ai_config_test', null, null, { baseUrl, model, ok: !!r.ok, code: r.code || null, latencyMs: r.latencyMs ?? null })
+    res.json(r)
+  } catch (e) {
+    console.error('[SA] ai-config test error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/sa/ai-config/models?scope=cloud|local — proxy daftar model.
+// Cloud: pakai stored key. Local: tanpa key. Response {models:[{name,sizeBytes}]} / {error, code}.
+router.get('/ai-config/models', ...sa, async (req, res) => {
+  try {
+    const scope = req.query.scope === 'local' ? 'local' : 'cloud'
+    const cfg = await llmService.getAiConfig()
+    const baseUrl = scope === 'local'
+      ? String(req.query.baseUrl || cfg?.localBaseUrl || llmService.DEFAULT_LOCAL_BASE_URL).trim()
+      : String(req.query.baseUrl || cfg?.cloudBaseUrl || llmService.DEFAULT_CLOUD_BASE_URL).trim()
+    if (!AI_BASEURL_RE.test(baseUrl)) return res.status(400).json({ error: 'baseUrl tidak valid' })
+    const apiKey = scope === 'local' ? null : cfg?.apiKey || null
+    if (scope === 'cloud' && !apiKey) return res.status(400).json({ error: 'API key belum diisi — simpan key dulu.', code: 'NO_CONFIG' })
+    const r = await llmService.aiListModels({ baseUrl, apiKey })
+    if (!r.ok) return res.status(400).json({ error: r.message, code: r.code })
+    res.json({ models: r.models })
+  } catch (e) {
+    console.error('[SA] ai-config models error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/sa/ai-config/local-pull — body {model}. Cek binary `ollama` ada dulu
+// (spawn which) → 400 kalau tidak ada. Ada → spawn DETACHED `ollama pull <model>`
+// log /tmp/cb_ai_pull.log, response {started:true}. JANGAN auto-download.
+router.post('/ai-config/local-pull', ...sa, async (req, res) => {
+  const { execFile, spawn } = require('child_process')
+  try {
+    const model = String(req.body?.model || '').trim()
+    if (!model) return res.status(400).json({ error: 'model wajib diisi' })
+    if (!AI_MODEL_RE.test(model) || model.length > 100) {
+      return res.status(400).json({ error: 'Format nama model tidak valid' })
+    }
+    execFile('which', ['ollama'], (err, stdout) => {
+      if (err || !String(stdout || '').trim()) {
+        return res.status(400).json({ error: 'Ollama binary tidak ditemukan di host ini' })
+      }
+      // spawn DETACHED — pull lanjut di background walau request/response selesai.
+      try {
+        const out = fs.openSync('/tmp/cb_ai_pull.log', 'a')
+        const child = spawn('ollama', ['pull', model], {
+          detached: true,
+          stdio: ['ignore', out, out],
+        })
+        child.unref()
+        console.log(`[SA] ollama pull "${model}" started (pid ${child.pid}) by @${req.user.username} — log /tmp/cb_ai_pull.log`)
+        saAudit.audit(req.user, 'ai_config_pull', null, null, { model, pid: child.pid })
+        return res.json({ started: true, model })
+      } catch (spawnErr) {
+        console.error('[SA] ai-config local-pull spawn error:', spawnErr)
+        return res.status(500).json({ error: 'Gagal memulai unduhan model' })
+      }
+    })
+  } catch (e) {
+    console.error('[SA] ai-config local-pull error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 module.exports = router

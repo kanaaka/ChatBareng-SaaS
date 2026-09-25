@@ -775,3 +775,33 @@ model ApiKey {
 
   @@index([tenantId])
 }
+
+// ═════════════════════════════════════════════════════════════════
+// v3.9.23 — AI Chat Summary (Ollama Cloud) — tabel ADDITIVE (spec §A).
+// AiConfig = SINGLETON platform (row id=1): endpoint cloud + fallback lokal.
+// apiKeyEnc = ciphertext helper crypto app (textCrypto encryptText) — key
+// TIDAK PERNAH plaintext di DB / log / response (spec §G).
+// TenantSummaryTemplate = template summary per-tenant (admin tenant mandiri,
+// Kanaka 21:25): presetKey ∈ SUMMARY_PRESETS atau customText instruksi bebas.
+// Migration: prisma/migrations/20260925213000_ai_config (2 CREATE TABLE saja).
+// ═════════════════════════════════════════════════════════════════
+model AiConfig {
+  id              Int      @id @default(1)
+  cloudBaseUrl    String   @default("https://ollama.com")
+  cloudModel      String   @default("glm-5.3-flash")
+  apiKeyEnc       String?
+  localBaseUrl    String   @default("http://127.0.0.1:11434")
+  localModel      String?
+  fallbackEnabled Boolean  @default(false)
+  defaultPreset   String   @default("standard") // format default utk tenant tanpa row template
+  updatedAt       DateTime @updatedAt
+  updatedById     Int?
+}
+
+model TenantSummaryTemplate {
+  tenantId    Int      @id
+  presetKey   String   @default("standard")
+  customText  String? // instruksi bebas admin (≤1000 char); non-kosong menang atas preset
+  updatedAt   DateTime @updatedAt
+  updatedById Int?
+}

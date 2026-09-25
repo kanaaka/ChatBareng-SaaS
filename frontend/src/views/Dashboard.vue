@@ -215,6 +215,7 @@
             @cancel-scheduled="handleCancelScheduled"
             @add-note="addChatNote"
             @delete-note="deleteChatNote"
+            @summary-saved="fetchChatNotes"
             @toggle-favorites="toggleFavoritesPanel"
             @toggle-favorite="toggleFavorite"
             @jump-to="jumpToMessage"

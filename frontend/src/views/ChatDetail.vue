@@ -60,6 +60,14 @@
       <!-- Quick actions (desktop only, hidden di mobile — kebab menggantikan) -->
       <div class="hidden md:flex items-center gap-1 flex-shrink-0">
         <button
+          v-if="!isMobile"
+          type="button"
+          @click="openSummary"
+          :disabled="!summaryWindowAvailable"
+          class="text-sm px-3 py-1.5 rounded-lg font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-40 disabled:cursor-not-allowed"
+          :title="summaryWindowAvailable ? 'Summary Sesi (AI)' : 'Belum ada pesan di sesi ini untuk dirangkum'"
+        >🤖</button>
+        <button
           @click="$emit('toggle-favorites')"
           :class="['text-sm px-3 py-1.5 rounded-lg font-medium', showFavoritesPanel ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200']"
         >
@@ -97,6 +105,26 @@
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
         </svg>
       </button>
+
+      <!-- v3.9.23 — AI Summary: tombol 🤖 di header desktop; mobile lewat kebab → simple: di header kedua viewport via baris tombol terpisah -->
+      <div class="flex items-center gap-1 flex-shrink-0">
+        <button
+          v-if="isMobile"
+          @click="openSummary"
+          :disabled="!summaryWindowAvailable"
+          class="p-2 rounded-full active:bg-gray-100 text-gray-600 flex-shrink-0 disabled:opacity-40"
+          :title="summaryWindowAvailable ? 'Summary Sesi (AI)' : 'Belum ada pesan di sesi ini untuk dirangkum'"
+          style="min-width: 44px; min-height: 44px;"
+        >🤖</button>
+        <SummaryModal
+          ref="summaryModalRef"
+          :chat-id="chat.id"
+          :window-available="summaryWindowAvailable"
+          :is-mobile="isMobile"
+          :can-write-notes="canManageNotes"
+          @saved="$emit('summary-saved')"
+        />
+      </div>
 
       <!-- Kebab menu ⋮ (kedua viewport, §3.3) — grup: sembunyikan (aksi 1:1 tak berlaku;
            release di grup akan melepas PIC → melanggar invariant born-assigned spec §3/§4) -->
@@ -703,6 +731,8 @@ import { useAuthStore } from '../stores/auth'
 import KebabMenu from '../components/KebabMenu.vue'
 import NotesPanel from '../components/NotesPanel.vue'
 import ScheduledPanel from '../components/ScheduledPanel.vue'
+// v3.9.23 — AI Chat Summary: tombol 🤖 + modal Summary Sesi
+import SummaryModal from '../components/SummaryModal.vue'
 import { getInitials, formatTime, formatPhone, tagColorClass, tagDotClass } from '../utils/format'
 // v0.14.4 — participant action menu (save-contact + PM) via grup API client
 import { groupsClient, friendlyGroupError } from '../utils/groupsApi'
@@ -762,6 +792,7 @@ const emit = defineEmits([
   'toggle-search', 'close-search', 'update:searchQuery', 'update:replyText',
   'start-reply', 'cancel-reply', // v3.9.14 — quote reply
   'add-tag', 'remove-tag', 'create-tag', 'open-contact-edit',
+  'summary-saved', // v3.9.23 — summary tersimpan ke catatan (refresh list notes)
 ])
 
 const auth = useAuthStore()
@@ -952,6 +983,23 @@ function goBack() {
 function openContactEdit() {
   emit('open-contact-edit')
 }
+
+// ═══ v3.9.23 — AI Summary Sesi ═══
+// Window kosong (tidak ada pesan utk dirangkum) → tombol disabled + tooltip.
+// Chat resolved: window = pesan SETELAH resolvedAt — bisa jadi masih ada (chat
+// dibuka lagi). Cek lokal: resolved tanpa lastMessageAt setelah resolvedAt = kosong.
+const summaryWindowAvailable = computed(() => {
+  if (!props.chat?.id) return false
+  if (props.chat.status !== 'resolved' || !props.chat.resolvedAt) return true
+  // resolved: window pesan > resolvedAt — frontend approx dari data loaded;
+  // exact check tetap di backend (EMPTY_WINDOW 400 + disabled state modal).
+  const ra = new Date(props.chat.resolvedAt).getTime()
+  return (props.messages || []).some(m => new Date(m.timestamp).getTime() > ra)
+})
+function openSummary() {
+  summaryModalRef.value?.open()
+}
+const summaryModalRef = ref(null)
 
 // ═══════════════════════════════════════════════════════
 // v0.14.4 — Participant Action Menu (bubble grup → label pengirim)

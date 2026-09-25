@@ -295,9 +295,258 @@ async function main() {
   const tkTenant = await api('GET', '/api/sa/stats/tk-storage', undefined, t8Tok)
   check('M4 tk-storage utk admin tenant → 403 (SA-only guard ...sa)', tkTenant.status === 403, `status=${tkTenant.status}`)
 
+  // ── N-setup: token admin tenant 8 / CS tenant 8 / admin tenant 10 (login asli;
+  // password dev copy db dgn prefix e2e — idempoten upsert) ──
+  async function e2eLogin(username, password) {
+    const r = await api('POST', '/api/auth/login', { username, password })
+    return r.status === 200 ? r.data?.token : null
+  }
+  async function ensureE2EUser(username, role, tenantId) {
+    const pw = 'e2e23pw-' + username
+    const existing = await prisma.user.findFirst({ where: { username } })
+    if (existing) {
+      await prisma.user.update({ where: { id: existing.id }, data: { status: 'active', role, tenantId: role === 'super_admin' ? null : existing.tenantId } })
+    } else {
+      await prisma.user.create({ data: { username, passwordHash: await hashPassword(pw), role, tenantId: role === 'super_admin' ? null : tenantId, status: 'active' } })
+    }
+    return pw
+  }
+  const { hashPassword } = require(REPO + '/src/auth')
+  const { encryptText, decryptTextSafe } = require(REPO + '/src/services/textCrypto')
+  const pwAdmin8 = await ensureE2EUser('e2e23adm8', 'admin', 8)
+  const pwCs8 = await ensureE2EUser('e2e23cs8', 'cs', 8)
+  const pwAdmin10 = await ensureE2EUser('e2e23adm10', 'admin', 10)
+  // password user existing (bukan buatan e2e) mungkin beda → reset eksplisit (copy db only)
+  for (const [u, pw] of [['e2e23adm8', pwAdmin8], ['e2e23cs8', pwCs8], ['e2e23adm10', pwAdmin10]]) {
+    await prisma.user.update({ where: { username: u }, data: { passwordHash: await hashPassword(pw) } })
+  }
+  const t8AdminTok = await e2eLogin('e2e23adm8', pwAdmin8)
+  const t8CsTok = await e2eLogin('e2e23cs8', pwCs8)
+  const t10AdminTok = await e2eLogin('e2e23adm10', pwAdmin10)
+  check('N00 login admin t8 + cs t8 + admin t10 → token', !!t8AdminTok && !!t8CsTok && !!t10AdminTok, `adm8=${!!t8AdminTok} cs8=${!!t8CsTok} adm10=${!!t10AdminTok}`)
+
+  // ═════════════════════════════════════════════════════════════════
+  // ── N. v3.9.23 — AI Chat Summary (Ollama Cloud) — mock LLM deterministic ──
+  // Mock server 127.0.0.1:11435 (dari script ini, spec §F): GET /api/tags → 2
+  // model canned; POST /api/chat → ECHO marker (jumlah pesan + system + user
+  // di-base64) → memungkinkan assert WINDOW semantics + template & rail.
+  // ZERO call ke internet/OpenClaw — semua via mock lokal. Server copy WAJIB
+  // env AI_E2E_MOCK=1 (opt-in test hook, lihat src/services/llm.js).
+  // ═════════════════════════════════════════════════════════════════
+  const http = require('http')
+  const mockServer = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => { body += c })
+    req.on('end', () => {
+      if (req.method === 'GET' && req.url.startsWith('/api/tags')) {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        return res.end(JSON.stringify({ models: [
+          { name: 'mock-model-a', size: 40458027008 },
+          { name: 'mock-model-b', size: 2019490656 },
+        ] }))
+      }
+      if (req.method === 'POST' && req.url.startsWith('/api/chat')) {
+        let parsed = {}
+        try { parsed = JSON.parse(body || '{}') } catch {}
+        const msgs = Array.isArray(parsed.messages) ? parsed.messages : []
+        const systemContent = msgs.find((m) => m.role === 'system')?.content || ''
+        const userContent = msgs.find((m) => m.role === 'user')?.content || ''
+        // ECHO marker = JUMLAH BARIS TRANSCRIPT (bukan msgs.length — payload selalu
+        // 2: system+user). Hitung baris '[ts] ...' di antara marker PERCAKAPAN.
+        let nTranscript = 0
+        const seg = String(userContent).split('=== PERCAKAPAN ===\n')[1]
+        if (seg) {
+          const body = seg.split('\n=== AKHIR PERCAKAPAN ===')[0].trim()
+          if (body) nTranscript = body.split('\n').filter((l) => /^\[/.test(l.trim())).length
+        }
+        const payload = [
+          `MOCK_ECHO_MSGS=${nTranscript}`,
+          `MOCK_ECHO_USER=${Buffer.from(userContent).toString('base64')}`,
+          `MOCK_ECHO_SYSTEM=${Buffer.from(systemContent).toString('base64')}`,
+        ].join('|')
+        res.writeHead(200, { 'content-type': 'application/json' })
+        return res.end(JSON.stringify({ model: parsed.model || 'mock-model-a', message: { content: payload } }))
+      }
+      res.writeHead(404, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: 'mock: not found' }))
+    })
+  })
+  await new Promise((resolve) => mockServer.listen(11435, '127.0.0.1', resolve))
+  check('N0 mock LLM listen 127.0.0.1:11435', mockServer.listening, '')
+
+  const MOCK_URL = 'http://127.0.0.1:11435'
+  function decodeEcho(content) {
+    const parts = String(content || '').split('|')
+    const get = (k) => {
+      const p = parts.find((x) => x.startsWith(k + '='))
+      return p ? Buffer.from(p.slice(k.length + 1), 'base64').toString('utf8') : null
+    }
+    const mLine = parts.find((x) => x.startsWith('MOCK_ECHO_MSGS=')) || ''
+    return { msgs: Number(mLine.split('=')[1] || 0), user: get('MOCK_ECHO_USER'), system: get('MOCK_ECHO_SYSTEM') }
+  }
+
+  // Idempoten re-run: bersihkan config + template tenant 8 (row test lama)
+  await prisma.aiConfig.deleteMany({})
+  await prisma.tenantSummaryTemplate.deleteMany({})
+  // (cooldown summary & note-rate in-memory server → tiap summary pakai chat baru)
+
+  let nSeq = 100
+  async function seedOneMsgChat() {
+    // naikkan nSeq sampai JID belum terpakai (idempoten re-run; unique (tenantId,numberSlot,waJid))
+    let jid
+    for (;;) {
+      jid = `62899923${String(nSeq++).padStart(4, '0')}@s.whatsapp.net`
+      const ex = await prisma.chat.findUnique({ where: { tenantId_numberSlot_waJid: { tenantId: 8, numberSlot: 0, waJid: jid } } })
+      if (!ex) break
+    }
+    const chat = await prisma.chat.create({
+      data: { tenantId: 8, waJid: jid, contactPhone: jid.slice(0, 12), contactName: 'E2E23 ' + jid.slice(-4), status: 'open' },
+    })
+    await prisma.message.create({ data: { tenantId: 8, chatId: chat.id, direction: 'in', content: encryptText('pesan ' + jid.slice(0, 12)), senderName: 'Customer', timestamp: new Date() } })
+    return chat
+  }
+
+  // N1 — PUT config (mock baseUrl + dummy key) → GET masked (key TIDAK full)
+  const n1put = await api('PUT', '/api/sa/ai-config', { cloudBaseUrl: MOCK_URL, apiKey: 'test-key-123456-2345', cloudModel: 'mock-model-a' }, saTok)
+  check('N1 PUT ai-config → 200 + hasKey true', n1put.status === 200 && n1put.data?.hasKey === true, `status=${n1put.status} hasKey=${n1put.data?.hasKey}`)
+  check('N1b keyMasked = ••••2345 (last4)', n1put.data?.keyMasked === '••••2345', `masked=${JSON.stringify(n1put.data?.keyMasked)}`)
+  const n1get = await api('GET', '/api/sa/ai-config', undefined, saTok)
+  check('N1c GET config → key TIDAK pernah full di response', n1get.status === 200 && !JSON.stringify(n1get.data).includes('test-key-123456-2345') && !('apiKey' in (n1get.data || {})), `status=${n1get.status}`)
+  check('N1d GET config shape (baseUrl/model/fallback/defaultPreset)', n1get.data?.cloudBaseUrl === MOCK_URL && n1get.data?.localBaseUrl === 'http://127.0.0.1:11434' && n1get.data?.fallbackEnabled === false && n1get.data?.defaultPreset === 'standard', JSON.stringify(n1get.data))
+  const n1dbRow = await prisma.aiConfig.findUnique({ where: { id: 1 } })
+  check('N1e DB apiKeyEnc terenkripsi (bukan plaintext di DB — spec §G)', !!n1dbRow?.apiKeyEnc && !String(n1dbRow.apiKeyEnc).includes('test-key-123456-2345'), `encPrefix=${String(n1dbRow?.apiKeyEnc || '').slice(0, 4)}…`)
+
+  // N2 — tes koneksi (key stored, baseUrl/model default config) → ok + latency
+  const n2 = await api('POST', '/api/sa/ai-config/test', {}, saTok)
+  check('N2 POST test → ok true + latencyMs number', n2.status === 200 && n2.data?.ok === true && Number.isFinite(n2.data?.latencyMs), `status=${n2.status} ${JSON.stringify(n2.data)}`)
+
+  // N3 — daftar model via mock → 2 canned + key TIDAK bocor
+  const n3 = await api('GET', '/api/sa/ai-config/models?scope=cloud', undefined, saTok)
+  check('N3 GET models → array 2 canned (mock-model-a/b)', n3.status === 200 && Array.isArray(n3.data?.models) && n3.data.models.length === 2 && n3.data.models.every((m) => ['mock-model-a', 'mock-model-b'].includes(m.name)), JSON.stringify(n3.data))
+  check('N3b models response tanpa key', !JSON.stringify(n3.data).includes('test-key-123456-2345'), '')
+  const n3Local = await api('GET', '/api/sa/ai-config/models?scope=local&baseUrl=' + encodeURIComponent(MOCK_URL), undefined, saTok)
+  check('N3c models scope=local (baseUrl override) → 2 model', n3Local.status === 200 && n3Local.data?.models?.length === 2, `status=${n3Local.status}`)
+
+  // N4 — window semantics (locked, spec §D): timestamp > resolvedAt (NULL → semua),
+  // order asc. Seed chat A resolved @t3 (5 pesan t1..t5) + chat B open (5 pesan).
+  const t0 = Date.now()
+  const mk = (i) => new Date(t0 - 60000 + i * 1000) // t1..t5, t3 = mk(2)
+  const N4_JID_A = '628999230001@s.whatsapp.net'
+  const N4_JID_B = '628999230002@s.whatsapp.net'
+  const n4a = await prisma.chat.upsert({
+    where: { tenantId_numberSlot_waJid: { tenantId: 8, numberSlot: 0, waJid: N4_JID_A } },
+    update: { status: 'resolved', resolvedAt: mk(2), resolvedById: 22, contactName: 'E2E23 WinA' },
+    create: { tenantId: 8, waJid: N4_JID_A, contactPhone: '628999230001', contactName: 'E2E23 WinA', status: 'resolved', resolvedAt: mk(2), resolvedById: 22, firstIncomingAt: mk(0) },
+  })
+  const n4b = await prisma.chat.upsert({
+    where: { tenantId_numberSlot_waJid: { tenantId: 8, numberSlot: 0, waJid: N4_JID_B } },
+    update: { status: 'open', resolvedAt: null, resolvedById: null, contactName: 'E2E23 WinB' },
+    create: { tenantId: 8, waJid: N4_JID_B, contactPhone: '628999230002', contactName: 'E2E23 WinB', status: 'open', firstIncomingAt: mk(0) },
+  })
+  for (const [chat, tag] of [[n4a, 'A'], [n4b, 'B']]) {
+    // re-seed SETIAP run dgn timestamp segar (idempoten; t4/t5 harus > resolvedAt segar)
+    await prisma.message.deleteMany({ where: { chatId: chat.id } })
+    await prisma.message.createMany({ data: [1, 2, 3, 4, 5].map((i) => ({
+      tenantId: 8, chatId: chat.id, direction: i % 2 ? 'in' : 'out',
+      content: encryptText(`${tag}-pesan-${i}`), senderName: i % 2 ? 'Customer' : 'agent',
+      timestamp: mk(i - 1),
+    })) })
+  }
+  check('N4 seed chat A (resolved@t3) + B (open) + 5 pesan @t1..t5', !!n4a?.id && !!n4b?.id, `A=${n4a?.id} B=${n4b?.id}`)
+
+  const n4s1 = await api('POST', `/api/chats/${n4a.id}/summary`, {}, t8AdminTok)
+  check('N4a summary chat resolved (resolvedAt=t3) → 200', n4s1.status === 200, `status=${n4s1.status} ${JSON.stringify(n4s1.data).slice(0, 160)}`)
+  const n4e1 = decodeEcho(n4s1.data?.summaryText)
+  check('N4a2 window marker = 2 pesan (t4,t5 saja — post-resolve)', n4e1.msgs === 2, `msgs=${n4e1.msgs}`)
+  check('N4a3 user content mengandung pesan A-4 & A-5, TIDAK A-1..3', (n4e1.user || '').includes('A-pesan-4') && (n4e1.user || '').includes('A-pesan-5') && !(n4e1.user || '').includes('A-pesan-1'), '')
+  check('N4a4 user content berisi label Customer + CS (agent) + metadata kontak', (n4e1.user || '').includes('Customer:') && (n4e1.user || '').includes('CS (agent)') && (n4e1.user || '').includes('Kontak: E2E23 WinA'), '')
+  check('N4a5 window meta {messageCount:2, from, to}', n4s1.data?.window?.messageCount === 2 && !!n4s1.data?.window?.from && !!n4s1.data?.window?.to, JSON.stringify(n4s1.data?.window))
+  check('N4a6 response shape (templateUsed/model/viaFallback/latencyMs)', n4s1.data?.templateUsed === 'standard' && typeof n4s1.data?.model === 'string' && n4s1.data?.viaFallback === false && Number.isFinite(n4s1.data?.latencyMs), JSON.stringify({ templateUsed: n4s1.data?.templateUsed, model: n4s1.data?.model, viaFallback: n4s1.data?.viaFallback }))
+  check('N4a7 system prompt = preset standard 4 blok + RAIL anti-halusinasi', (n4e1.system || '').includes('RINGKASAN') && (n4e1.system || '').includes('STATUS & LANGKAH LANJUT') && (n4e1.system || '').includes('JANGAN mengarang fakta'), '')
+  const n4s2 = await api('POST', `/api/chats/${n4b.id}/summary`, {}, t8AdminTok)
+  check('N4b chat tanpa resolvedAt → marker 5 pesan (semua pesan)', n4s2.status === 200 && decodeEcho(n4s2.data?.summaryText).msgs === 5, `status=${n4s2.status} msgs=${decodeEcho(n4s2.data?.summaryText).msgs}`)
+
+  // N5 — cooldown 30s per chat (in-memory Map) → call kedua langsung → 429
+  const n5 = await api('POST', `/api/chats/${n4b.id}/summary`, {}, t8AdminTok)
+  check('N5 cooldown call kedua → 429 + retryAfter 1..30', n5.status === 429 && Number(n5.data?.retryAfter) > 0 && Number(n5.data?.retryAfter) <= 30, `status=${n5.status} retryAfter=${n5.data?.retryAfter}`)
+
+  // N6 — guard: chat tenant lain → 404; config dikosongkan → 400 NO_CONFIG
+  const n6a = await api('POST', `/api/chats/${n4a.id}/summary`, {}, t10AdminTok)
+  check('N6a admin tenant lain akses chat t8 → 404 (tenant scope)', n6a.status === 404, `status=${n6a.status}`)
+  const n6c = await seedOneMsgChat()
+  const n6del = await prisma.aiConfig.deleteMany({})
+  const n6b = await api('POST', `/api/chats/${n6c.id}/summary`, {}, t8AdminTok)
+  check('N6b config dikosongkan → 400 NO_CONFIG dgn pesan jelas', n6b.status === 400 && n6b.data?.code === 'NO_CONFIG' && /belum dikonfigurasi/i.test(String(n6b.data?.error)), `status=${n6b.status} code=${n6b.data?.code} deleted=${n6del.count}`)
+  // restore config (mock) utk N7+ — idempoten
+  await api('PUT', '/api/sa/ai-config', { cloudBaseUrl: MOCK_URL, apiKey: 'test-key-123456-2345', cloudModel: 'mock-model-a' }, saTok)
+
+  // N7 — Simpan-ke-catatan via endpoint ChatNote existing → SELECT-back (lesson #4)
+  const noteBody = 'E2E23 summary note ' + Date.now()
+  const n7 = await api('POST', `/api/chats/${n4b.id}/notes`, { body: noteBody }, t8AdminTok)
+  check('N7 POST catatan existing → 201 (endpoint ChatNote)', n7.status === 200 || n7.status === 201, `status=${n7.status}`)
+  const n7row = await prisma.chatNote.findFirst({ where: { chatId: n4b.id }, orderBy: { id: 'desc' } })
+  check('N7b row ChatNote muncul (SELECT-back verify, body dekrip cocok)', !!n7row?.id && decryptTextSafe(n7row.body) === noteBody, `id=${n7row?.id}`)
+
+  // N8 — fallback path: fallbackEnabled + cloudBaseUrl port mati → 200 via local (mock)
+  const deadPort = 'http://127.0.0.1:19191'
+  const n8put = await api('PUT', '/api/sa/ai-config', { cloudBaseUrl: deadPort, fallbackEnabled: true, localBaseUrl: MOCK_URL, localModel: 'mock-model-b' }, saTok)
+  check('N8 PUT fallback config → 200 (key keep)', n8put.status === 200 && n8put.data?.hasKey === true && n8put.data?.fallbackEnabled === true, `status=${n8put.status} hasKey=${n8put.data?.hasKey} fb=${n8put.data?.fallbackEnabled}`)
+  const n8c = await seedOneMsgChat()
+  const n8 = await api('POST', `/api/chats/${n8c.id}/summary`, {}, t8AdminTok)
+  check('N8a cloud mati + fallbackEnabled → 200 via fallback lokal', n8.status === 200 && n8.data?.viaFallback === true, `status=${n8.status} viaFallback=${n8.data?.viaFallback}`)
+  check('N8b model = localModel (mock-model-b)', n8.data?.model === 'mock-model-b', `model=${n8.data?.model}`)
+  check('N8c marker = 1 pesan (window fallback benar)', decodeEcho(n8.data?.summaryText).msgs === 1, `msgs=${decodeEcho(n8.data?.summaryText).msgs}`)
+  // restore primary config
+  await api('PUT', '/api/sa/ai-config', { cloudBaseUrl: MOCK_URL, fallbackEnabled: false }, saTok)
+
+  // N9 — template jalur: default → medis → custom → preview → validasi → guard
+  await prisma.tenantSummaryTemplate.deleteMany({ where: { tenantId: { in: [8, 10] } } })
+  const n9get0 = await api('GET', '/api/chats/settings/summary-template', undefined, t8AdminTok)
+  check('N9a GET template (belum diset) → default standard', n9get0.status === 200 && n9get0.data?.presetKey === 'standard' && !n9get0.data?.customText, `status=${n9get0.status} ${JSON.stringify(n9get0.data)}`)
+  const n9putM = await api('PUT', '/api/chats/settings/summary-template', { presetKey: 'medis' }, t8AdminTok)
+  check('N9b PUT preset=medis → 200 ter-echo', n9putM.status === 200 && n9putM.data?.presetKey === 'medis', `status=${n9putM.status}`)
+  const n9cM = await seedOneMsgChat()
+  const n9sM = await api('POST', `/api/chats/${n9cM.id}/summary`, {}, t8AdminTok)
+  check('N9c summary echo instruksi medis (mock) + templateUsed medis', n9sM.status === 200 && n9sM.data?.templateUsed === 'medis' && (decodeEcho(n9sM.data?.summaryText).system || '').includes('pasien/klinik'), `status=${n9sM.status} tpl=${n9sM.data?.templateUsed}`)
+  const n9putC = await api('PUT', '/api/chats/settings/summary-template', { presetKey: 'standard', customText: 'E2E23-CUSTOM-INSTRUKSI ringkas poin' }, t8AdminTok)
+  check('N9d PUT customText → 200 tersimpan', n9putC.status === 200 && n9putC.data?.customText === 'E2E23-CUSTOM-INSTRUKSI ringkas poin', `status=${n9putC.status}`)
+  const n9cC = await seedOneMsgChat()
+  const n9sC = await api('POST', `/api/chats/${n9cC.id}/summary`, {}, t8AdminTok)
+  const n9eC = decodeEcho(n9sC.data?.summaryText)
+  check('N9e customText MENANG atas preset → templateUsed custom + echo', n9sC.status === 200 && n9sC.data?.templateUsed === 'custom' && (n9eC.system || '').includes('E2E23-CUSTOM-INSTRUKSI ringkas poin'), `status=${n9sC.status} tpl=${n9sC.data?.templateUsed}`)
+  check('N9e2 RAIL tetap ditambahkan setelah custom instruksi', (n9eC.system || '').includes('JANGAN mengarang fakta'), '')
+  const n9prev = await api('POST', '/api/settings/summary-template/preview', { presetKey: 'penjualan' }, t8AdminTok)
+  check('N9f preview (draft, sample baked-in) → 200 + templateUsed penjualan', n9prev.status === 200 && n9prev.data?.templateUsed === 'penjualan' && typeof n9prev.data?.summaryText === 'string', `status=${n9prev.status} tpl=${n9prev.data?.templateUsed}`)
+  const n9prevBad = await api('POST', '/api/chats/summary-preview', { presetKey: 'bogus' }, t8AdminTok)
+  check('N9f2 preview direct chats path presetKey bogus → 400', n9prevBad.status === 400, `status=${n9prevBad.status}`)
+  const n9big = await api('PUT', '/api/chats/settings/summary-template', { presetKey: 'standard', customText: 'x'.repeat(1001) }, t8AdminTok)
+  check('N9g customText >1000 → 400', n9big.status === 400, `status=${n9big.status}`)
+  const n9cs = await api('PUT', '/api/chats/settings/summary-template', { presetKey: 'ringkas' }, t8CsTok)
+  check('N9h CS PUT template → 403 (admin-only)', n9cs.status === 403, `status=${n9cs.status}`)
+  // N9i — isolasi antar-tenant: t10 admin lihat VIEW-nya sendiri (default standard,
+  // customText null) — template t8 (custom 'E2E23-CUSTOM-INSTRUKSI…') TIDAK boleh bocor.
+  // (GET = resolved view + default utk row belum ada, spec §D — BUKAN 404; deviasi
+  // dari instruksi literal "tenant lain → 404" karena bertentangan dgn N9a default-200.)
+  const n9o = await api('GET', '/api/chats/settings/summary-template', undefined, t10AdminTok)
+  check('N9i isolasi template: t10 lihat default sendiri, TIDAK bocor template t8', n9o.status === 200 && n9o.data?.presetKey === 'standard' && !n9o.data?.customText, `status=${n9o.status} ${JSON.stringify(n9o.data)}`)
+  const n9oPut = await api('PUT', '/api/chats/settings/summary-template', { presetKey: 'ringkas' }, t10AdminTok)
+  check('N9i2 t10 PUT template terpisah → 200 (tenant scope masing-masing)', n9oPut.status === 200 && n9oPut.data?.presetKey === 'ringkas', `status=${n9oPut.status}`)
+  const n9oGet = await api('GET', '/api/chats/settings/summary-template', undefined, t10AdminTok)
+  check('N9i3 t10 GET after PUT → ringkas (row t10 sendiri, t8 tak terpengaruh)', n9oGet.status === 200 && n9oGet.data?.presetKey === 'ringkas', `status=${n9oGet.status}`)
+  // audit summary_template_update tercatat (spec §D) — tanpa isi template
+  const n9audit = await prisma.saAuditLog.findFirst({ where: { action: 'summary_template_update', tenantId: 8 }, orderBy: { id: 'desc' } })
+  check('N9i4 audit summary_template_update (t8) tercatat tanpa isi template', !!n9audit?.id && !String(n9audit?.detailJson || '').includes('E2E23-CUSTOM-INSTRUKSI'), `id=${n9audit?.id}`)
+  await prisma.tenantSummaryTemplate.deleteMany({ where: { tenantId: 10 } })
+  // cleanup template t8 (biar state copy db bersih; AiConfig biarkan — post-verify pakai)
+  const n9clean = await prisma.tenantSummaryTemplate.deleteMany({ where: { tenantId: 8 } })
+  check('N9j cleanup template t8 (idempoten re-run)', n9clean.count >= 1, `deleted=${n9clean.count}`)
+
+  mockServer.close()
+
   console.log(`\n=== e2e-v3919: ${pass} PASS / ${fails.length} FAIL ===`)
   if (fails.length) { console.log('FAILED:', fails.join(' | ')); process.exitCode = 1 }
   await prisma.$disconnect()
+  process.exit(process.exitCode || 0) // mock sockets keep event loop alive → exit eksplisit
 }
 
 main().catch((e) => { console.error('FATAL', e); process.exit(1) })

@@ -1,4 +1,116 @@
-# v3.9.22 — ENHANCEMENT: Timestamp pesan terakhir di chat list (request Kanaka 2026-09-25)
+# v3.9.23 — FEATURE: AI Chat Summary (Ollama Cloud) + AI Assistant SA + Format Summary per-tenant (GO Kanaka 2026-09-25)
+
+**Request (Kanaka 21:06–21:25, spec `docs/spec-v3.9.23-ai-summary.md`):** fitur summary sesi chat via
+Ollama Cloud — 100% mandiri dari OpenClaw/Alita (call langsung ke provider, key disimpan ENCRYPTED
+di DB app sendiri, zero callback; jalan 24/7 saat hosting walau OpenClaw off). Template summary
+diatur MANDIRI oleh admin tenant (6 preset + custom instruksi bebas); fallback Ollama lokal =
+opsi on-demand di Pengaturan SA.
+
+**Migration (SATU, additive murni — 2 CREATE TABLE saja):**
+- `prisma/migrations/20260925213000_ai_config/migration.sql` — tabel `AiConfig` (singleton id=1:
+  cloudBaseUrl/cloudModel/apiKeyEnc [ciphertext textCrypto]/localBaseUrl/localModel/fallbackEnabled/
+  defaultPreset) + `TenantSummaryTemplate` (per-tenant: presetKey + customText ≤1000 char).
+  Tidak ada kolom/tabel existing yang diubah/dihapus. Prod: `npx prisma migrate deploy` saat release
+  (shadow-replay fresh-clone rusak → copy-DB path = apply SQL manual + record checksum, pola proven v3.9.14).
+
+**Backend — service `src/services/llm.js` (NEW):**
+- `getAiConfig()` (dekrip on-demand, key tak pernah di-log), `aiChat()` (POST /api/chat,
+  AbortController timeout 60s, error codes NO_CONFIG|AUTH_401|TIMEOUT|NETWORK|UPSTREAM_5XX),
+  `aiListModels()` (GET /api/tags), `aiTestConnection()` (1 call mini "Balas persis satu kata: siap"),
+  fallback logic (primary cloud gagal NETWORK/TIMEOUT/5XX + fallbackEnabled + ping lokal 2s →
+  retry 1× ke local, flag `viaFallback:true`), `SUMMARY_PRESETS` 6 preset (standard/ringkas/handoff/
+  medis/penjualan/keluhan), `RAIL_ANTI_HALUSINASI` (anti-halusinasi, selalu ditambahkan),
+  `resolveTemplate()` (customText > presetKey tenant > AiConfig.defaultPreset), `buildSystemPrompt()`.
+- Key ENCRYPTED di DB (encryptText, pola ciphertext pesan); NEVER plaintext/log/response.
+
+**Backend — Superadmin (`src/routes/superadmin.js` — additive murni, guard `...sa`):**
+- `GET /api/sa/ai-config` → masked (hasKey + keyMasked `••••<last4>`; key TIDAK pernah full).
+- `PUT /api/sa/ai-config` → validasi (baseUrl http(s), key ≥20 char disimpan ENCRYPTED,
+  model regex `^[a-zA-Z0-9._:\-\/]+$` anti-injection; apiKey null/absent = keep, '' = hapus);
+  audit `ai_config_update` TANPA key.
+- `POST /api/sa/ai-config/test` → aiTestConnection (key stored bila body apiKey kosong);
+  audit `ai_config_test`.
+- `GET /api/sa/ai-config/models?scope=cloud|local` → proxy /api/tags (+key stored utk cloud).
+- `POST /api/sa/ai-config/local-pull` → cek binary `which ollama` (tidak ada → 400 "Ollama binary
+  tidak ditemukan di host ini"); ada → spawn DETACHED `ollama pull <model>` (regex anti-injection,
+  log /tmp/cb_ai_pull.log, detached+unref); audit `ai_config_pull`.
+
+**Backend — Summary CS (`src/routes/chats.js` — additive murni di akhir file):**
+- `POST /api/chats/:id/summary` — tenant scope existing (`rt`) + `canAccessChat`; chat tenant lain → 404.
+  **Window semantics (locked Kanaka):** pesan `timestamp > chat.resolvedAt` (NULL → semua), order asc,
+  cap 200 pesan terakhir / 20.000 char (potong dari depan + marker "(pesan awal dipotong)"); isi pesan
+  ciphertext didekrip on-demand utk payload LLM. Response `{summaryText, templateUsed, model,
+  viaFallback, latencyMs, window:{messageCount, from, to}}`. Cooldown 30s/chat (in-memory) → 429
+  `{retryAfter}`. Config kosong → 400 NO_CONFIG. Window kosong → 400 EMPTY_WINDOW. Tidak menulis
+  ChatEvent baru (analytics tak tersentuh); Simpan-ke-catatan = REUSE endpoint ChatNote existing.
+- `GET/PUT /api/chats/settings/summary-template` (admin tenant; CS → 403) — validasi presetKey ∈
+  6 preset + customText ≤1000; audit `summary_template_update` (tenant name, tanpa isi template).
+- `POST /api/chats/summary-preview` (draft, transcript CONTOH baked-in, bukan data pelanggan).
+
+**Backend — alias route (`src/server.js`):** mini-router `/api/settings/summary-template(+/preview)`
+→ forward ke handler chats.js (spec §D menulis path `/api/settings`; additive, ZERO handler existing
+disentuh). + require `./auth` helper (fix ReferenceError versi abort).
+
+**Frontend:**
+- `SaPengaturan.vue` — panel "AI Assistant" (Base URL, API Key password + Ganti Key, Tes Koneksi,
+  Muat Daftar Model cloud, Format default platform 6 preset, sub-panel Fallback Lokal: toggle +
+  baseUrl + model + ping status + Pasang model lokal on-demand 3 preset — JANGAN auto-download).
+  Menggantikan placeholder backlog "AI Provider Key".
+- `ChatDetail.vue` — tombol 🤖 desktop (quick actions) + mobile (header baris kedua), disabled +
+  tooltip saat window kosong; mount `SummaryModal`.
+- `SummaryModal.vue` (NEW) — modal hasil: render text apa adanya (NO v-html; heading 4 blok
+  template standard di-bold via parse baris), footer model·template·via fallback·Xs, Salin Semua,
+  Simpan ke Catatan (endpoint ChatNote existing + emit refresh), Regenerate (429 → sisa detik),
+  error state inline per code (NO_CONFIG/AUTH_401/TIMEOUT/NETWORK/EMPTY_WINDOW).
+- `AdminWhatsApp.vue` — panel "Format Summary AI" admin tenant (6 preset radio + textarea instruksi
+  ≤1000 + counter + Uji-dengan-contoh + Simpan; badge Mode preset/custom; CS read-only).
+- `Dashboard.vue` — 1 baris wiring `@summary-saved="fetchChatNotes"` (refresh catatan).
+
+**E2E (`scripts/e2e-v3919.cjs` — section N baru, mock LLM deterministic 127.0.0.1:11435):**
+- Mock dari script: GET /api/tags → 2 model canned; POST /api/chat → ECHO marker (jumlah baris
+  transcript + echo system/user base64) → assert window/template/rail. ZERO call internet.
+- N-suite 48 check: config masked + key encrypted di DB; test koneksi; models; **window semantics**
+  (resolved@t3 → marker 2 [t4,t5]; NULL → 5); cooldown 429; 404 tenant lain + 400 NO_CONFIG;
+  ChatNote SELECT-back; fallback via local (cloud port mati → 200, viaFallback, model lokal);
+  template jalur (default, medis echo, custom echo + rail, preview, >1000 → 400, CS PUT → 403,
+  isolasi antar-tenant, audit tanpa isi template). **121/121 PASS (73 regresi + 48 baru), 2×
+  beruntun** (server copy 5099, DATABASE_URL eksplisit file:/tmp/saas-v3-e2e.db, prod 5047 tak disentuh).
+
+**Gates:** `node --check` superadmin/chats/llm/server/e2e OK; `npx vite build` exit 0 (2.72s);
+E2E 121/121; post-verify fresh curl: GET ai-config masked (key tak full), summary via mock marker
+window benar, local-pull injection/kosong → 400 validasi (binary `ollama` ADA di host ini → jalur
+"binary tidak ditemukan" terverifikasi via kode path `which` + regex; pull test dihentikan — kill PID
+test sendiri).
+
+**Catatan implementasi (dari audit kerjaan abort Dory + fix):**
+- Kerjaan abort terverifikasi & dipertahankan: llm.js, migration SQL (persis 2 CREATE TABLE),
+  superadmin.js additive, chats.js additive, schema.prisma, SummaryModal.vue, SaPengaturan.vue,
+  AdminWhatsApp.vue (E3), Dashboard.vue (wiring 1 baris), ChatDetail.vue.
+- `src/server.js` KEEP — bukan incidental: alias eksplisit utk path `/api/settings/*` yang
+  diminta spec §D tanpa menyentuh file route lain. Fixed: requireAuth/requireTenant/requireAdmin
+  tidak di-import (ReferenceError saat boot).
+- Handler GET/PUT template TIDAK sempat ditulis versi abort (alias di server.js → 404) →
+  dilengkapi additive di chats.js (audit summary_template_update via saAudit existing).
+- Fix duplikat tombol 🤖 (SummaryModal root button + ChatDetail keduanya render desktop) →
+  tombol root SummaryModal dihapus; ChatDetail render di kedua viewport.
+- Mock key E2E = `test-key-123456-2345` (20 char — memenuhi validasi ≥20 char spec §C2;
+  last4 tetap "2345" utk assert mask). Backend tidak diubah.
+- N9i deviasi sadar: instruksi literal "tenant lain → 404" diganti assert isolasi (t10 lihat
+  default-nya sendiri, template t8 tak bocor + PUT terpisah per tenant) — GET template = resolved
+  view + default (konsisten N9a "belum diset → 200 standard"); 404 literal akan bertentangan.
+- E2E exit eksplisit `process.exit` (mock keep-alive sockets hang event loop); re-seed window
+  per-run (timestamp segar > resolvedAt segar — run ke-2 idempoten); JID seedOneMsgChat auto-skip
+  yang terpakai; login limiter 15/menit per-IP → antar-run perlu jeda (artefak test, bukan bug).
+
+**File diubah:** src/services/llm.js (NEW), src/server.js (M), src/routes/superadmin.js (M),
+src/routes/chats.js (M), prisma/schema.prisma (M), prisma/migrations/20260925213000_ai_config/
+(NEW), scripts/e2e-v3919.cjs (M), frontend: SaPengaturan.vue, ChatDetail.vue, SummaryModal.vue
+(NEW), AdminWhatsApp.vue, Dashboard.vue.
+
+**Deploy (Alita, pasca-audit):** backup DB → `npx prisma migrate deploy` → verify PRAGMA AiConfig →
+vite rebuild (snapshot public-pre-build-<ts>) → restart by-PID → health 200 → visual QA 18801
+(key masked, tes koneksi ke MOCK — key asli JANGAN dipakai di QA) → commit+tag+push. Key asli
+diisi Kanaka sendiri via Pengaturan; default model saran = glm-5.3-flash.
 
 **Request:** chat list ChatBareng gak nunjukin waktu pesan terakhir (kayak WhatsApp biasa) — di
 bubble dalam chatbox kelihatan, di list gak. (Paringan kasus: LID mentah di chat list

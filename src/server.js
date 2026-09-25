@@ -47,6 +47,24 @@ const superadminRoutes = require('./routes/superadmin') // v3.0 — Platform own
 const brandingRoutes = require('./routes/branding') // v3.4 — Branding per-tenant (logo)
 const apiKeysRoutes = require('./routes/apiKeys') // v3.9.13 — Tenant-admin API keys mgmt
 const apiV1Routes = require('./routes/apiV1') // v3.9.13 — Public API v1 (API key auth)
+// v3.9.23 — AI Summary: alias /api/settings → endpoint template di chats.js
+// (GET/PUT /api/settings/summary-template; spec §D menulis path /api/settings —
+// handler additive ditempatkan di chats.js supaya jangan sentuh file lain;
+// router mini di-mount eksklusif dgn 3 path template, ZERO handler existing disentuh)
+const { requireAuth, requireTenant, requireAdmin } = require('./auth')
+const summaryTemplateRouter = express.Router()
+summaryTemplateRouter.get('/summary-template', requireAuth, requireTenant, requireAdmin, (req, res, next) => {
+  req.url = '/settings/summary-template'
+  return chatRoutes(req, res, next)
+})
+summaryTemplateRouter.put('/summary-template', requireAuth, requireTenant, requireAdmin, (req, res, next) => {
+  req.url = '/settings/summary-template'
+  return chatRoutes(req, res, next)
+})
+summaryTemplateRouter.post('/summary-template/preview', requireAuth, requireTenant, requireAdmin, (req, res, next) => {
+  req.url = '/summary-preview'
+  return chatRoutes(req, res, next)
+})
 
 const app = express()
 // v3.9.4 — trust proxy 'loopback': server di belakang cloudflared tunnel (127.0.0.1)
@@ -163,6 +181,8 @@ app.use('/api/branding', brandingRoutes) // v3.4 — Branding per-tenant (logo, 
 app.use('/api/v1', apiV1Routes.router)
 // v3.9.13 — Tenant-admin API keys management (JWT admin, requireTenant scope)
 app.use('/api/api-keys', apiKeysRoutes)
+// v3.9.23 — AI summary template (alias /api/settings → chats.js handlers additive)
+app.use('/api/settings', summaryTemplateRouter)
 // Public, no-auth: dipakai index.html SEBELUM bundle app (fallback aman kalau DB error)
 app.get('/theme.css', appearanceRoutes.themeCssHandler)
 // v0.12.7 — PUBLIC, no-auth: manifest dinamis (theme_color = accentSeed aktif).
