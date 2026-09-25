@@ -1,3 +1,63 @@
+# v3.9.21 — ENHANCEMENT: Dashboard Polish — 4 quirks live-QA Kanaka (2026-09-25)
+
+**Request (Kanaka 19:20):** 4 quirks dari live-QA dashboard SuperAdmin: brand sidebar
+mepet pojok, sumbu "Hari Ini" cuma 1 titik, butuh panel storage Tangan Kanan utk
+pertimbangan upgrade server, dan chart "langsung muncul" (gak ada animasi).
+Implementasi single-round, semua **additive**, ZERO migration.
+
+**Backend (`src/routes/superadmin.js` — additive murni, ZERO migration):**
+- `saHourlyHourList()` — sumbu per-jam WIB `['00','01',…,'<jam WIB sekarang>']`
+  (inklusif jam saat ini, zero-padded; now+7h → getUTCHours).
+- `GET /api/sa/stats/trends?range=today` → mode **hourly**: shape baru
+  `{ range:'today', mode:'hourly', today, dates:[jam…], counts:[…], total }` —
+  grouping `strftime('%H', COALESCE(firstIncomingAt, createdAt)/1000,'unixepoch','+07:00')`,
+  zero-fill per jam, window tetap [midnight WIB, +1d). Range non-today shape
+  UNCHANGED (tanpa field `mode`).
+- `GET /api/sa/stats/avg-response?range=today` → mode hourly: bucket per jam WIB
+  dari `firstIncomingAt`; base filters (IS NOT NULL ×2 + `firstResponseAt >=
+  firstIncomingAt`) WAJIB tetap; avgTotal = agregat sum/sum window; bucket/jam
+  tanpa data = null; shape `{ range, mode:'hourly', today, dates, avgMinutes, avgTotal }`.
+- Endpoint BARU `GET /api/sa/stats/tk-storage` (guard `...sa`) — ukuran storage
+  "Tangan Kanan" semua tenant: `prisma.sharedFile.groupBy(tenantId)`
+  `_sum{size}` + `_count`, size NULL dihitung 0, map nama tenant (fallback
+  `"Tenant {id}"`), sort desc by bytes; shape `{ totalBytes, fileCount,
+  perTenant:[{ tenantId, tenantName, bytes, files }] }`. Schema existing
+  `SharedFile.size Int?` — tidak ada perubahan schema.
+
+**Frontend:**
+- `frontend/src/views/SaOverview.vue`:
+  - **HERO CARD FIX:** `todayChat` dari `tToday.data?.total ?? 0` — dgn hourly,
+    `counts[0]` = chat jam 00:00–01:00 doang (SALAH).
+  - Trend & avg chart: mode hourly → tick label `HH.00` (mis. "14.00"),
+    maxTicksLimit 8, pointRadius selalu tampil (≤24 titik); daily → perilaku
+    existing. Pie TIDAK berubah.
+  - Panel BARU **"Storage Tangan Kanan"** (full-width, read-only) di bawah metric
+    cards, sebelum grid chart: total human-readable (B/KB/MB/GB, id-ID), sub
+    "N file · M tenant", breakdown per tenant sort desc (0 byte di akhir via
+    sort bytes desc). Fetch non-blocking — gagal → panel hidden.
+  - Animasi Chart.js halus: load awal = 900ms easeOutQuart + stagger (trend 0 /
+    pie 120 / avg 240 ms); `renderCharts({ quick:true })` utk refreshPanel =
+    400ms tanpa delay; sparkline TETAP `animation:false`; doughnut rotate+scale
+    default dgn duration sesuai mode; destroyCharts→recreate aman; no lib baru.
+- `frontend/src/components/SaSidebar.vue` (pure CSS scoped, layout nav/drawer
+  TIDAK berubah): brand desktop `.sa-sidebar__brand` padding
+  `20px 16px 12px 22px` (top ≥20px, kiri align dgn teks nav item 22px = 10+12);
+  mobile topbar `.sa-mobile-bar` padding `12px 16px` (vertikal ≥12px).
+
+**QA (port 5099 DB copy, WA_DISABLED=1):**
+- E2E `scripts/e2e-v3919.cjs`: B6/B6b (today → mode hourly, dates.length = jam WIB
+  sekarang +1, counts aligned, label zero-padded), B9 (total ≥1 — bukan counts[0]),
+  B10/B10b (avg-response today mode hourly + aligned), section M baru (M1 shape
+  tk-storage, M2 entry shape, M3 total = sum perTenant, M4 403 utk admin tenant)
+  → **73/73 PASS** (66 regresi + 7 baru).
+- Post-verify fresh curl (token copy): trends today `mode:hourly dates:20
+  ['00'…'19'] counts:20 total:82`; avg-response today `mode:hourly avgLen:20
+  avgTotal:14.4`; tk-storage `totalBytes:9.581.449 fileCount:8 perTenant:[Mazaya
+  9.581.449 B / 8 file]`; trends 7d shape unchanged (tanpa `mode`).
+- `npx vite build` exit 0; `node --check` superadmin.js + e2e-v3919.cjs OK.
+- Catatan ops: password SA env <6 char kena validasi change-password saat restore
+  I4 (artefak run, bukan bug — password env E2E harus ≥6 char).
+
 # v3.9.20 — ENHANCEMENT: Per-Chart Date Ranges + Custom + All Time (2026-09-25)
 
 **Request (Kanaka 17:59):** "Yang resolved vs open juga di kasih date range dong yang

@@ -57,6 +57,9 @@ const pieCustom = reactive(makeCustomState())
 const todayChat = ref(0)
 const sparkline = ref([])
 
+// v3.9.21 — Panel Storage Tangan Kanan (GET /api/sa/stats/tk-storage)
+const tkStorage = ref(null)
+
 // Chart instances (destroy saat re-render biar tak leak canvas)
 let trendChart = null
 let avgChart = null
@@ -97,6 +100,32 @@ function fmtMinute(v) {
   const m = Math.round(v % 60)
   return m ? `${h}j ${m}m` : `${h}j`
 }
+
+// v3.9.21 — label sumbu per-jam utk mode hourly ('14' → '14.00')
+function hourTickLabel(h) {
+  try {
+    const hh = String(h).split(':')[0]
+    return `${hh.padStart(2, '0')}.00`
+  } catch {
+    return String(h)
+  }
+}
+
+// v3.9.21 — human-readable bytes (id-ID): B/KB/MB/GB/TB
+function fmtBytes(n) {
+  let val = Number(n || 0)
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  while (val >= 1024 && i < units.length - 1) { val /= 1024; i++ }
+  const num = i === 0 ? String(val) : val.toLocaleString('id-ID', { maximumFractionDigits: 1 })
+  return `${num} ${units[i]}`
+}
+
+// v3.9.21 — breakdown per-tenant sort desc by bytes (0 byte otomatis di akhir)
+const tkRows = computed(() => {
+  const rows = Array.isArray(tkStorage.value?.perTenant) ? [...tkStorage.value.perTenant] : []
+  return rows.sort((a, b) => (b.bytes || 0) - (a.bytes || 0) || (b.files || 0) - (a.files || 0))
+})
 
 const pieLegendLabel = computed(() => {
   if (!resolution.value) return ''
@@ -193,7 +222,9 @@ async function loadOverview() {
       axios.get(`${API}/api/sa/stats/trends`, { params: { range: 'today' } }),
       axios.get(`${API}/api/sa/stats/trends`, { params: { range: '7d' } }),
     ])
-    todayChat.value = tToday.data?.counts?.[0] ?? 0
+    // v3.9.21 HERO FIX: pakai total (sum semua bucket) — dgn mode hourly,
+    // counts[0] = chat jam 00:00–01:00 doang (SALAH).
+    todayChat.value = tToday.data?.total ?? 0
     sparkline.value = (t7.data?.counts || []).slice(-7)
 
     // Delta chat: 7d terakhir vs 7d sebelumnya — ambil 30d lalu split.
@@ -205,6 +236,14 @@ async function loadOverview() {
       chatDelta.value = prev7 === 0 ? (last7 > 0 ? 100 : null) : Math.round(((last7 - prev7) / prev7) * 1000) / 10
     } catch {
       chatDelta.value = null
+    }
+
+    // v3.9.21 — Storage Tangan Kanan (non-blocking; gagal → panel hidden)
+    try {
+      const tk = await axios.get(`${API}/api/sa/stats/tk-storage`)
+      tkStorage.value = tk.data
+    } catch {
+      tkStorage.value = null
     }
 
     renderCharts()
@@ -221,7 +260,7 @@ async function refreshPanel(which) {
     if (which === 'trend') await fetchTrend()
     else if (which === 'avg') await fetchAvg()
     else if (which === 'pie') await fetchPie()
-    renderCharts()
+    renderCharts({ quick: true }) // v3.9.21 — re-render panel: animasi pendek
   } catch (e) {
     error.value = e.response?.data?.error || 'Gagal memuat statistik'
   }
@@ -269,9 +308,13 @@ function destroyCharts() {
   trendChart = avgChart = pieChart = sparkChart = null
 }
 
-function renderCharts() {
+function renderCharts(opts = {}) {
   if (!trendCanvas.value || !avgCanvas.value || !pieCanvas.value || !sparkCanvas.value) return
   destroyCharts()
+  // v3.9.21 — load awal = animasi full ~900ms easeOutQuart + stagger (trend 0 /
+  // pie 120 / avg 240 ms); refreshPanel (quick) = ~400ms biar gak lambat.
+  const quick = !!opts.quick
+  const animLine = (delayMs) => ({ duration: quick ? 400 : 900, easing: 'easeOutQuart', delay: quick ? 0 : delayMs })
   const onSurface = cssVar('--md-sys-color-on-surface')
   const onVar = cssVar('--md-sys-color-on-surface-variant')
   const gridC = CHART_COLORS.grid
@@ -288,15 +331,20 @@ function renderCharts() {
         backgroundColor: 'rgba(37, 211, 102, 0.15)',
         fill: true,
         tension: 0.3,
-        pointRadius: trend.value?.counts?.length > 10 ? 0 : 3,
+        // v3.9.21 — hourly (≤24 titik) → titik selalu tampil
+        pointRadius: trend.value?.mode === 'hourly' ? 3 : (trend.value?.counts?.length > 10 ? 0 : 3),
       }],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: animLine(0),
       plugins: { legend: { display: false } },
       scales: {
-        x: { ticks: { color: onVar, maxTicksLimit: 10, callback: function (v) { return shortDate(this.getLabelForValue(v)) } }, grid: { display: false } },
+        // v3.9.21 — hourly: tick label 'HH.00'; daily: tanggal singkat existing
+        x: trend.value?.mode === 'hourly'
+          ? { ticks: { color: onVar, maxTicksLimit: 8, callback: function (v) { return hourTickLabel(this.getLabelForValue(v)) } }, grid: { display: false } }
+          : { ticks: { color: onVar, maxTicksLimit: 10, callback: function (v) { return shortDate(this.getLabelForValue(v)) } }, grid: { display: false } },
         y: { beginAtZero: true, ticks: { color: onVar, precision: 0 }, grid: { color: gridC } },
       },
     },
@@ -321,9 +369,13 @@ function renderCharts() {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: animLine(240),
       plugins: { legend: { display: false } },
       scales: {
-        x: { ticks: { color: onVar, maxTicksLimit: 8, callback: function (v) { return shortDate(this.getLabelForValue(v)) } }, grid: { display: false } },
+        // v3.9.21 — hourly: tick label 'HH.00'; daily: tanggal singkat existing
+        x: avgResp.value?.mode === 'hourly'
+          ? { ticks: { color: onVar, maxTicksLimit: 8, callback: function (v) { return hourTickLabel(this.getLabelForValue(v)) } }, grid: { display: false } }
+          : { ticks: { color: onVar, maxTicksLimit: 8, callback: function (v) { return shortDate(this.getLabelForValue(v)) } }, grid: { display: false } },
         y: { beginAtZero: true, ticks: { color: onVar, callback: (v) => fmtMinute(v) }, grid: { color: gridC } },
       },
     },
@@ -344,6 +396,8 @@ function renderCharts() {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      // v3.9.21 — doughnut rotate+scale default Chart.js, durasi ~900ms + stagger 120ms
+      animation: { duration: quick ? 400 : 900, easing: 'easeOutQuart', delay: quick ? 0 : 120 },
       cutout: '62%',
       plugins: {
         legend: { position: 'bottom', labels: { color: onSurface, boxWidth: 12, padding: 12 } },
@@ -445,6 +499,22 @@ onMounted(() => {
         <div class="sa-card">
           <div class="sa-stat">{{ fmtNum(stats.messages) }}</div>
           <div class="sa-label">Pesan</div>
+        </div>
+      </div>
+
+      <!-- v3.9.21 — Panel Storage Tangan Kanan (full-width, read-only) -->
+      <div v-if="tkStorage" class="sa-panel sa-storage mb-6">
+        <div class="flex items-center justify-between flex-wrap gap-2">
+          <h2 class="text-base font-semibold" :style="{ color: 'var(--md-sys-color-on-surface)' }">Storage Tangan Kanan</h2>
+          <span class="sa-storage__sub">{{ fmtNum(tkStorage.fileCount) }} file · {{ tkRows.length }} tenant</span>
+        </div>
+        <div class="sa-storage__total">{{ fmtBytes(tkStorage.totalBytes) }}</div>
+        <div v-if="tkRows.length" class="sa-storage__rows">
+          <div v-for="t in tkRows" :key="t.tenantId" class="sa-storage__row">
+            <span class="sa-storage__name">{{ t.tenantName }}</span>
+            <span class="sa-storage__bytes">{{ fmtBytes(t.bytes) }}</span>
+            <span class="sa-storage__files">{{ fmtNum(t.files) }} file</span>
+          </div>
         </div>
       </div>
 
@@ -647,6 +717,48 @@ onMounted(() => {
 }
 .sa-date-sep {
   color: var(--md-sys-color-on-surface-variant);
+}
+/* v3.9.21 — Panel Storage Tangan Kanan */
+.sa-storage__total {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--md-sys-color-on-surface);
+  line-height: 1.15;
+  margin-top: 2px;
+}
+.sa-storage__sub {
+  font-size: 0.78rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.sa-storage__rows {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+}
+.sa-storage__row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  align-items: baseline;
+  padding: 7px 0;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  font-size: 0.85rem;
+}
+.sa-storage__row:first-child {
+  border-top: none;
+}
+.sa-storage__name {
+  color: var(--md-sys-color-on-surface);
+  font-weight: 500;
+}
+.sa-storage__bytes {
+  color: var(--md-sys-color-on-surface);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.sa-storage__files {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.78rem;
 }
 .sa-chart-box {
   position: relative;

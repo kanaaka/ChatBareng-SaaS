@@ -145,6 +145,11 @@ loadBrand()
   z-index: 40;
   transition: transform 0.2s ease;
 }
+/* v3.9.21 — brand gak nempel frame pojok kiri atas (live-QA Kanaka):
+ * padding-top ≥ 20px + kiri align dgn teks nav item (10 nav + 12 item = 22px). */
+.sa-sidebar__brand {
+  padding: 20px 16px 12px 22px;
+}
 .sa-logo {
   width: 40px;
   height: 40px;
@@ -246,7 +251,8 @@ loadBrand()
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 10px 14px;
+    /* v3.9.21 — brand topbar mobile gak mepet frame (≥12px vertikal) */
+    padding: 12px 16px;
     background: var(--md-sys-color-surface-container);
     position: sticky;
     top: 0;

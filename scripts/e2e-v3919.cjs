@@ -62,7 +62,14 @@ async function main() {
   check('B4 trends dates penuh (tanpa lubang), last = hari ini WIB', tr7.data?.dates?.every?.((d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d))) === true, `last=${tr7.data?.dates?.[6]}`)
   check('B5 trends counts numerik >= 0', tr7.data?.counts?.every?.((c) => Number.isFinite(c) && c >= 0) === true, '')
   const trToday = await api('GET', '/api/sa/stats/trends?range=today', undefined, saTok)
-  check('B6 trends today → 1 elemen', trToday.status === 200 && trToday.data?.dates?.length === 1, `n=${trToday.data?.dates?.length}`)
+  // v3.9.21 — today → mode hourly: dates = ['00','01',…,'<jam WIB sekarang>'] (inklusif)
+  const EXPECT_HOURS = new Date(Date.now() + 7 * 60 * 60 * 1000).getUTCHours() + 1
+  check('B6 trends today → 200 + mode hourly + dates = jam WIB sekarang +1',
+    trToday.status === 200 && trToday.data?.mode === 'hourly' && trToday.data?.dates?.length === EXPECT_HOURS,
+    `status=${trToday.status} mode=${trToday.data?.mode} n=${trToday.data?.dates?.length} expect=${EXPECT_HOURS}`)
+  check('B6b trends today counts.length == dates.length + label jam zero-pad',
+    trToday.data?.counts?.length === trToday.data?.dates?.length && trToday.data?.dates?.[0] === '00' && /^\d{2}$/.test(String(trToday.data?.dates?.at(-1))),
+    `last=${trToday.data?.dates?.at(-1)} counts=${trToday.data?.counts?.length}`)
   const tr30 = await api('GET', '/api/sa/stats/trends?range=30d', undefined, saTok)
   check('B7 trends 30d → 30 elemen', tr30.status === 200 && tr30.data?.dates?.length === 30, `n=${tr30.data?.dates?.length}`)
   const trBad = await api('GET', '/api/sa/stats/trends?range=bogus', undefined, saTok)
@@ -85,7 +92,17 @@ async function main() {
   })
   check('B8 seed 1 chat hari ini (copy db)', !!seedTarget?.id, `id=${seedTarget?.id}`)
   const trToday2 = await api('GET', '/api/sa/stats/trends?range=today', undefined, saTok)
-  check('B9 trends today reflect seed (lesson #4: data benar, bukan cuma ok)', trToday2.data?.counts?.[0] >= 1, `counts[0]=${trToday2.data?.counts?.[0]}`)
+  // v3.9.21 — hourly: total = sum semua jam (counts[0] = chat jam 00–01 doang = SALAH)
+  check('B9 trends today reflect seed (lesson #4: data benar, bukan cuma ok)', trToday2.data?.total >= 1, `total=${trToday2.data?.total}`)
+
+  // v3.9.21 — avg-response today → mode hourly (bucket per jam WIB, aligned dates)
+  const avToday = await api('GET', '/api/sa/stats/avg-response?range=today', undefined, saTok)
+  check('B10 avg-response today → 200 + mode hourly',
+    avToday.status === 200 && avToday.data?.mode === 'hourly',
+    `status=${avToday.status} mode=${avToday.data?.mode}`)
+  check('B10b avg-response today avgMinutes.length == dates.length',
+    Array.isArray(avToday.data?.avgMinutes) && avToday.data.avgMinutes.length === avToday.data?.dates?.length,
+    `n=${avToday.data?.avgMinutes?.length} dates=${avToday.data?.dates?.length}`)
 
   // ── C. Avg-response shape (spec §4.3) ──
   const av = await api('GET', '/api/sa/stats/avg-response?range=7d', undefined, saTok)
@@ -262,6 +279,21 @@ async function main() {
   check('L15 avg-response custom tanpa from/to → 400', iv5.status === 400, `status=${iv5.status}`)
   const iv6 = await api('GET', '/api/sa/stats/resolution?range=custom', undefined, saTok)
   check('L16 resolution custom tanpa from/to → 400', iv6.status === 400, `status=${iv6.status}`)
+
+  // ── M. v3.9.21 — Storage Tangan Kanan (GET /api/sa/stats/tk-storage) ──
+  const tk = await api('GET', '/api/sa/stats/tk-storage', undefined, saTok)
+  check('M1 tk-storage → 200 + totalBytes ≥0 + fileCount ≥0 + perTenant array',
+    tk.status === 200 && Number.isFinite(tk.data?.totalBytes) && tk.data.totalBytes >= 0
+    && Number.isFinite(tk.data?.fileCount) && tk.data.fileCount >= 0 && Array.isArray(tk.data?.perTenant),
+    `status=${tk.status} bytes=${tk.data?.totalBytes} files=${tk.data?.fileCount} n=${tk.data?.perTenant?.length}`)
+  check('M2 tk-storage perTenant entry shape (tenantId/tenantName/bytes/files number)',
+    (tk.data?.perTenant?.length || 0) === 0 || tk.data.perTenant.every((t) => Number.isFinite(t.tenantId) && typeof t.tenantName === 'string' && Number.isFinite(t.bytes) && Number.isFinite(t.files)),
+    JSON.stringify(tk.data?.perTenant?.[0] || null))
+  check('M3 tk-storage total/fileCount = sum perTenant (konsisten)',
+    tk.data?.totalBytes === tk.data?.perTenant?.reduce((a, t) => a + t.bytes, 0)
+    && tk.data?.fileCount === tk.data?.perTenant?.reduce((a, t) => a + t.files, 0), '')
+  const tkTenant = await api('GET', '/api/sa/stats/tk-storage', undefined, t8Tok)
+  check('M4 tk-storage utk admin tenant → 403 (SA-only guard ...sa)', tkTenant.status === 403, `status=${tkTenant.status}`)
 
   console.log(`\n=== e2e-v3919: ${pass} PASS / ${fails.length} FAIL ===`)
   if (fails.length) { console.log('FAILED:', fails.join(' | ')); process.exitCode = 1 }

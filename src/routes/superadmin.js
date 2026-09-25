@@ -805,6 +805,16 @@ async function saStatsWindow(range) {
   return { todayStr, sinceIso, untilIso: null, dates: saWibDateList(range.days) }
 }
 
+/** v3.9.21 — Sumbu per-jam WIB utk range "today": ['00','01',…,'<jam WIB sekarang>']
+ * (inklusif jam saat ini, zero-padded). Window tetap [midnight WIB, +1d).
+ * Mirror FE/E2E: now + 7h → getUTCHours() = jam dinding WIB. */
+function saHourlyHourList() {
+  const hourWib = new Date(Date.now() + 7 * 60 * 60 * 1000).getUTCHours()
+  const out = []
+  for (let h = 0; h <= hourWib; h++) out.push(String(h).padStart(2, '0'))
+  return out
+}
+
 // GET /api/sa/stats/trends?range=today|7d|30d|all|custom — jumlah chat baru per hari (semua
 // tenant), grouped WIB. Sumber tanggal = COALESCE(firstIncomingAt, createdAt)
 // (chat import/seed bisa firstIncomingAt lebih tua dari createdAt — pakai yang
@@ -817,6 +827,27 @@ router.get('/stats/trends', ...sa, async (req, res) => {
     const range = parseSaRange(req)
     if (range?.error) return res.status(400).json({ error: range.error })
     if (!range) return res.status(400).json({ error: 'range harus today|7d|30d|all|custom' })
+    // v3.9.21 — range "today" → sumbu PER JAM WIB (hourly): labels '00','01',…
+    // s/d '<jam WIB sekarang>' (inklusif, zero-filled), window tetap [midnight WIB,
+    // +1d) — konsisten dgn semantics existing. Grouping strftime('%H') (datetime
+    // = INTEGER ms epoch — lesson v3.9.19). Range non-today: shape UNCHANGED
+    // (tanpa field mode → mode:'hourly' hanya utk today).
+    if (range.label === 'today') {
+      const { todayStr } = await saStatsWindow(range)
+      const hours = saHourlyHourList()
+      const midMs = saWibMidnightMs(todayStr)
+      const rows = await prisma.$queryRawUnsafe(`
+        SELECT strftime('%H', COALESCE("firstIncomingAt", "createdAt")/1000, 'unixepoch', '+07:00') AS hour,
+               COUNT(*) AS cnt
+        FROM Chat
+        WHERE COALESCE("firstIncomingAt", "createdAt") >= ? AND COALESCE("firstIncomingAt", "createdAt") < ?
+        GROUP BY hour ORDER BY hour ASC
+      `, new Date(midMs), new Date(midMs + 86400000))
+      const map = new Map(rows.map((r) => [String(r.hour), Number(r.cnt)]))
+      const counts = hours.map((h) => map.get(h) || 0) // zero-fill dari sumbu jam
+      const total = counts.reduce((a, b) => a + b, 0)
+      return res.json({ range: 'today', mode: 'hourly', today: todayStr, dates: hours, counts, total })
+    }
     const { sinceIso, untilIso, todayStr, dates } = await saStatsWindow(range)
     const conds = []
     const params = []
@@ -854,6 +885,36 @@ router.get('/stats/avg-response', ...sa, async (req, res) => {
     const range = parseSaRange(req)
     if (range?.error) return res.status(400).json({ error: range.error })
     if (!range) return res.status(400).json({ error: 'range harus today|7d|30d|all|custom' })
+    // v3.9.21 — range "today" → bucket PER JAM WIB. Base filters WAJIB tetap
+    // (firstIncomingAt IS NOT NULL + firstResponseAt IS NOT NULL +
+    // firstResponseAt >= firstIncomingAt) + window [midnight WIB, +1d) pada
+    // firstIncomingAt. avgTotal = agregat sum/sum window (bukan mean-of-means);
+    // bucket/jam tanpa data = null.
+    if (range.label === 'today') {
+      const { todayStr } = await saStatsWindow(range)
+      const hours = saHourlyHourList()
+      const midMs = saWibMidnightMs(todayStr)
+      const conds = ['"firstIncomingAt" IS NOT NULL', '"firstResponseAt" IS NOT NULL', '"firstResponseAt" >= "firstIncomingAt"', '"firstIncomingAt" >= ?', '"firstIncomingAt" < ?']
+      const params = [new Date(midMs), new Date(midMs + 86400000)]
+      const rows = await prisma.$queryRawUnsafe(`
+        SELECT strftime('%H', "firstIncomingAt"/1000, 'unixepoch', '+07:00') AS hour,
+               AVG((julianday("firstResponseAt"/1000, 'unixepoch') - julianday("firstIncomingAt"/1000, 'unixepoch')) * 1440.0) AS avgMin,
+               COUNT(*) AS n
+        FROM Chat
+        WHERE ${conds.join(' AND ')}
+        GROUP BY hour ORDER BY hour ASC
+      `, ...params)
+      const map = new Map(rows.map((r) => [String(r.hour), { avg: Number(r.avgMin), n: Number(r.n) }]))
+      const avgMinutes = hours.map((h) => {
+        const v = map.get(h)
+        return v ? Math.round(v.avg * 10) / 10 : null // null = belum ada data jam itu
+      })
+      let sumMin = 0
+      let sumN = 0
+      for (const [, v] of map) { sumMin += v.avg * v.n; sumN += v.n }
+      const avgTotal = sumN > 0 ? Math.round((sumMin / sumN) * 10) / 10 : null
+      return res.json({ range: 'today', mode: 'hourly', today: todayStr, dates: hours, avgMinutes, avgTotal })
+    }
     const { sinceIso, untilIso, dates } = await saStatsWindow(range)
     // Base filter selalu ada (all/custom/today) + window opsional
     const conds = ['"firstIncomingAt" IS NOT NULL', '"firstResponseAt" IS NOT NULL', '"firstResponseAt" >= "firstIncomingAt"']
@@ -883,6 +944,38 @@ router.get('/stats/avg-response', ...sa, async (req, res) => {
     res.json(payload)
   } catch (e) {
     console.error('[SA] Stats avg-response error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/sa/stats/tk-storage — ukuran storage "Tangan Kanan" semua tenant
+// (SharedFile groupBy tenantId). v3.9.21 ADDITIVE — ZERO migration (schema
+// existing SharedFile.size Int?). Pertimbangan upgrade server Kanaka.
+// Shape: { totalBytes, fileCount, perTenant: [{ tenantId, tenantName, bytes,
+// files }] } — size NULL dihitung 0; perTenant sort desc by bytes (tenant 0 byte
+// otomatis di akhir); total = jumlah semua (JS number aman utk SQLite 64-bit).
+router.get('/stats/tk-storage', ...sa, async (req, res) => {
+  try {
+    const groups = await prisma.sharedFile.groupBy({
+      by: ['tenantId'],
+      _sum: { size: true },
+      _count: { _all: true },
+    })
+    const tenants = await prisma.tenant.findMany({ select: { id: true, name: true } })
+    const nameMap = new Map(tenants.map((t) => [t.id, t.name]))
+    const perTenant = groups
+      .map((g) => ({
+        tenantId: g.tenantId,
+        tenantName: nameMap.get(g.tenantId) || `Tenant ${g.tenantId}`,
+        bytes: Number(g._sum.size || 0),
+        files: Number(g._count._all || 0),
+      }))
+      .sort((a, b) => b.bytes - a.bytes || b.files - a.files)
+    const totalBytes = perTenant.reduce((a, t) => a + t.bytes, 0)
+    const fileCount = perTenant.reduce((a, t) => a + t.files, 0)
+    res.json({ totalBytes, fileCount, perTenant })
+  } catch (e) {
+    console.error('[SA] Stats tk-storage error:', e)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
