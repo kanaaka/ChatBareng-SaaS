@@ -870,6 +870,9 @@ router.put(
       const updated = await prisma.tenant.update({ where: { id }, data })
       console.log(`[SA] Branding tenant #${id} (${tenant.name}) diupdate by @${req.user.username}: ${JSON.stringify({ brandName: data.brandName !== undefined ? data.brandName : undefined, logo: !!logoApplied })}`)
       await saAudit.audit(req.user, 'branding_update', id, tenant.name, detail)
+      // v3.9.15 — live update: tab tenant yang sudah terbuka refresh branding
+      // tanpa full reload (dulu stale sampai F5 — bug ParahitaAsik 2026-09-25).
+      broadcast.emitToTenant(id, 'branding_update', { brandName: updated.brandName || '', hasLogo: !!updated.logoPath })
       res.json({
         tenant: { id: updated.id, name: updated.name, brandName: updated.brandName, logoPath: updated.logoPath ? true : false },
       })

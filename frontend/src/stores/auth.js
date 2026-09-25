@@ -3,6 +3,7 @@ import axios from 'axios'
 import { loadAndApplyTenantTheme, clearTenantTheme } from '../utils/tenantTheme'
 import { syncThemeColorMeta } from '../utils/themeColor'
 import { setSubscription, clearSubscription } from '../utils/subscription' // v3.8
+import { loadBrandingAndPlan } from '../utils/branding' // v3.9.15
 
 const API = import.meta.env.VITE_API_URL || ''
 
@@ -46,6 +47,11 @@ export const useAuthStore = defineStore('auth', {
           setSubscription(this.user?.subscription)
         } catch {}
       }
+      // v3.9.15 — branding (brandName/logo) di-load saat login. Dulu HANYA di
+      // App.vue onMounted (full page load) → login SPA tanpa refresh = header
+      // "ChatBareng" polos walau tenant punya brandName (bug ParahitaAsik 2026-09-25).
+      // super_admin → /auth/me tanpa branding → reset netral (benar).
+      loadBrandingAndPlan()
     },
     // v3.0 — impersonasi view-as tenant (short-lived JWT role admin tenant)
     async impersonate(tenantId) {
@@ -55,6 +61,8 @@ export const useAuthStore = defineStore('auth', {
       localStorage.setItem('token', this.token)
       localStorage.setItem('user', JSON.stringify(this.user))
       axios.defaults.headers.common['Authorization'] = `Bearer ${this.token}`
+      // v3.9.15 — impersonate in-tab juga harus refresh branding (pola sama dgn login).
+      loadBrandingAndPlan()
       // v3.1 — superadmin view-as tenant → tema tenant aktif runtime juga
       loadAndApplyTenantTheme()
       // v3.8 — impersonate token view-as → subscription tenant ikut dimuat

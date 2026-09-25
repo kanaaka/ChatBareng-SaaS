@@ -1,4 +1,28 @@
-# v3.9.14 — FITUR: Quote Reply (WhatsApp contextInfo) (2026-09-25)
+# v3.9.15 — FIX: Branding live update + load saat SPA login (bug "ParahitaAsik") (2026-09-25)
+
+**Bug (Kanaka report 11:02):** superadmin set brandName tenant jadi "ParahitaAsik" →
+tersimpan benar di DB + audit `branding_update` OK, TAPI header tenant tetap
+"ChatBareng" polos. Dua akar masalah (frontend murni, backend bersih):
+1. **Branding cuma di-load di `App.vue onMounted`** (sekali per full page load).
+   Login SPA (tanpa reload) tidak pernah memuat brandName → header polos sampai F5.
+2. **Tidak ada broadcast saat branding diganti** → tab tenant yang sudah terbuka
+   stale sampai refresh manual.
+
+**Fix (4 titik):**
+- `stores/auth.js` — `login()` + `impersonate()` kini memanggil `loadBrandingAndPlan()`
+  (SPA login langsung tampil brandName; impersonate view-as ikut benar).
+- `src/routes/superadmin.js` — PUT branding → broadcast `branding_update`
+  `{brandName, hasLogo}` ke room tenant.
+- `stores/socket.js` — listener `branding_update` → re-fetch branding tanpa reload,
+  dipasang di `init()` (SATU tempat — ter-cover App mount dgn token DAN SPA login
+  via Login.vue; versi pertama di App.vue bolong utk jalur SPA login).
+
+**QA (copy DB port 5099, Chrome 18801 raw-CDP):** SPA login e2eqacs → header
+`QA Brand Test by ChatBareng` + docTitle benar TANPA reload ✅; SA PUT brandName
+baru → tab tenant berubah seketika, flag JS membuktikan tanpa page reload ✅.
+Backend/DB tidak berubah — fix 100% additive frontend + 1 broadcast backend.
+
+## v3.9.14 — FITUR: Quote Reply (WhatsApp contextInfo) (2026-09-25)
 
 **Konteks:** Pelanggan di WA asli sering quote-reply; CS sebelumnya kehilangan seluruh
 konteks pesan yang di-quote. v3.9.14 membawa quote 2 arah: chip konteks di bubble CS +

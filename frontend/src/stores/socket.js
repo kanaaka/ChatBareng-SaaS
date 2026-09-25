@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import axios from 'axios'
 import io from 'socket.io-client'
+import { loadBrandingAndPlan } from '../utils/branding' // v3.9.15
 
 const API = import.meta.env.VITE_API_URL || ''
 
@@ -22,6 +23,10 @@ export const useSocketStore = defineStore('socket', {
         // dibekukan Android / reconnect → listener boleh refetch state stale
         try { this.onReconnectCb?.() } catch (e) { /* aman */ }
       })
+      // v3.9.15 — branding live update (SATU tempat, ter-cover semua jalur init:
+      // App.vue mount dgn token + SPA login via Login.vue — dulu stale sampai F5,
+      // bug ParahitaAsik 2026-09-25).
+      this.socket.on('branding_update', () => { loadBrandingAndPlan() })
       this.socket.on('disconnect', () => { this.connected = false })
     },
     // v0.12.8 — daftarkan callback yang dipanggil setiap event 'connect'

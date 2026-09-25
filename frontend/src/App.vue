@@ -80,6 +80,8 @@ onMounted(() => {
       setSubscription(auth.user?.subscription)
       const socket = useSocketStore()
       socket.init(auth.token)
+      // v3.9.15 — branding live update listener ada di socket store init() (satu
+      // tempat, ter-cover jalur SPA login juga).
       const announcements = useAnnouncementsStore()
       announcements.initSockets()
       announcements.fetchAll()
