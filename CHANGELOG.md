@@ -44,6 +44,20 @@ dokumen konsumen: `docs/API-CONSUMER-QUICKSTART.md`.
   dengan konfirmasi (ConfirmDialog). Sidebar + launcher + settings search.
 - SuperAdmin plan modal: toggle “Akses API (v1)”.
 
+Dokumentasi konsumen: `docs/API-CONSUMER-QUICKSTART.md` — ditambah section
+**"Claim semantics"** (2026-09-25, Kanaka-confirmed philosophy): API actor-less
+— kirim TIDAK mengklaim chat / mengubah assignment / mengubah PIC. Chat baru
+born-API = open+unassigned+NOT queued; masuk antrean normal saat pelanggan
+membalas (FIFO Take). Grup hanya milik tenant; PIC tidak tersentuh; grup yatim
+tetap yatim. Audit ChatEvent source 'api' userId null.
+
+**Guidebook (buku panduan):** tab Admin dapat section **"🔑 Public API v1"**
+(buat key + scope send/read, show-once, pakai Bearer, target nomor/nama grup
+eksak, API tidak pernah klaim chat — balasan pelanggan masuk antrean normal,
+grup tetap milik PIC, revoke instan, audit + rate 60/menit). Daftar modul admin
+13 → 14. Footer guidebook versi ke v3.9.13. Frontend rebuild + snapshot
+`public-pre-build-20260925-0950/`.
+
 **E2E:** `scripts/e2e-v3913.cjs` di DB copy port 5099 (WA_DISABLED=1) —
 **39 PASS / 0 FAIL**: lifecycle (SA create → plan-gate 403 → featApiAccess on
 → send 503 auth-PASS nomor/JID/nama-grup → scope-deny 403 → rate-limit 429

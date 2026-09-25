@@ -37,6 +37,17 @@ Success → `200 {"ok": true, "waMessageId": "..."}`
 curl "$BASE/api/v1/chats?limit=20" -H "Authorization: Bearer $KEY"
 ```
 
+## Claim semantics — who "owns" the chats the API touches?
+
+The API is **actor-less**: a key acts *for the tenant*, not as any user. Sending never claims a chat, never changes assignments, never auto-queues:
+
+- **1:1, contact already exists** → assignment/status untouched. Whoever owns the chat keeps it; queued stays queued.
+- **1:1, brand-new contact** → a chat row is created (`open`, unassigned, NOT queued). It enters the take-queue only when the customer replies — then normal FIFO applies and any CS can take it.
+- **Group** → only tenant-owned groups (exact name or `@g.us` JID) can receive sends. The PIC is set at group creation/adoption and is never changed by API sends. Orphan groups (no PIC) accept sends; their replies stay admin-only until an admin assigns a PIC.
+- **Sender identity** → the customer sees the connected WhatsApp number of the resolved slot (slot-0 for person targets) — not an "admin account".
+
+Every API send is audited as a ChatEvent with `source: 'api'`, `userId: null`.
+
 ## Error codes you may see
 | HTTP | code | meaning | what to do |
 |---|---|---|---|

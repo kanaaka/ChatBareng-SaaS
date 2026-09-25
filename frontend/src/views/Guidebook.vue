@@ -309,7 +309,7 @@
         </section>
 
         <section class="m3-card p-5 sm:p-6 mb-4">
-          <h2 class="text-lg font-semibold mb-2">🧭 Admin Panel — 13 Modul</h2>
+          <h2 class="text-lg font-semibold mb-2">🧭 Admin Panel — 14 Modul</h2>
           <p class="text-sm mb-3" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
             Masuk lewat homerow <strong>Admin</strong> → launcher kartu:
           </p>
@@ -326,8 +326,25 @@
             <li><strong>CSAT Survey</strong> ⭐ — survey kepuasan rating 1–5 otomatis pasca-resolve.</li>
             <li><strong>Backup Drive</strong> ☁️ — backup otomatis chat ke Google Drive pribadi (lihat di bawah).</li>
             <li><strong>Tampilan</strong> 🎨 — warna aksen aplikasi (accent).</li>
+            <li><strong>API Keys</strong> 🔑 — integrasi aplikasi eksternal via Public API (detail di bawah).</li>
             <li><strong>Panduan</strong> 📖 — halaman yang sedang kamu baca ini, untuk semua peran.</li>
           </ol>
+        </section>
+
+        <section class="m3-card p-5 sm:p-6 mb-4">
+          <h2 class="text-lg font-semibold mb-2">🔑 Public API v1</h2>
+          <p class="text-sm mb-3" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
+            Aplikasi eksternal (mis. sistem antrean klinik) bisa <strong>mengirim pesan WhatsApp</strong> dan <strong>membaca daftar chat</strong> lewat ChatBareng Public API — tanpa login manusia. Tersedia di paket <strong>Max</strong>; dikelola lewat Admin Panel → <strong>API Keys</strong>.
+          </p>
+          <ol class="guide-steps">
+            <li><strong>Buat API key</strong> — Admin Panel → <strong>API Keys</strong> → tombol buat: isi nama aplikasi (mis. "Aplikasi Antrean") dan pilih scope: <code class="guide-kbd">send</code> (kirim pesan) dan/atau <code class="guide-kbd">read</code> (baca daftar chat). Key ditampilkan <strong>sekali saja</strong> — langsung copy dan simpan aman; kalau hilang, buat key baru.</li>
+            <li><strong>Pakai di aplikasi</strong> — aplikasi kirim pesan dengan header <code class="guide-kbd">Authorization: Bearer cbk_live_…</code>. Target bisa nomor pribadi (0812…/62…) atau <strong>nama grup eksak</strong> milik tenant — ChatBareng otomatis memilih nomor WhatsApp pengirim yang tepat (grup dikirim lewat nomor yang pegang grup itu).</li>
+            <li><strong>API tidak pernah "mengklaim" chat</strong> — pesan terkirim atas nama tenant, bukan CS tertentu: assignment, antrean, dan PIC grup <strong>tidak berubah</strong> oleh kirim API. Kalau pelanggan membalas chat yang belum dipegang siapa pun, chat masuk antrean normal dan CS mana pun bisa Take — persis alur chat biasa. Grup tetap milik PIC-nya masing-masing.</li>
+            <li><strong>Revoke instan</strong> — key bocor atau tidak dipakai lagi? Tombol <strong>Revoke</strong> mematikan key langsung di request berikutnya, tanpa restart. Daftar key menampilkan pemakaian terakhir masing-masing.</li>
+          </ol>
+          <div class="guide-tip">
+            💡 <strong>Tip:</strong> Semua kirim via API tercatat di riwayat chat dengan sumber <em>api</em>, dan dibatasi 60 permintaan/menit per key. Dokumentasi teknis lengkap untuk developer aplikasi bisa diminta ke admin platform.
+          </div>
         </section>
 
         <section class="m3-card p-5 sm:p-6 mb-4">
@@ -460,7 +477,7 @@
 
       <!-- Footer -->
       <p class="text-center text-xs pb-6" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
-        📖 Panduan ChatBareng v0.14.8 · konten statis, diperbarui bersama rilis fitur
+        📖 Panduan ChatBareng v3.9.13 · konten statis, diperbarui bersama rilis fitur
       </p>
     </div>
   </div>
