@@ -521,7 +521,9 @@ async function executeGatewayChoice(chat, cfg, opt, viaLabel, customerTextForKb 
               personaCfg: autoCfg, // v4.1.1 — persona (D2/D3); kosong = prompt persis v4.1.0
             })
             if (r.ok && r.covered && r.answer) {
-              textToSend = r.answer.slice(0, CBAI_REPLY_FALLBACK_LIMIT)
+              // v4.1.2 D3 — disclaimer append oleh KODE SEBELUM textToSend (jalur LLM
+              // ai_knowledge; classifier/keyword fast-path TIDAK lewat sini).
+              textToSend = aiKb.appendDisclaimer(r.answer, autoCfg).slice(0, CBAI_REPLY_FALLBACK_LIMIT)
               aiAnswered = true
             }
           }

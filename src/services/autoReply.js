@@ -497,6 +497,51 @@ function effectiveTextForCbai(msg) {
 }
 
 /**
+ * v4.1.2 D1 — CB-AI handoff notice (cap 1×/24 jam): saat budget habis (in-hours),
+ * kirim TEKS FIX via sendAutoText SEBELUM return bisu:
+ *   "Balasan oleh Agent AI dibatasi sampai {limit} pesan per chat (reset 24 jam).
+ *    Chat kamu akan dibalas oleh {humanLabel}, harap ditunggu 🙏"
+ * {limit} = limit efektif (clamped); {humanLabel} = cbaiHumanAgentLabel, kosong → "agen kami".
+ * Cap: HANYA bila chat.lastHandoffNotifiedAt NULL/≥24h (window sama AI_WINDOW_MS).
+ * Set marker ATOMIK HANYA bila kirim sukses (updateMany kondisi — race-safe pola claim).
+ * TIDAK dihitung counter (bukan jawaban AI); TIDAK dapat disclaimer (bukan jalur LLM).
+ * Gagal kirim → marker TIDAK diset → pesan berikutnya coba lagi.
+ */
+const HANDOFF_WINDOW_MS = 24 * 60 * 60 * 1000 // cap notice 1×/24 jam (window sama AI_WINDOW_MS)
+async function maybeSendHandoffNotice(chat, cfg, today, limit) {
+  const chatId = chat.id
+  const tenantId = chat.tenantId
+  try {
+    // Cek cap: fresh row (bukan snapshot pemanggil) — marker NULL atau ≥24 jam lalu.
+    const fresh = await prisma.chat.findUnique({ where: { id: chatId }, select: { lastHandoffNotifiedAt: true } })
+    const last = fresh?.lastHandoffNotifiedAt ? new Date(fresh.lastHandoffNotifiedAt) : null
+    const windowAlive = !!(last && !isNaN(last.getTime()) && Date.now() - last.getTime() < HANDOFF_WINDOW_MS)
+    if (windowAlive) return // sudah dinotif <24 jam → bisu persis existing (cap)
+    const humanLabel = String(cfg?.cbaiHumanAgentLabel || '').trim() || 'agen kami'
+    const lim = Math.min(CBAI_LIMIT_MAX_CLAMP(), Math.max(CBAI_LIMIT_MIN_CLAMP(), Number(limit) || 3))
+    const text = `Balasan oleh Agent AI dibatasi sampai ${lim} pesan per chat (reset 24 jam). Chat kamu akan dibalas oleh ${humanLabel}, harap ditunggu 🙏`
+    const sent = await sendAutoText(chat, text, today)
+    if (!sent) {
+      console.log(`[AutoReply] CB-AI handoff notice GAGAL kirim chat=${chatId} → marker tidak diset (coba lagi pesan berikutnya)`)
+      return
+    }
+    // Set marker ATOMIK HANYA bila kirim sukses (kondisi NULL/≥24h — race-safe).
+    const cutoff = new Date(Date.now() - HANDOFF_WINDOW_MS)
+    await prisma.chat.updateMany({
+      where: { id: chatId, tenantId, OR: [{ lastHandoffNotifiedAt: null }, { lastHandoffNotifiedAt: { lt: cutoff } }] },
+      data: { lastHandoffNotifiedAt: new Date() },
+    })
+    console.log(`[AutoReply] CB-AI handoff notice terkirim chat=${chatId}`)
+  } catch (e) {
+    console.error('[AutoReply] handoff notice error (non-fatal, tetap bisu):', e.message)
+  }
+}
+
+// clamp helper (hindari require melingkar — aiKnowledge diload lazy di pemanggil)
+function CBAI_LIMIT_MAX_CLAMP() { return 10 }
+function CBAI_LIMIT_MIN_CLAMP() { return 1 }
+
+/**
  * cbaiReplyForMessage(chat, cfg, today, { outside, customerText, kbSvc }) →
  *   { sent: boolean, used: boolean }
  * - used=true  → jalur CB-AI selesai (kirim ATAU bisu-by-design) → pemanggil return
@@ -528,11 +573,14 @@ async function cbaiReplyForMessage(chat, cfg, today, { outside = false, customer
     if (!resv.ok) {
       // Limit habis / kalah race → degrade (TIDAK ada LLM call, 0 cost — N5/N8):
       //   outside → away text per pesan TANPA counter (deterministik — Q2 final);
-      //   in-hours → bisu (queue normal, pesan customer utk di-take agent).
+      //   in-hours → v4.1.2 D1: handoff notice 1×/24 jam (cap) SEBELUM bisu.
       if (outside) {
         const awaySent = await sendAutoText(chat, cfg.outsideHoursText, today)
         return { sent: !!awaySent, used: true } // jalur CB-AI selesai (degrade away) — TIDAK jatuh ke jalur lain
       }
+      // v4.1.2 D1 — handoff notice (in-hours SAJA; outside TIDAK berubah):
+      // teks fix oleh KODE via sendAutoText — TIDAK dihitung counter, TIDAK dapat disclaimer.
+      await maybeSendHandoffNotice(chat, cfg, today, limit)
       console.log(`[AutoReply] CB-AI budget habis (race-safe reserve) → in-hours bisu: chat=${chatId}`)
       return { sent: false, used: true }
     }
@@ -558,7 +606,9 @@ async function cbaiReplyForMessage(chat, cfg, today, { outside = false, customer
 
     if (r.covered) {
       // ── Jawaban AI + counter SUDAH direserve (fix MEDIUM-1) + lastAiReplyAt=now (D5) ──
-      const sent = await sendAutoText(chat, r.answer, today)
+      // v4.1.2 D3 — disclaimer append oleh KODE SEBELUM kirim (kalimat FIX; fallback
+      // & handoff notice TIDAK lewat sini).
+      const sent = await sendAutoText(chat, aiKb.appendDisclaimer(r.answer, cfg), today)
       if (sent) {
         console.log(`[AutoReply] CB-AI jawaban terkirim (covered) chat=${chatId} counter→${prev.count + 1}`)
         return { sent: true, used: true }

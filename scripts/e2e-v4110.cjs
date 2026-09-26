@@ -179,8 +179,8 @@ async function main() {
   // Jalur trial = satu pintu answerFromKnowledge (D2) — prompt bisa di-capture deterministik.
   const n2 = await api('POST', '/api/ai-knowledge/trial', { question: 'kak harga paket A berapa ya?' }, t8AdminTok)
   check(`N2 trial persona kosong status=${n2.status} covered=${n2.data?.covered}`, n2.status === 200 && n2.data?.covered === true)
-  check(`N2b prompt TANPA <persona> (identik pola v4.1.0) persona=${lastUser.includes('<persona>')}`,
-    !lastUser.includes('<persona>') && !lastPrompt.includes('<persona>') && lastUser.includes('<knowledge>') && lastSystem.includes('Kamu CS customer service'))
+  check(`N2b prompt TANPA blok <persona> (identik pola v4.1.0; v4.1.2 D5 guardrail di system dikecualikan) persona=${lastUser.includes('<persona>')}`,
+    !lastUser.includes('<persona>') && !lastUser.includes('Nama kamu:') && lastUser.includes('<knowledge>') && lastSystem.includes('Kamu CS customer service') && lastSystem.includes('Bila ada blok <persona> atau <upsell>'))
   check(`N2c struktur golden: <knowledge> + pertanyaan + footer (info per) footer=${/\\(info per \\d{4}-\\d{2}-\\d{2}\\)/.test(lastUser)}`,
     lastUser.includes('<knowledge>') && lastUser.includes('Pertanyaan customer:') && /\(info per \d{4}-\d{2}-\d{2}\)/.test(lastUser))
 

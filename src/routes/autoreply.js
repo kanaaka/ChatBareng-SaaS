@@ -115,6 +115,7 @@ router.put('/', ...rt, async (req, res) => {
       'greetEnabled', 'greetMode', 'greetText',
       'cbaiLimit', 'cbaiInfoFooter', // v4.0.0 — CB-AI
       'cbaiBotName', 'cbaiBotRole', 'cbaiHumanAgentLabel', // v4.1.1 — persona (D1)
+      'cbaiUpsellEnabled', 'cbaiUpsellDocId', 'cbaiDisclaimer', // v4.1.2 — upselling + disclaimer (D7)
       // v4.0.0a hotfix (QA Kanaka 09:15) — repeatFrequency PINDAH ke halaman ini (D10):
       // FE kirim full-form → tanpa ini SEMUA save Auto Reply 400 "Field tidak dikenal".
       // Validasi ketat di bawah (enum, GREET_MODES-style) — bukan cuma whitelist.
@@ -241,6 +242,33 @@ router.put('/', ...rt, async (req, res) => {
           return res.status(400).json({ error: `${pf} maksimal 120 karakter` })
         }
         data[pf] = v
+      }
+    }
+    // v4.1.2 — upselling + disclaimer (D2/D3/D7): whitelist +3 field, validasi ketat
+    // SEBELUM plan-gate (400 liar selalu menang atas 403 plan — pola persona v4.1.1).
+    // - cbaiUpsellEnabled / cbaiDisclaimer: boolean STRICT (typeof === 'boolean').
+    // - cbaiUpsellDocId: null ATAU integer positif; doc HARUS milik tenant & exists.
+    if (body.cbaiUpsellEnabled !== undefined) {
+      if (typeof body.cbaiUpsellEnabled !== 'boolean') {
+        return res.status(400).json({ error: 'cbaiUpsellEnabled harus boolean' })
+      }
+      data.cbaiUpsellEnabled = body.cbaiUpsellEnabled
+    }
+    if (body.cbaiDisclaimer !== undefined) {
+      if (typeof body.cbaiDisclaimer !== 'boolean') {
+        return res.status(400).json({ error: 'cbaiDisclaimer harus boolean' })
+      }
+      data.cbaiDisclaimer = body.cbaiDisclaimer
+    }
+    if (body.cbaiUpsellDocId !== undefined) {
+      if (body.cbaiUpsellDocId === null) {
+        data.cbaiUpsellDocId = null
+      } else if (!Number.isInteger(body.cbaiUpsellDocId) || body.cbaiUpsellDocId <= 0) {
+        return res.status(400).json({ error: 'cbaiUpsellDocId harus null atau integer positif' })
+      } else {
+        const doc = await prisma.aiKnowledgeDoc.findFirst({ where: { id: body.cbaiUpsellDocId, tenantId: req.tenantId }, select: { id: true } })
+        if (!doc) return res.status(400).json({ error: 'cbaiUpsellDocId tidak valid — dokumen tidak ditemukan di tenant ini' })
+        data.cbaiUpsellDocId = body.cbaiUpsellDocId
       }
     }
     // v4.0.0a hotfix (QA Kanaka 09:15) — repeatFrequency PINDAH ke halaman ini (D10):

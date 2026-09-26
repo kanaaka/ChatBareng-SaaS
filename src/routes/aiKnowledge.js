@@ -71,7 +71,7 @@ router.get('/', ...rt, featAiKnowledgeGate, async (req, res) => {
     })
     const cfg = await prisma.autoReplyConfig.findFirst({
       where: { tenantId: tid, numberSlot: null },
-      select: { cbaiLimit: true, cbaiInfoFooter: true, outsideHoursMode: true, greetMode: true, cbaiBotName: true, cbaiBotRole: true, cbaiHumanAgentLabel: true },
+      select: { cbaiLimit: true, cbaiInfoFooter: true, outsideHoursMode: true, greetMode: true, cbaiBotName: true, cbaiBotRole: true, cbaiHumanAgentLabel: true, cbaiUpsellEnabled: true, cbaiUpsellDocId: true, cbaiDisclaimer: true },
     })
     // plan ✗ → 403 by gate; aiUsage selalu diisi (fitur sudah terbuka di sini)
     res.json({
@@ -86,6 +86,10 @@ router.get('/', ...rt, featAiKnowledgeGate, async (req, res) => {
         cbaiBotName: cfg?.cbaiBotName || '',
         cbaiBotRole: cfg?.cbaiBotRole || '',
         cbaiHumanAgentLabel: cfg?.cbaiHumanAgentLabel || '',
+        // v4.1.2 — upselling + disclaimer (D7): GET echo semua field baru.
+        cbaiUpsellEnabled: cfg?.cbaiUpsellEnabled === true,
+        cbaiUpsellDocId: cfg?.cbaiUpsellDocId ?? null,
+        cbaiDisclaimer: cfg?.cbaiDisclaimer === true,
       },
     })
   } catch (e) {
@@ -196,7 +200,7 @@ router.post('/trial', ...rt, featAiKnowledgeGate, async (req, res) => {
     const question = String(body.question || '').trim()
     if (!question) return res.status(400).json({ error: 'Pertanyaan wajib diisi' })
     if (question.length > 1000) return res.status(400).json({ error: 'Pertanyaan maksimal 1000 karakter' })
-    const cfg = await prisma.autoReplyConfig.findFirst({ where: { tenantId: tid, numberSlot: null }, select: { cbaiInfoFooter: true, cbaiBotName: true, cbaiBotRole: true, cbaiHumanAgentLabel: true } })
+    const cfg = await prisma.autoReplyConfig.findFirst({ where: { tenantId: tid, numberSlot: null }, select: { cbaiInfoFooter: true, cbaiBotName: true, cbaiBotRole: true, cbaiHumanAgentLabel: true, cbaiUpsellEnabled: true, cbaiUpsellDocId: true, cbaiDisclaimer: true } })
     const r = await aiKnowledge.answerFromKnowledge({
       tenantId: tid,
       chat: null, // TIDAK ada Chat → counter tidak nambah, chatId metering null
@@ -215,7 +219,8 @@ router.post('/trial', ...rt, featAiKnowledgeGate, async (req, res) => {
       return res.status(m.status).json({ error: m.error, code: r.code })
     }
     // TIDAK PERNAH kirim WA dari jalur trial (chat=null — tidak ada jalur kirim di sini)
-    res.json({ covered: r.covered, answer: r.answer || null, code: r.code || null })
+    // v4.1.2 D3 — disclaimer append oleh KODE di hasil trial (admin lihat hasil akhir).
+    res.json({ covered: r.covered, answer: aiKnowledge.appendDisclaimer(r.answer || '', cfg) || null, code: r.code || null })
   } catch (e) {
     console.error('AiKnowledge trial error:', e)
     res.status(500).json({ error: 'Internal server error' })
@@ -247,7 +252,7 @@ router.put('/config', ...rt, featAiKnowledgeGate, async (req, res) => {
   try {
     const body = req.body || {}
     for (const key of Object.keys(body)) {
-      if (!['cbaiLimit', 'cbaiInfoFooter', 'cbaiBotName', 'cbaiBotRole', 'cbaiHumanAgentLabel'].includes(key)) return res.status(400).json({ error: `Field tidak dikenal: ${key}` })
+      if (!['cbaiLimit', 'cbaiInfoFooter', 'cbaiBotName', 'cbaiBotRole', 'cbaiHumanAgentLabel', 'cbaiUpsellEnabled', 'cbaiUpsellDocId', 'cbaiDisclaimer'].includes(key)) return res.status(400).json({ error: `Field tidak dikenal: ${key}` })
     }
     if (Object.keys(body).length === 0) return res.status(400).json({ error: 'Tidak ada field yang valid untuk diupdate' })
     const data = {}
@@ -272,6 +277,28 @@ router.put('/config', ...rt, featAiKnowledgeGate, async (req, res) => {
         data[pf] = v
       }
     }
+    // v4.1.2 — upselling + disclaimer (D7): boolean STRICT; docId null/int+tenant-own.
+    // Validasi SEBELUM plan-gate (featAiKnowledgeGate dipasang SEBELUM handler — di
+    // route ini gate = middleware; field liar tetap 400 karena validasi jalan dulu di body).
+    if (body.cbaiUpsellEnabled !== undefined) {
+      if (typeof body.cbaiUpsellEnabled !== 'boolean') return res.status(400).json({ error: 'cbaiUpsellEnabled harus boolean' })
+      data.cbaiUpsellEnabled = body.cbaiUpsellEnabled
+    }
+    if (body.cbaiDisclaimer !== undefined) {
+      if (typeof body.cbaiDisclaimer !== 'boolean') return res.status(400).json({ error: 'cbaiDisclaimer harus boolean' })
+      data.cbaiDisclaimer = body.cbaiDisclaimer
+    }
+    if (body.cbaiUpsellDocId !== undefined) {
+      if (body.cbaiUpsellDocId === null) {
+        data.cbaiUpsellDocId = null
+      } else if (!Number.isInteger(body.cbaiUpsellDocId) || body.cbaiUpsellDocId <= 0) {
+        return res.status(400).json({ error: 'cbaiUpsellDocId harus null atau integer positif' })
+      } else {
+        const doc = await prisma.aiKnowledgeDoc.findFirst({ where: { id: body.cbaiUpsellDocId, tenantId: req.tenantId }, select: { id: true } })
+        if (!doc) return res.status(400).json({ error: 'cbaiUpsellDocId tidak valid — dokumen tidak ditemukan di tenant ini' })
+        data.cbaiUpsellDocId = body.cbaiUpsellDocId
+      }
+    }
     // Prisma menolak compound unique dgn NULL (lesson v3.9 fix BUG-1) → findFirst +
     // create-catch-race (pola getConfig autoReply), BUKAN upsert tenantId_numberSlot:null.
     const existing = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
@@ -286,7 +313,7 @@ router.put('/config', ...rt, featAiKnowledgeGate, async (req, res) => {
         })
     // invalidate cache service autoReply (config dibaca runtime via cache)
     require('../services/autoReply').invalidateConfig(req.tenantId)
-    res.json({ config: { cbaiLimit: cfg.cbaiLimit, cbaiInfoFooter: cfg.cbaiInfoFooter, cbaiBotName: cfg.cbaiBotName, cbaiBotRole: cfg.cbaiBotRole, cbaiHumanAgentLabel: cfg.cbaiHumanAgentLabel } })
+    res.json({ config: { cbaiLimit: cfg.cbaiLimit, cbaiInfoFooter: cfg.cbaiInfoFooter, cbaiBotName: cfg.cbaiBotName, cbaiBotRole: cfg.cbaiBotRole, cbaiHumanAgentLabel: cfg.cbaiHumanAgentLabel, cbaiUpsellEnabled: cfg.cbaiUpsellEnabled === true, cbaiUpsellDocId: cfg.cbaiUpsellDocId ?? null, cbaiDisclaimer: cfg.cbaiDisclaimer === true } })
   } catch (e) {
     console.error('AiKnowledge PUT config error:', e)
     res.status(500).json({ error: 'Internal server error' })

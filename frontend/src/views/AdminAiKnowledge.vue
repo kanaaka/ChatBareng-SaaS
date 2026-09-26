@@ -60,6 +60,38 @@
           <M3Switch v-model="config.cbaiInfoFooter" :disabled="saving" />
         </label>
 
+        <!-- v4.1.2 — Upselling (D2/D8): switch + dropdown 1 dokumen promo (tampil saat ON) -->
+        <div class="mt-4 border-t border-gray-100 pt-4">
+          <label class="flex items-center justify-between cursor-pointer">
+            <div>
+              <span class="text-sm text-gray-800">Upselling</span>
+              <p class="text-xs text-gray-500">Dokumen promo dipisah dari KB umum — AI menyisipkan penawaran HANYA bila relevan (maks 1–2 kalimat)</p>
+            </div>
+            <M3Switch v-model="config.cbaiUpsellEnabled" :disabled="saving" />
+          </label>
+          <div v-if="config.cbaiUpsellEnabled" class="mt-2">
+            <span class="text-xs text-gray-600 block mb-1">Dokumen penawaran (promo)</span>
+            <select
+              v-model="config.cbaiUpsellDocId"
+              :disabled="saving"
+              class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            >
+              <option :value="null">— pilih dokumen promo —</option>
+              <option v-for="d in docs" :key="d.id" :value="d.id">{{ d.label }}{{ d.active ? '' : ' (nonaktif)' }}</option>
+            </select>
+            <p class="text-xs text-gray-500 mt-1">Dokumen ini DITARIK dari pembacaan umum AI; hanya muncul sbg penawaran bila relevan dgn pertanyaan customer.</p>
+          </div>
+        </div>
+
+        <!-- v4.1.2 — Disclaimer AI (D3/D8): switch, kalimat fix append oleh kode -->
+        <label class="flex items-center justify-between mt-4 cursor-pointer">
+          <div>
+            <span class="text-sm text-gray-800">Disclaimer AI</span>
+            <p class="text-xs text-gray-500">Setiap jawaban AI diakhiri kalimat tetap "Jawaban ini di generate oleh ChatBareng AI…"</p>
+          </div>
+          <M3Switch v-model="config.cbaiDisclaimer" :disabled="saving" />
+        </label>
+
         <!-- v4.1.1 — Persona bot (D1): 3 field; kosong semua = perilaku lama -->
         <div class="mt-4 border-t border-gray-100 pt-4">
           <span class="text-sm text-gray-800 block">Persona bot</span>
@@ -278,7 +310,8 @@ const saving = ref(false)
 const docs = ref([])
 const aiUsage = ref(null)
 // v4.1.1 — persona (D1): 3 field di kartu Pengaturan CB-AI; kosong = perilaku lama
-const config = ref({ cbaiLimit: 3, cbaiInfoFooter: true, cbaiBotName: '', cbaiBotRole: '', cbaiHumanAgentLabel: '' })
+// v4.1.2 — upselling + disclaimer (D2/D3/D8): switch + dropdown doc + switch disclaimer
+const config = ref({ cbaiLimit: 3, cbaiInfoFooter: true, cbaiBotName: '', cbaiBotRole: '', cbaiHumanAgentLabel: '', cbaiUpsellEnabled: false, cbaiUpsellDocId: null, cbaiDisclaimer: false })
 // v4.0.1 hotfix — plan gate graceful (quirk #2 QA Kanaka): plan ✗ → banner upsell
 // ramah (pola Auto Reply), BUKAN toast "Gagal memuat" (403 kena interceptor global).
 const planOk = ref(true)
@@ -463,6 +496,10 @@ async function saveConfig() {
       cbaiBotName: String(config.value.cbaiBotName || '').trim(),
       cbaiBotRole: String(config.value.cbaiBotRole || '').trim(),
       cbaiHumanAgentLabel: String(config.value.cbaiHumanAgentLabel || '').trim(),
+      // v4.1.2 — upselling + disclaimer (D8)
+      cbaiUpsellEnabled: !!config.value.cbaiUpsellEnabled,
+      cbaiUpsellDocId: config.value.cbaiUpsellEnabled ? (Number.isInteger(Number(config.value.cbaiUpsellDocId)) && Number(config.value.cbaiUpsellDocId) > 0 ? Number(config.value.cbaiUpsellDocId) : null) : null,
+      cbaiDisclaimer: !!config.value.cbaiDisclaimer,
     })
     config.value.cbaiLimit = res.data.config.cbaiLimit
     config.value.cbaiInfoFooter = res.data.config.cbaiInfoFooter
@@ -470,6 +507,10 @@ async function saveConfig() {
     config.value.cbaiBotName = res.data.config.cbaiBotName ?? ''
     config.value.cbaiBotRole = res.data.config.cbaiBotRole ?? ''
     config.value.cbaiHumanAgentLabel = res.data.config.cbaiHumanAgentLabel ?? ''
+    // v4.1.2 — echo upsell + disclaimer (D8)
+    config.value.cbaiUpsellEnabled = res.data.config.cbaiUpsellEnabled === true
+    config.value.cbaiUpsellDocId = res.data.config.cbaiUpsellDocId ?? null
+    config.value.cbaiDisclaimer = res.data.config.cbaiDisclaimer === true
     toast.show({ icon: '✅', title: 'Tersimpan', message: 'Pengaturan CB-AI berhasil disimpan' })
   } catch (e) {
     toast.show({ icon: '⚠️', title: 'Gagal simpan', message: e.response?.data?.error || 'Terjadi kesalahan' })
@@ -490,6 +531,10 @@ async function fetchAll() {
       config.value.cbaiBotName = res.data.config.cbaiBotName || ''
       config.value.cbaiBotRole = res.data.config.cbaiBotRole || ''
       config.value.cbaiHumanAgentLabel = res.data.config.cbaiHumanAgentLabel || ''
+      // v4.1.2 — upsell + disclaimer: load dari GET config (D8)
+      config.value.cbaiUpsellEnabled = res.data.config.cbaiUpsellEnabled === true
+      config.value.cbaiUpsellDocId = res.data.config.cbaiUpsellDocId ?? null
+      config.value.cbaiDisclaimer = res.data.config.cbaiDisclaimer === true
     }
   } catch (e) {
     if (e?.response?.status === 403) {

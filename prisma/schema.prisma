@@ -145,6 +145,9 @@ model Chat {
   // Human out-message (marker lastAutoGreetDate existing) TETAP skip semua auto.
   aiReplyCount          Int                @default(0)
   lastAiReplyAt         DateTime?
+  // ═══ v4.1.2 — CB-AI handoff notice (ADDITIVE kolom, spec §D1) ═══
+  // Cap notice "digantung" 1×/24 jam saat budget CB-AI habis (in-hours); NULL/≥24h → boleh kirim.
+  lastHandoffNotifiedAt DateTime?
   messages              Message[]
   notes                 ChatNote[]
   csatSurveys           CsatSurvey[]
@@ -554,45 +557,53 @@ model PushSubscription {
 
 // v0.7.0 — Auto Greeting config → PER-TENANT v3 (seed saat tenant dibuat).
 model AutoReplyConfig {
-  id                  Int      @id @default(autoincrement())
+  id                  Int             @id @default(autoincrement())
   tenantId            Int
   // ═══ v3.9 — Multi-nomor: unique per (tenantId, numberSlot) — row shared (null) +
   // row per-slot (0..2). Row null tetap satu per tenant (kompat seed lama).
   numberSlot          Int?
   // Trigger 1: Outside Hours Reply
-  outsideHoursEnabled Boolean  @default(false)
-  outsideHoursText    String   @default("Halo! Mohon maaf, saat ini berada di luar jam operasional. Pesan Anda sudah kami terima dan akan dibalas saat jam kerja berikutnya. Terima kasih! 🙏")
+  outsideHoursEnabled Boolean         @default(false)
+  outsideHoursText    String          @default("Halo! Mohon maaf, saat ini berada di luar jam operasional. Pesan Anda sudah kami terima dan akan dibalas saat jam kerja berikutnya. Terima kasih! 🙏")
   // ═══ v4.0.0 — ChatBareng AI (CB-AI) Knowledge Auto-Reply (ADDITIVE kolom, spec §4) ═══
   // outsideHoursMode: mode balasan di luar jam kerja — "text" (perilaku lama) | "cbai" (AI jaga malam).
   // cbaiLimit: budget balasan AI per chat per jendela 24 jam (1..10, default 3 — D5).
   // cbaiInfoFooter: footer "(info per <tgl>)" di jawaban AI — default ON (D3).
-  outsideHoursMode    String   @default("text") // "text" | "cbai"
-  cbaiLimit           Int      @default(3) // 1..10
-  cbaiInfoFooter      Boolean  @default(true)
+  outsideHoursMode    String          @default("text") // "text" | "cbai"
+  cbaiLimit           Int             @default(3) // 1..10
+  cbaiInfoFooter      Boolean         @default(true)
   // ═══ v4.1.1 — CB-AI Persona (ADDITIVE 3 kolom, spec docs/spec-v4.1.1-persona.md D1/D6) ═══
   // Kosong semua = prompt PERSIS v4.1.0 (golden-compare E2E N2 — backward-compat).
-  cbaiBotName         String   @default("") // nama bot (mis. "Sinta")
-  cbaiBotRole         String   @default("") // bekerja di mana / bisnis apa (teks bebas ≤120)
-  cbaiHumanAgentLabel String   @default("") // label agent manusia utk instruksi handoff (D3)
+  cbaiBotName         String          @default("") // nama bot (mis. "Sinta")
+  cbaiBotRole         String          @default("") // bekerja di mana / bisnis apa (teks bebas ≤120)
+  cbaiHumanAgentLabel String          @default("") // label agent manusia utk instruksi handoff (D3)
+  // ═══ v4.1.2 — CB-AI Upselling + Disclaimer (ADDITIVE kolom, spec §D2/D3) ═══
+  // cbaiUpsellEnabled+cbaiUpsellDocId: dokumen promo di-tick sbg materi upsell → DITARIK
+  // dari pembacaan KB umum; jawaban+relevan dapat blok <upsell> TERPISAH (maks 1-2 kalimat).
+  // cbaiDisclaimer: ON → setiap jawaban LLM diakhiri kalimat FIX (append oleh KODE, bukan prompt).
+  cbaiUpsellEnabled   Boolean         @default(false) // upselling ON/OFF
+  cbaiUpsellDocId     Int? // FK AiKnowledgeDoc — hapus doc → SET NULL (degrade senyap)
+  cbaiUpsellDoc       AiKnowledgeDoc? @relation(fields: [cbaiUpsellDocId], references: [id], onDelete: SetNull)
+  cbaiDisclaimer      Boolean         @default(false) // disclaimer AI (kalimat tetap, teknologi)
   // v4.0.0b hotfix — repeatFrequency PINDAH ke sini (D10): NULL = belum pernah di-save
   // via UI baru → runtime fallback ke MenuGatewayConfig.repeatFrequency (setting lama tetap hidup).
   repeatFrequency     String? // "per_chat" | "daily" | "weekly"
   // Trigger 2: First-of-Day Greeting
-  greetEnabled        Boolean  @default(false)
-  greetText           String   @default("Halo! Selamat datang 🙏 Ada yang bisa kami bantu?")
+  greetEnabled        Boolean         @default(false)
+  greetText           String          @default("Halo! Selamat datang 🙏 Ada yang bisa kami bantu?")
   // v0.13.0 — mode greeting (D9): "text" = perilaku lama; "menu" = delegasi ke Menu Gateway
-  greetMode           String   @default("text") // "text" | "menu"
+  greetMode           String          @default("text") // "text" | "menu"
   // Jam kerja per tipe hari, HH:mm WIB
-  monFriEnabled       Boolean  @default(true)
-  monFriStart         String   @default("08:00")
-  monFriEnd           String   @default("17:00")
-  satEnabled          Boolean  @default(true)
-  satStart            String   @default("08:00")
-  satEnd              String   @default("17:00")
-  sunEnabled          Boolean  @default(true)
-  sunStart            String   @default("08:00")
-  sunEnd              String   @default("17:00")
-  updatedAt           DateTime @updatedAt
+  monFriEnabled       Boolean         @default(true)
+  monFriStart         String          @default("08:00")
+  monFriEnd           String          @default("17:00")
+  satEnabled          Boolean         @default(true)
+  satStart            String          @default("08:00")
+  satEnd              String          @default("17:00")
+  sunEnabled          Boolean         @default(true)
+  sunStart            String          @default("08:00")
+  sunEnd              String          @default("17:00")
+  updatedAt           DateTime        @updatedAt
   updatedById         Int?
 
   @@unique([tenantId, numberSlot])
@@ -910,6 +921,9 @@ model AiKnowledgeDoc {
   updatedById Int?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  // v4.1.2 — back-relation upsell (FK cbaiUpsellDocId, ON DELETE SET NULL)
+  upsellConfigs AutoReplyConfig[]
 
   @@unique([tenantId, label])
   @@index([tenantId])

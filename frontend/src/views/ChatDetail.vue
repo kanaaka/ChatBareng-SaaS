@@ -39,6 +39,10 @@
             <span v-if="lastCsatRating" class="inline-flex items-center gap-1 bg-yellow-100 text-yellow-700 text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0">
               ⭐ {{ lastCsatRating }}
             </span>
+            <!-- v4.1.2 D4 — chip counter CB-AI live (window 24 jam; lewat → 0/limit) -->
+            <span v-if="cbaiCounter !== null" class="inline-flex items-center gap-1 bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0" title="Budget balasan AI chat ini (reset 24 jam)">
+              🤖 AI {{ cbaiCounter }}
+            </span>
           </div>
           <div class="text-xs text-gray-500 truncate">
             <!-- v0.14.0 — grup: jumlah member; 1:1: nomor HP (perilaku existing) -->
@@ -913,6 +917,19 @@ const snoozeUntilLabel = computed(() => {
   return new Date(props.chat.snoozedUntil).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
 })
 const lastCsatRating = computed(() => props.chat?.lastCsatRating ?? null)
+
+// ═══ v4.1.2 D4 — chip counter CB-AI live "🤖 AI n/limit" di header chat ═══
+// Data-only render dari GET chat (aiReplyCount/lastAiReplyAt/cbaiReplyLimit/cbaiActive) —
+// tanpa polling baru (ikut fetch chat yang sudah ada). Window 24 jam: lastAiReplyAt
+// ≥24 jam lalu → tampil 0/limit (budget segar). CB-AI tidak aktif → chip disembunyikan.
+const cbaiCounter = computed(() => {
+  const c = props.chat
+  if (!c || c.cbaiActive !== true || c.cbaiReplyLimit == null) return null
+  const last = c.lastAiReplyAt ? new Date(c.lastAiReplyAt) : null
+  const alive = !!(last && !isNaN(last.getTime()) && Date.now() - last.getTime() < 24 * 60 * 60 * 1000)
+  const n = (c.aiReplyCount || 0) > (c.cbaiReplyLimit || 0) ? (c.cbaiReplyLimit || 0) : (c.aiReplyCount || 0)
+  return `${alive ? n : 0}/${c.cbaiReplyLimit}`
+})
 // Catatan: tulis = CS assigned + admin (sama dgn reply permission)
 const canManageNotes = computed(() => {
   if (auth.isAdmin) return true

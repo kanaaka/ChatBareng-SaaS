@@ -784,6 +784,29 @@ router.get('/:id', ...rt, async (req, res) => {
     chat.lastCsatRating = chat.csatSurveys?.[0]?.rating ?? null
     delete chat.csatSurveys
 
+    // ─── v4.1.2 D4 — counter CB-AI live: chat sudah bawa aiReplyCount + lastAiReplyAt
+    // (kolom existing — TIDAK ada kolom baru); tambah limit efektif utk chip 🤖 AI n/limit.
+    // Non-fatal: config gagal → tanpa limit (chip FE menampilkan tanpa limit bila null).
+    try {
+      const arCfg = await prisma.autoReplyConfig.findFirst({
+        where: { tenantId: req.tenantId, OR: [{ numberSlot: chat.numberSlot ?? null }, { numberSlot: null }] },
+        orderBy: [{ numberSlot: 'desc' }],
+        select: { cbaiLimit: true, greetMode: true, outsideHoursMode: true, greetEnabled: true },
+      })
+      if (arCfg) {
+        const { CBAI_LIMIT_MIN, CBAI_LIMIT_MAX } = require('../services/aiKnowledge')
+        chat.cbaiReplyLimit = Math.min(CBAI_LIMIT_MAX, Math.max(CBAI_LIMIT_MIN, Number(arCfg.cbaiLimit) || 3))
+        // cbaiActive = mode radio cbai terpasang di salah satu trigger (greet in-hours /
+        // outside-hours) — chip hanya bermakna bila jalur CB-AI memang menyala.
+        chat.cbaiActive = !!(arCfg.greetMode === 'cbai' || arCfg.outsideHoursMode === 'cbai')
+      } else {
+        chat.cbaiReplyLimit = null
+        chat.cbaiActive = false
+      }
+    } catch (e) {
+      console.error('Chat detail cbai counter error (non-fatal):', e.message)
+    }
+
     // ─── v0.5.1 — Clear flag "transfer belum dibaca": chat dibuka oleh assignee ──
     if (req.user.id === chat.assignedToId && chat.transferUnseen) {
       try {
