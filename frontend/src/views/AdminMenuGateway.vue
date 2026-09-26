@@ -42,18 +42,16 @@
         </p>
 
         <div class="mt-5 flex flex-col sm:flex-row gap-3">
-          <label class="flex-1">
-            <span class="text-xs text-gray-600 block mb-1">Frekuensi greeting (menu & teks)</span>
-            <select
-              v-model="form.repeatFrequency"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
-              style="min-height: 44px;"
-            >
-              <option value="per_chat">Tiap chat baru</option>
-              <option value="daily">Sekali per hari</option>
-              <option value="weekly">Sekali per minggu</option>
-            </select>
-          </label>
+          <!-- v4.0.0 — D10: dropdown "Frekuensi greeting" PINDAH ke halaman Auto Reply.
+               HINT ramah (kolom repeatFrequency tetap ada — nilai lama tetap dibaca sampai
+               tenant menyimpan ulang di Auto Reply). Timeout TETAP di sini. -->
+          <div class="flex-1">
+            <span class="text-xs text-gray-600 block mb-1">Frekuensi greeting</span>
+            <div class="px-3 py-2 rounded-lg text-xs text-gray-500 flex items-center gap-1" style="background: var(--md-sys-color-surface-container-high, #f3f0f7); min-height: 44px;">
+              <span>Frekuensi greeting diatur di menu</span>
+              <router-link to="/admin/autoreply" class="text-green-700 hover:underline">Auto Reply</router-link>
+            </div>
+          </div>
           <label class="sm:w-40">
             <span class="text-xs text-gray-600 block mb-1">Timeout jawaban</span>
             <input
@@ -136,11 +134,11 @@
           </div>
           <M3Switch
             v-model="form.aiHybrid"
-            :disabled="saving || !aiPlanOk"
-            :title="aiPlanOk ? '' : 'Fitur belum tersedia di paket Anda — hubungi admin platform untuk upgrade'"
+            :disabled="saving || !aiRoutingPlanOk"
+            :title="aiRoutingPlanOk ? '' : 'Fitur belum tersedia di paket Anda — hubungi admin platform untuk upgrade'"
           />
         </div>
-        <p v-if="!aiPlanOk" class="text-xs mt-2 px-3 py-2 rounded-lg bg-amber-50 text-amber-700">
+        <p v-if="!aiRoutingPlanOk" class="text-xs mt-2 px-3 py-2 rounded-lg bg-amber-50 text-amber-700">
           Fitur ini belum tersedia di paket Anda. Hubungi admin platform untuk upgrade — setelah aktif, toggle + slider di bawah bisa dipakai.
         </p>
         <p v-if="aiUsage" class="text-xs text-gray-400 mt-2">
@@ -156,7 +154,7 @@
               min="0.50"
               max="0.95"
               step="0.05"
-              :disabled="saving || !aiPlanOk"
+              :disabled="saving || !aiRoutingPlanOk"
               class="flex-1 min-w-[180px] accent-green-600"
             />
             <span class="text-sm font-semibold text-gray-800 tabular-nums">{{ thresholdLabel }}</span>
@@ -166,7 +164,7 @@
               v-for="p in thresholdPresets"
               :key="p.value"
               type="button"
-              :disabled="saving || !aiPlanOk"
+              :disabled="saving || !aiRoutingPlanOk"
               @click="form.aiThreshold = p.value"
               class="px-3 py-1.5 rounded-full text-xs border"
               :class="Number(form.aiThreshold) === p.value ? 'bg-green-600 text-white border-green-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'"
@@ -199,7 +197,7 @@
           Nomor menu = urutan (otomatis). <b>Aliases</b> = kata kunci TAMBAHAN opsional dipisah koma
           (maks 5) — angka 1-8 sudah otomatis tanpa perlu diketik. Minimal 1 opsi punya balasan.
           Tag menempel ke kontak saat opsi dipilih — bisa pilih existing atau <b>+ Buat tag baru</b> di tempat.
-          <span v-if="aiPlanOk"> <b>Deskripsi AI</b> (opsional) bantu AI paham konteks rute saat jawaban customer gak kena keyword.</span>
+          <span v-if="aiRoutingPlanOk"> <b>Deskripsi AI</b> (opsional) bantu AI paham konteks rute saat jawaban customer gak kena keyword.</span>
         </p>
 
         <div class="space-y-3">
@@ -263,11 +261,53 @@
                 v-model="opt.aiDescription"
                 rows="2"
                 maxlength="200"
-                :disabled="!aiPlanOk"
+                :disabled="!kbPlanOk"
                 class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-60"
                 placeholder="Deskripsi AI (opsional, ≤200) — mis. 'rute buat pasien mau booking jadwal terapi'. Kosong = AI pakai label + alias."
               ></textarea>
               <div class="text-right text-[10px] text-gray-400">{{ (opt.aiDescription || '').length }}/200</div>
+            </div>
+            <!-- v4.0.0 — §7b (D9): Jawaban opsi = Teks / AI (Knowledge) + scope dokumen KB -->
+            <div v-if="kbPlanOk" class="border-t border-gray-100 pt-2">
+              <div class="flex flex-wrap items-center gap-3">
+                <span class="text-xs text-gray-600">Jawaban:</span>
+                <label class="flex items-center gap-1.5 text-sm text-gray-800 cursor-pointer">
+                  <input v-model="opt.answerMode" type="radio" value="text" class="w-4 h-4 accent-green-600" />
+                  Teks
+                </label>
+                <label
+                  class="flex items-center gap-1.5 text-sm cursor-pointer"
+                  :class="!kbPlanOk ? 'opacity-50' : ''"
+                  title="AI menjawab pertanyaan customer dari dokumen KB (gagal → teks di atas tetap terkirim)"
+                >
+                  <input v-model="opt.answerMode" type="radio" value="ai_knowledge" :disabled="!kbPlanOk" class="w-4 h-4 accent-green-600" />
+                  AI (Knowledge) 🤖
+                </label>
+              </div>
+              <div v-if="opt.answerMode === 'ai_knowledge'" class="mt-2">
+                <span class="text-xs text-gray-600 block mb-1">Scope dokumen KB (kosong = semua dokumen aktif)</span>
+                <div v-if="kbDocs.length === 0" class="text-xs text-amber-600 px-2 py-1 rounded bg-amber-50">
+                  Belum ada dokumen aktif — upload dulu di menu ChatBareng AI.
+                </div>
+                <div v-else class="flex flex-wrap gap-2">
+                  <label
+                    v-for="doc in kbDocs"
+                    :key="doc.id"
+                    class="flex items-center gap-1.5 text-xs cursor-pointer"
+                    :class="!doc.active ? 'opacity-50' : ''"
+                    :title="doc.active ? '' : 'Dokumen nonaktif — aktifkan dulu di menu ChatBareng AI'"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="(opt.aiDocIdsList || []).includes(doc.id)"
+                      :disabled="!doc.active"
+                      @change="toggleDocScope(opt, doc.id)"
+                      class="w-3.5 h-3.5 accent-green-600"
+                    />
+                    {{ doc.label }}
+                  </label>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -354,9 +394,14 @@ const form = ref({
   options: [],
 })
 
+// v4.0.0 — §7b: dokumen KB aktif utk tickbox scope per-opsi + client plan gate CB-AI
+const kbDocs = ref([])
+
 // v3.9.25 — plan gate client (menuGateway sudah fitur gated, jadi halaman ini hanya
 // muncul bila featMenuGateway ✓; featAiRouting bisa ✗ walau menu gateway ✓)
-const aiPlanOk = ref(true)
+// v4.0.0 fix audit LOW-2 — dua plan flag terpisah (aiHybrid=featAiRouting; answerMode=featAiKnowledge)
+const aiRoutingPlanOk = ref(true)
+const kbPlanOk = ref(true)
 const aiUsage = ref(null)
 
 // spec §7b — preset threshold klik-instal + keterangan konsekuensi
@@ -388,7 +433,18 @@ const introPreview = computed(() => {
 })
 
 function emptyOption(position) {
-  return { position, label: '', aliases: '', replyText: '', tagId: null, aiDescription: '' }
+  // v4.0.0 — §7b: + answerMode ('text'|'ai_knowledge') & aiDocIds (csv string; kosong = whole KB)
+  return { position, label: '', aliases: '', replyText: '', tagId: null, aiDescription: '', answerMode: 'text', aiDocIds: '', aiDocIdsList: [] }
+}
+
+// v4.0.0 — toggle scope dokumen per-opsi (tickbox) → sinkron aiDocIdsList + csv string
+function toggleDocScope(opt, docId) {
+  const list = Array.isArray(opt.aiDocIdsList) ? opt.aiDocIdsList.slice() : []
+  const idx = list.indexOf(docId)
+  if (idx >= 0) list.splice(idx, 1)
+  else list.push(docId)
+  opt.aiDocIdsList = list
+  opt.aiDocIds = list.join(',')
 }
 
 function addOption() {
@@ -476,8 +532,21 @@ async function fetchAll() {
     // v3.9.25 — AI Hybrid state + plan gate + metering (spec §7)
     form.value.aiHybrid = !!cfg.aiHybrid
     form.value.aiThreshold = Number(cfg.aiThreshold ?? 0.70)
-    aiPlanOk.value = res.data.aiUsage !== null // plan ✗ → aiUsage null → toggle disabled + upsell
+    // v4.0.0 — plan gate: aiUsage null = featAiRouting ✗ ATAU featAiKnowledge ✗ →
+    // cek ulang featAiKnowledge via /api/ai-knowledge (plan CB-AI bisa ✓ terpisah)
+    const aiRoutingOk = res.data.aiUsage !== null // plan featAiRouting ✓ (toggle classifier)
     aiUsage.value = res.data.aiUsage || null
+    let kbPlanOk = false
+    try {
+      const kbd = await axios.get(`${API}/api/ai-knowledge`)
+      kbPlanOk = true
+      kbDocs.value = (kbd.data?.docs || []).filter((d) => d.active)
+    } catch (kbErr) {
+      kbPlanOk = kbErr?.response?.status !== 403
+      kbDocs.value = []
+    }
+    aiRoutingPlanOk.value = aiRoutingOk
+    kbPlanOk.value = kbPlanOk // fix audit LOW-2 — flag berbeda per fitur (bukan OR)
     form.value.options = (cfg.options || []).map(o => ({
       position: o.position,
       label: o.label || '',
@@ -485,6 +554,9 @@ async function fetchAll() {
       replyText: o.replyText || '',
       tagId: o.tagId ?? null,
       aiDescription: o.aiDescription || '',
+      answerMode: o.answerMode || 'text', // v4.0.0 — §7b
+      aiDocIds: o.aiDocIds || '',
+      aiDocIdsList: String(o.aiDocIds || '').split(',').map((s) => parseInt(s.trim(), 10)).filter(Number.isFinite),
     }))
     if (form.value.options.length === 0) {
       // Config default baru → sediakan 2 opsi kosong sebagai titik mulai
@@ -510,6 +582,8 @@ async function fetchAll() {
         if ((sCfg.options || []).length > 0) {
           form.value.options = sCfg.options.map(o => ({
             position: o.position, label: o.label || '', aliases: o.aliases || '', replyText: o.replyText || '', tagId: o.tagId ?? null, aiDescription: o.aiDescription || '',
+            answerMode: o.answerMode || 'text', aiDocIds: o.aiDocIds || '',
+            aiDocIdsList: String(o.aiDocIds || '').split(',').map((s) => parseInt(s.trim(), 10)).filter(Number.isFinite),
           }))
         }
       } catch {}
@@ -559,6 +633,9 @@ async function save() {
         replyText: o.replyText,
         tagId: o.tagId,
         aiDescription: (o.aiDescription || '').trim(),
+        // v4.0.0 — §7b D9 (aiDocIds csv; kosong = whole KB)
+        answerMode: o.answerMode === 'ai_knowledge' ? 'ai_knowledge' : 'text',
+        aiDocIds: Array.isArray(o.aiDocIdsList) && o.aiDocIdsList.length > 0 ? o.aiDocIdsList.join(',') : '',
       })),
     }
     const res = await axios.put(`${API}/api/menu-gateway`, payload)
@@ -576,6 +653,9 @@ async function save() {
       replyText: o.replyText || '',
       tagId: o.tagId ?? null,
       aiDescription: o.aiDescription || '',
+      answerMode: o.answerMode || 'text',
+      aiDocIds: o.aiDocIds || '',
+      aiDocIdsList: String(o.aiDocIds || '').split(',').map((s) => parseInt(s.trim(), 10)).filter(Number.isFinite),
     }))
     // v3.9.25 — refresh state AI setelah save (metering + echo server)
     form.value.aiHybrid = !!cfg.aiHybrid

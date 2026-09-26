@@ -79,6 +79,7 @@ function planToJson(plan) {
     featGdriveBackup: plan.featGdriveBackup,
     featApiAccess: plan.featApiAccess, // v3.9.13 — plan gate Public API
     featAiRouting: plan.featAiRouting, // v3.9.25 — AI Hybrid Routing gate
+    featAiKnowledge: plan.featAiKnowledge, // v4.0.0 — CB-AI Knowledge Auto-Reply gate
   }
 }
 

@@ -165,6 +165,13 @@
                       class="inline-flex items-center gap-0.5 bg-indigo-100 text-indigo-700 text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0"
                       :title="slotBadgeTitle(chat.numberSlot)"
                     >{{ slotBadgeLabel(chat.numberSlot) }}</span>
+                    <!-- v4.0.0 — badge "🤖 ×N" (window AI hidup: lastAiReplyAt < 24 jam) —
+                         agent langsung lihat berapa kali AI sudah bales sebelum take -->
+                    <span
+                      v-if="aiWindowCount(chat) > 0"
+                      class="inline-flex items-center gap-0.5 bg-purple-100 text-purple-700 text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0"
+                      title="AI sudah membalas chat ini (window 24 jam)"
+                    >🤖 ×{{ aiWindowCount(chat) }}</span>
                   </div>
                   <div class="flex items-center gap-1">
                     <span class="text-xs text-gray-500 truncate">{{ chat.lastMessagePreview || 'No messages' }}</span>
@@ -303,6 +310,19 @@ function slotBadgeTitle(slot) {
   const info = slotInfo(slot)
   const s = Number(slot) || 0
   return info?.label ? `Via nomor: ${info.label} (slot ${s})` : `Via nomor slot ${s}`
+}
+
+// ── v4.0.0 — badge "🤖 ×N": berapa kali AI sudah bales (window 24 jam hidup) ──
+// chat.aiReplyCount + chat.lastAiReplyAt dibawa GET /api/chats (additive kolom).
+// window ≥24h → badge hilang (budget segar); tick 60s utk peredupan realtime.
+const nowMs = ref(Date.now())
+let nowTimer = null
+function aiWindowCount(chat) {
+  const last = chat?.lastAiReplyAt ? new Date(chat.lastAiReplyAt).getTime() : 0
+  if (!last) return 0
+  void nowMs.value // dependensi reaktif — badge mati otomatis saat window lewat
+  if (Date.now() - last >= 24 * 60 * 60 * 1000) return 0
+  return Math.max(0, Number(chat?.aiReplyCount) || 0)
 }
 
 // Global message search state
@@ -473,11 +493,14 @@ onMounted(() => {
   socketStore.on('tag_deleted', onTagDeleted)
   // v3.9.2 — refresh slot badge saat status WA berubah (connect/logout)
   socketStore.on('wa_status', onWaStatusChanged)
+  // v4.0.0 — tick 60s: badge "🤖 ×N" mati otomatis saat window 24 jam lewat
+  nowTimer = setInterval(() => { nowMs.value = Date.now() }, 60 * 1000)
 })
 onUnmounted(() => {
   socketStore.off('tag_created', onTagCreated)
   socketStore.off('tag_deleted', onTagDeleted)
   socketStore.off('wa_status', onWaStatusChanged)
+  if (nowTimer) { clearInterval(nowTimer); nowTimer = null }
 })
 
 // v3.9.2 K1-A — debounced refresh badge saat status WA berubah

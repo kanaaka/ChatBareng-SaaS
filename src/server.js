@@ -42,6 +42,7 @@ const csatRoutes = require('./routes/csat') // v0.10.0 — CSAT Survey (admin)
 const appConfigRoutes = require('./routes/appConfig') // v0.12.9 — AppConfig global (admin)
 const scheduledRoutes = require('./routes/scheduled') // v0.10.0 — Pesan Terjadwal
 const menuGatewayRoutes = require('./routes/menuGateway') // v0.13.0 — Menu Gateway (admin)
+const aiKnowledgeRoutes = require('./routes/aiKnowledge') // v4.0.0 — CB-AI Knowledge (admin)
 const groupRoutes = require('./routes/groups') // v0.14.0 — Manajemen Grup (PIC Model)
 const superadminRoutes = require('./routes/superadmin') // v3.0 — Platform owner API
 const brandingRoutes = require('./routes/branding') // v3.4 — Branding per-tenant (logo)
@@ -174,6 +175,7 @@ app.use('/api/csat', csatRoutes) // v0.10.0 — CSAT Survey (admin)
 app.use('/api/app-config', appConfigRoutes) // v0.12.9 — AppConfig global (admin)
 app.use('/api/scheduled', scheduledRoutes) // v0.10.0 — Pesan Terjadwal
 app.use('/api/menu-gateway', menuGatewayRoutes) // v0.13.0 — Menu Gateway (admin). Sweep di-init saat boot sejak v3.9.8.
+app.use('/api/ai-knowledge', aiKnowledgeRoutes) // v4.0.0 — ChatBareng AI (CB-AI) Knowledge (admin)
 app.use('/api/groups', groupRoutes) // v0.14.0 — Manajemen Grup (PIC Model)
 app.use('/api/branding', brandingRoutes) // v3.4 — Branding per-tenant (logo, auth flexible)
 // v3.9.13 — Public API v1: autentikasi API KEY (bukan JWT) — router sendiri, TIDAK

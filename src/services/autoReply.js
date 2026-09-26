@@ -22,6 +22,9 @@ const broadcast = require('../socket/broadcast')
 const { encryptText, decryptTextSafe } = require('./textCrypto') // v0.11.0 — enkripsi at-rest isi pesan
 // v3.7 — anti-duplicate re-link kontak orphan (helper shared C1–C4)
 const { relinkOrphanContact } = require('../utils/contactRelink')
+// v4.0.0 — CB-AI constants (window 24 jam + validasi mode)
+const CBAI_MODES = ['text', 'cbai'] // outsideHoursMode (D4); greetMode extended: 'cbai'
+const GREET_MODES_V4 = ['text', 'menu', 'cbai'] // greetMode (extend value "cbai" — kolom existing)
 const TIMEZONE = 'Asia/Jakarta'
 const SENDER_NAME = 'Auto Reply'
 const MAX_TEXT_LEN = 1000
@@ -405,7 +408,187 @@ async function sendAutoText(chat, text, today) {
   return true
 }
 
-// ─── Trigger utama — dipanggil dari baileys.js messages.upsert ──────────
+// ─── v4.0.0 — CB-AI counter/window (D5/D6) ─────────────────────────────
+/**
+ * v4.0.0 fix audit MEDIUM-1 (TOCTOU) — RESERVE 1 slot budget ATOMIK SEBELUM LLM
+ * (reserve-then-revert, pola claim marker v0.7.0). Guard `aiReplyCount < limit`
+ * di dalam updateMany → dua pesan beruntun gak bisa lagi sama-sama lewat limit
+ * (.count===0 = kalah race). Pesan gagal terkirim → revert via revertAiCounter.
+ * Return { ok:true, prev } | { ok:false } — prev = snapshot utk revert.
+ */
+async function reserveAiSlot(chat, limit) {
+  const aiKnowledge = require('./aiKnowledge') // lazy — hindari circular require
+  const now = new Date()
+  const lim = Math.min(aiKnowledge.CBAI_LIMIT_MAX, Math.max(aiKnowledge.CBAI_LIMIT_MIN, Number(limit) || 3))
+  const fresh = await prisma.chat.findUnique({ where: { id: chat.id }, select: { aiReplyCount: true, lastAiReplyAt: true } }).catch(() => null)
+  const b = aiKnowledge.cbaiBudget(fresh || chat, now)
+  const cutoff = new Date(now.getTime() - aiKnowledge.AI_WINDOW_MS)
+  let res
+  if (b.resetBudget) {
+    // Window habis → reset ATOMIK (guard: marker memang NULL/kedaluwarsa)
+    res = await prisma.chat.updateMany({
+      where: { id: chat.id, tenantId: chat.tenantId, OR: [{ lastAiReplyAt: null }, { lastAiReplyAt: { lt: cutoff } }] },
+      data: { aiReplyCount: 1, lastAiReplyAt: now },
+    })
+  } else {
+    res = await prisma.chat.updateMany({
+      where: { id: chat.id, tenantId: chat.tenantId, aiReplyCount: { lt: lim } },
+      data: { aiReplyCount: { increment: 1 }, lastAiReplyAt: now },
+    })
+  }
+  if (res.count === 0) return { ok: false } // kalah race / limit habis
+  return { ok: true, prev: { count: b.resetBudget ? 0 : b.count, lastAiReplyAt: fresh?.lastAiReplyAt || null } }
+}
+
+/**
+ * Tandai balasan AI (jawaban ATAU fallback — D5): aiReplyCount++ + lastAiReplyAt=now.
+ * v4.0.0 fix audit MEDIUM-1 — increment ATOMIK dengan guard `aiReplyCount < limit`
+ * (counter gak pernah lewat limit walau race; kalah race → counter tetap = limit).
+ * Window ≥24h → counter direset 1 (budget segar).
+ */
+async function bumpAiCounter(chat, limit = null) {
+  const aiKnowledge = require('./aiKnowledge') // lazy — hindari circular require
+  const now = new Date()
+  const lim = limit === null
+    ? aiKnowledge.CBAI_LIMIT_MAX
+    : Math.min(aiKnowledge.CBAI_LIMIT_MAX, Math.max(aiKnowledge.CBAI_LIMIT_MIN, Number(limit) || 3))
+  const fresh = await prisma.chat.findUnique({ where: { id: chat.id }, select: { aiReplyCount: true, lastAiReplyAt: true } }).catch(() => null)
+  const b = aiKnowledge.cbaiBudget(fresh || chat, now)
+  if (b.resetBudget) {
+    await prisma.chat.updateMany({ where: { id: chat.id, tenantId: chat.tenantId }, data: { aiReplyCount: 1, lastAiReplyAt: now } })
+    return 1
+  }
+  const res = await prisma.chat.updateMany({
+    where: { id: chat.id, tenantId: chat.tenantId, aiReplyCount: { lt: lim } },
+    data: { aiReplyCount: { increment: 1 }, lastAiReplyAt: now },
+  })
+  if (res.count === 0) {
+    // Kalah race (counter = limit) → refresh marker window saja (tetap bisu sesuai design)
+    await prisma.chat.updateMany({ where: { id: chat.id, tenantId: chat.tenantId }, data: { lastAiReplyAt: now } }).catch(() => {})
+    return lim
+  }
+  return (b.count || 0) + 1
+}
+
+/** Revert counter/marker setelah send gagal (pola sendAutoText revert marker) — baca ulang dulu. */
+async function revertAiCounter(chat, prev) {
+  try {
+    await prisma.chat.updateMany({
+      where: { id: chat.id, tenantId: chat.tenantId },
+      data: { aiReplyCount: prev.count, lastAiReplyAt: prev.lastAiReplyAt },
+    })
+  } catch (e) {
+    console.error('[AutoReply] revert AI counter gagal:', e.message)
+  }
+}
+
+/**
+ * Ekstrak plaintext pesan customer dari msg baileys (pola extractText pool):
+ * conversation / extendedTextMessage / caption. Media tanpa caption → '' (AI QA
+ * teks-only — media TIDAK dijawab CB-AI, jatuh ke jalur lama).
+ */
+function effectiveTextForCbai(msg) {
+  try {
+    const m = msg?.message || {}
+    return m.conversation || m.extendedTextMessage?.text || m.imageMessage?.caption || m.videoMessage?.caption || m.documentMessage?.caption || ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * cbaiReplyForMessage(chat, cfg, today, { outside, customerText, kbSvc }) →
+ *   { sent: boolean, used: boolean }
+ * - used=true  → jalur CB-AI selesai (kirim ATAU bisu-by-design) → pemanggil return
+ * - used=false → guard gagal → jatuh ke jalur lama PERSIS (outside: away existing;
+ *   in-hours: greet text/menu existing)
+ *
+ * Detail (spec §7):
+ * - Window 24 jam + counter shared (lastAiReplyAt/aiReplyCount — D5/D6).
+ * - limit habis + window hidup → DEGRADE: outside → away text TANPA counter;
+ *   in-hours → BISU {sent:false, used:true} (queue normal).
+ * - Guard berlapis di answerFromKnowledge: plan + KB aktif + AiConfig hasKey.
+ * - covered → sendAutoText + counter++/marker; no_answer/gagal → fallback
+ *   DETERMINISTIK + DIHITUNG (D5/Q1 final): outside → outsideHoursText;
+ *   in-hours → greetText.
+ * - Send gagal → counter/marker di-revert (pola sendAutoText revert marker).
+ * - Chat TIDAK di-set resolved/taken — tetap di queue (D7).
+ */
+async function cbaiReplyForMessage(chat, cfg, today, { outside = false, customerText = '', kbSvc = null } = {}) {
+  const chatId = chat.id
+  const tenantId = chat.tenantId
+  const aiKb = kbSvc || require('./aiKnowledge') // lazy — hindari circular require
+  let resv = { ok: false, prev: null } // fix audit MEDIUM-1 — snapshot reserve utk revert di catch
+  try {
+    // ── Fix audit MEDIUM-1 (TOCTOU): RESERVE slot budget ATOMIK SEBELUM LLM ──
+    // (reserve-then-revert, pola claim marker). Gagal reserve (limit habis/kalah
+    // race) → degrade TANPA LLM call (0 cost); LLM/send gagal → revert ke prev.
+    const limit = Math.min(aiKb.CBAI_LIMIT_MAX, Math.max(aiKb.CBAI_LIMIT_MIN, Number(cfg.cbaiLimit) || 3))
+    resv = await reserveAiSlot(chat, limit)
+    if (!resv.ok) {
+      // Limit habis / kalah race → degrade (TIDAK ada LLM call, 0 cost — N5/N8):
+      //   outside → away text per pesan TANPA counter (deterministik — Q2 final);
+      //   in-hours → bisu (queue normal, pesan customer utk di-take agent).
+      if (outside) {
+        const awaySent = await sendAutoText(chat, cfg.outsideHoursText, today)
+        return { sent: !!awaySent, used: true } // jalur CB-AI selesai (degrade away) — TIDAK jatuh ke jalur lain
+      }
+      console.log(`[AutoReply] CB-AI budget habis (race-safe reserve) → in-hours bisu: chat=${chatId}`)
+      return { sent: false, used: true }
+    }
+    const prev = resv.prev
+
+    // ── QA closed-book (§6) — guard plan/doc/AiConfig di dalam service ──
+    const freshChat = await prisma.chat.findUnique({ where: { id: chatId }, include: { contact: true } })
+    const r = await aiKb.answerFromKnowledge({
+      tenantId,
+      chat: freshChat || chat,
+      customerText,
+      mode: 'cbai',
+      cbaiInfoFooter: cfg.cbaiInfoFooter !== false,
+    })
+    if (!r.ok) {
+      // Guard gagal (plan ✗/0 doc/NO_CONFIG/error) → jalur lama PERSIS (deterministik).
+      // Reserve dikembalikan (tidak ada pesan keluar dari tier AI).
+      await revertAiCounter(chat, prev)
+      // outside → away existing; in-hours → greet text/menu existing (pemanggil lanjut).
+      return { sent: false, used: false }
+    }
+
+    if (r.covered) {
+      // ── Jawaban AI + counter SUDAH direserve (fix MEDIUM-1) + lastAiReplyAt=now (D5) ──
+      const sent = await sendAutoText(chat, r.answer, today)
+      if (sent) {
+        console.log(`[AutoReply] CB-AI jawaban terkirim (covered) chat=${chatId} counter→${prev.count + 1}`)
+        return { sent: true, used: true }
+      }
+      // Send gagal → counter/marker di-revert (reserve dikembalikan)
+      await revertAiCounter(chat, prev)
+      return { sent: false, used: false }
+    }
+
+    // ── no_answer / parse fail / LLM gagal → fallback DETERMINISTIK + DIHITUNG (D5) ──
+    const fallbackText = outside ? cfg.outsideHoursText : cfg.greetText
+    if (!fallbackText || !String(fallbackText).trim()) {
+      // Fallback kosong → tidak ada yang dikirim; reserve dikembalikan (TIDAK dihitung).
+      await revertAiCounter(chat, prev)
+      return { sent: false, used: false }
+    }
+    const sent = await sendAutoText(chat, fallbackText, today)
+    if (sent) {
+      console.log(`[AutoReply] CB-AI no_answer → fallback ${outside ? 'outsideHoursText' : 'greetText'} terkirim + counter→${prev.count + 1}: chat=${chatId}`)
+      return { sent: true, used: true }
+    }
+    // Send gagal → revert (counter tidak naik)
+    await revertAiCounter(chat, prev)
+    return { sent: false, used: false }
+  } catch (e) {
+    console.error('[AutoReply] cbaiReplyForMessage error (non-fatal):', e.message)
+    if (resv && resv.ok) await revertAiCounter(chat, resv.prev).catch(() => {}) // reserve dikembalikan
+    return { sent: false, used: false }
+  }
+}
+
 /**
  * v0.13.3 — matrix keputusan (F1/F2/F4). Dipanggil dari hook akhir handler
  * baileys.js (freshChat re-fetch) HANYA bila eligible:
@@ -445,14 +628,35 @@ async function maybeAutoReply(chat, msg) {
     // ATOMIC CLAIM (race-safe): hanya update jika marker belum = today.
     // PENTING: `{ not: today }` saja TIDAK match row dengan marker NULL
     // (SQL: NULL <> 'x' = UNKNOWN) → harus di-OR dengan null eksplisit.
-    const claim = await prisma.chat.updateMany({
-      where: { id: chatId, tenantId, OR: [{ lastAutoGreetDate: null }, { lastAutoGreetDate: { not: today } }] },
-      data: { lastAutoGreetDate: today },
-    })
-    if (claim.count === 0) return { sent: false } // sudah ada auto message hari ini → throttle
+    // v4.0.0 (spec §7): bila SALAH SATU mode CB-AI aktif, claim marker DILEWATI —
+    // anti-spam CB-AI = budget limit+jendela 24 jam (D5), BUKAN throttle 1×/hari
+    // (spec: "CB-AI in-hours TIDAK pakai repeat-gate / anti-spam = limit+window").
+    const kbSvc0 = require('./aiKnowledge')
+    const plansSvc0 = require('../services/plans')
+    const plan0 = await plansSvc0.getPlan(tenantId).catch(() => null)
+    const planOk0 = !!(plan0 && plan0.featAiKnowledge === true)
+    const outside0 = isOutsideHours(cfg, dbTimestamp)
+    const cbaiActive0 = planOk0 && ((outside0 && cfg.outsideHoursMode === 'cbai') || (!outside0 && cfg.greetEnabled && cfg.greetMode === 'cbai'))
+    let claimed = true // CB-AI path: tanpa marker 1×/hari (budget sendiri)
+    let claimReverted = false
+    if (!cbaiActive0) {
+      const claim = await prisma.chat.updateMany({
+        where: { id: chatId, tenantId, OR: [{ lastAutoGreetDate: null }, { lastAutoGreetDate: { not: today } }] },
+        data: { lastAutoGreetDate: today },
+      })
+      if (claim.count === 0) return { sent: false } // sudah ada auto message hari ini → throttle
+    } else {
+      // claim tercatat sebagai "sudah diklaim" — jalur CB-AI TIDAK menyentuh marker;
+      // jalur lama (degrade) di bawah tetap jalan TANPA claim/revert (diem/away pun
+      // tidak akan tercapai bila cbaiActive — kecuali guard CB-AI gagal, lihat bawah).
+      claimReverted = true
+    }
 
     // Revert klaim — dipanggil bila tidak ada jalur yang mengirim (pola v0.7.0).
+    // Fix audit LOW-1: bila CB-AI aktif kita TIDAK meng-claim (claimReverted=true) →
+    // JANGAN men-null marker `lastAutoGreetDate` yang mungkin diset jalur lain hari itu.
     const revertClaim = async () => {
+      if (cbaiActive0 || claimReverted) return
       await prisma.chat.updateMany({
         where: { id: chatId, tenantId, lastAutoGreetDate: today },
         data: { lastAutoGreetDate: null },
@@ -463,7 +667,8 @@ async function maybeAutoReply(chat, msg) {
 
     // v3.5 (§3) — Greeting/away SKIP bila agen sudah menyapa/balas duluan hari itu
     // (pesan out non-auto dari CS manusia di chat yang sama, hari WIB sama).
-    // Berlaku utk SEMUA jalur auto (away text, menu, greet text).
+    // Berlaku utk SEMUA jalur auto (away text, menu, greet text) — v4.0.0: CB-AI JUGA
+    // ditutup di sini (D6: human bales ≠ reset, skip SEMUA auto hari itu).
     if (await hasHumanOutMessageToday(tenantId, chatId, dbTimestamp)) {
       await prisma.chat.updateMany({
         where: { id: chatId, tenantId, lastAutoGreetDate: { not: today } },
@@ -472,6 +677,27 @@ async function maybeAutoReply(chat, msg) {
       console.log(`[AutoReply] greeting skip — agent sudah menyapa duluan hari ini: chat=${chatId}`)
       return { sent: false }
     }
+
+    // v4.0.0 — CB-AI PRECEDENCE (spec §3): mode 'cbai' + plan OK → jalur AI (outside &
+    // in-hours); SELAIN itu → jalur lama PERSIS. (plan/mode dihitung di claim block atas
+    // — cbaiActive0; guard berlapis sisanya di dalam cbaiReplyForMessage.)
+    if (cbaiActive0) {
+      const r = await cbaiReplyForMessage(chat, cfg, today, { outside, customerText: effectiveTextForCbai(msg), kbSvc: kbSvc0 })
+      // used=true → jalur CB-AI selesai (kirim/bisu-by-design) → return (tidak jatuh ke greeting lain).
+      // used=false → guard gagal/limit-degrade → lanjut jalur lama di bawah (outside: away
+      // existing; in-hours: greet text/menu existing — perilaku degrade PERSIS jalur lama).
+      // CATATAN outside-degrade: away sudah terkirim di dalam cbaiReplyForMessage →
+      // di sini KITA return (jalur (a) away existing TIDAK kirim dobel). used=true +
+      // sent=false (in-hours bisu) juga return — pesan customer sudah tersimpan queue.
+      if (r && r.used) return { sent: !!r.sent }
+    }
+
+    // v3.5 — human-out skip SUDAH di-evaluasi di atas (SEBELUM CB-AI) — jalur lama di
+    // bawah hanya dijangkau bila TIDAK ada human out hari itu (atau CB-AI idle dgn
+    // used=false → skip check tidak men-trigger; satu-satunya jalan ke sini adalah
+    // sudah lolos skip check). Marker skip tetap ter-set utk kedua jalur.
+
+    // ── (a) Luar jam + away ON → away text (D5). Queue TIDAK disentuh. ──
 
     // ── (a) Luar jam + away ON → away text (D5). Queue TIDAK disentuh. ──
     if (cfg.outsideHoursEnabled && outside) {
@@ -641,6 +867,12 @@ module.exports = {
   ensureChatQueued,
   maybeAutoReply,
   hasHumanOutMessageToday, // v3.5
+  // v4.0.0 — CB-AI (export utk E2E/unit parity)
+  cbaiReplyForMessage,
+  reserveAiSlot,
+  bumpAiCounter,
+  revertAiCounter,
+  cbaiBudgetProxy: (c) => require('./aiKnowledge').cbaiBudget(c),
   wibDateString,
   TIME_RE,
   MAX_TEXT_LEN,

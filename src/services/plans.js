@@ -20,6 +20,7 @@ const PRESETS = {
     featGdriveBackup: false,
     featApiAccess: false, // v3.9.13 — Public API v1
     featAiRouting: false, // v3.9.25 — AI Hybrid Routing (Lite ✗ — D5)
+    featAiKnowledge: false, // v4.0.0 — CB-AI Knowledge Auto-Reply (Lite ✗ — D8)
   },
   pro: {
     maxAgents: 10,
@@ -33,6 +34,7 @@ const PRESETS = {
     featGdriveBackup: false,
     featApiAccess: false, // v3.9.13 — Public API v1 (pro belum)
     featAiRouting: true, // v3.9.25 — AI Hybrid Routing (Pro ✓ — D5)
+    featAiKnowledge: true, // v4.0.0 — CB-AI Knowledge Auto-Reply (Pro ✓ — D8)
   },
   max: {
     maxAgents: 50,
@@ -46,11 +48,12 @@ const PRESETS = {
     featGdriveBackup: true,
     featApiAccess: true, // v3.9.13 — Public API v1 (max dulu)
     featAiRouting: true, // v3.9.25 — AI Hybrid Routing (Max ✓ — D5)
+    featAiKnowledge: true, // v4.0.0 — CB-AI Knowledge Auto-Reply (Max ✓ — D8)
   },
 }
 
 // Field fitur (boolean) & kuota (angka/null) — dipakai apply preset + compare custom
-const FEATURE_KEYS = ['featAnalytics', 'featBlast', 'featMenuGateway', 'featHistoryExport', 'featCsat', 'featGdriveBackup', 'featApiAccess', 'featAiRouting']
+const FEATURE_KEYS = ['featAnalytics', 'featBlast', 'featMenuGateway', 'featHistoryExport', 'featCsat', 'featGdriveBackup', 'featApiAccess', 'featAiRouting', 'featAiKnowledge']
 const QUOTA_KEYS = ['maxAgents', 'maxContacts', 'tkQuotaBytes']
 
 /** applyPreset(name) → object field siap create/update TenantPlan. */
@@ -138,6 +141,7 @@ function requireFeature(featureKey) {
     featGdriveBackup: 'Backup Google Drive',
     featApiAccess: 'Akses API (Public API v1)',
     featAiRouting: 'AI Hybrid Routing',
+    featAiKnowledge: 'ChatBareng AI (Auto Reply)', // v4.0.0 — CB-AI Knowledge Auto-Reply (D8)
   }
   return async (req, res, next) => {
     try {

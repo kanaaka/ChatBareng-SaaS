@@ -74,6 +74,7 @@ const FEATURE_DEFS = [
   { key: 'featGdriveBackup', label: 'Backup GDrive' },
   { key: 'featApiAccess', label: 'Akses API (v1)' },
   { key: 'featAiRouting', label: 'AI Hybrid Routing' }, // v3.9.25 — Lite ✗ / Pro ✓ / Max ✓ (D5)
+  { key: 'featAiKnowledge', label: 'ChatBareng AI (Auto Reply)' }, // v4.0.0 — Lite ✗ / Pro ✓ / Max ✓ (D8)
 ]
 const backingUp = ref(null)
 
@@ -422,6 +423,7 @@ function openPlanModal(t) {
     featGdriveBackup: !!t.plan?.featGdriveBackup,
     featApiAccess: !!t.plan?.featApiAccess,
     featAiRouting: !!t.plan?.featAiRouting, // v3.9.25
+    featAiKnowledge: !!t.plan?.featAiKnowledge, // v4.0.0 — CB-AI Knowledge Auto-Reply
   }
   planError.value = ''
 }

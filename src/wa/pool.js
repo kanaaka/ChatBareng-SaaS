@@ -627,8 +627,20 @@ async function reconnectTenant(tenantId, slot = 0) {
 
 // ─── Socket resolution (outgoing) ──────────────────────────────────
 
+// v4.0.0 — E2E outbound stub (E2E_OK_SEND=1 + WA_DISABLED=1): pengiriman auto
+// (auto-reply/gateway/CSAT path) "terkirim" disimulasikan TANPA Baileys —
+// sendAutoText/sendAutoMessage sukses (Message row/broadcast/counter jalan utk E2E).
+// Guard ganda: WA_DISABLED=1 WAJIB tetap ON (tidak pernah aktif di produksi —
+// prod punya socket asli; var env ini hanya dibaca saat WA mati).
+function e2eOkSendEnabled() {
+  return config.waDisabled && String(process.env.E2E_OK_SEND || '') === '1'
+}
+
 function getSocketForTenant(tenantId, slot = 0) {
-  if (config.waDisabled) return null
+  if (config.waDisabled) {
+    if (e2eOkSendEnabled()) return { fake: true, sendMessage: async () => ({ key: { id: 'E2E-OK-SEND-' + Date.now() } }) }
+    return null
+  }
   const st = pool.get(slotKey(tenantId, slot))
   return st && st.connectionState === 'open' ? st.sock : null
 }
@@ -1440,7 +1452,7 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
     if (chat.menuState === 'awaiting') {
       try {
         const menuGateway = require('../services/menuGateway')
-        const handled = await menuGateway.handleChoice(chat.id, effectiveText || '')
+        const handled = await menuGateway.handleChoiceWithText(chat.id, effectiveText || '', effectiveText || '')
         if (handled) {
           log(tid, `[MenuGateway] pilihan diproses utk chat=${chat.id}`)
           return { chat, message: null }

@@ -8,6 +8,7 @@ const express = require('express')
 const router = express.Router()
 const prisma = require('../prisma')
 const { requireAuth, requireAdmin, requireTenant } = require('../auth')
+const plans = require('../services/plans') // v4.0.0 — plan gate CB-AI (featAiKnowledge)
 
 // v3.0 — Isolasi tenant: AutoReply config = per-tenant
 const rt = [requireAuth, requireTenant, requireAdmin]  // requireTenant dulu — super_admin wajib ?tenant= sebelum cek admin
@@ -66,7 +67,9 @@ function validateTextField(body, field, label, errors) {
 }
 
 // v0.13.0 — greetMode (D9): "text" (default, perilaku lama) | "menu" (delegasi ke Menu Gateway)
-const GREET_MODES = ['text', 'menu']
+// v4.0.0 (D4) — greetMode extended value "cbai"; outsideHoursMode baru "text" | "cbai"
+const GREET_MODES = ['text', 'menu', 'cbai']
+const OUTSIDE_MODES = ['text', 'cbai']
 
 // ── GET /api/autoreply (admin only) ──
 router.get('/', ...rt, async (req, res) => {
@@ -98,6 +101,22 @@ router.put('/', ...rt, async (req, res) => {
     const errors = []
 
     await getConfig(req.tenantId) // pastikan config tenant ter-seed
+
+    // v4.0.0 — ALLOWED whitelist (spec §8: field asing → 400 — ketat)
+    const ALLOWED_AUTOREPLY_FIELDS = new Set([
+      'numberAll', 'numberSlot', 'numberSlots',
+      'outsideHoursEnabled', 'outsideHoursText', 'outsideHoursMode',
+      'greetEnabled', 'greetMode', 'greetText',
+      'cbaiLimit', 'cbaiInfoFooter', // v4.0.0 — CB-AI
+      'monFriEnabled', 'monFriStart', 'monFriEnd',
+      'satEnabled', 'satStart', 'satEnd',
+      'sunEnabled', 'sunStart', 'sunEnd',
+    ])
+    for (const key of Object.keys(body)) {
+      if (!ALLOWED_AUTOREPLY_FIELDS.has(key)) {
+        return res.status(400).json({ error: `Field tidak dikenal: ${key}` })
+      }
+    }
 
     const data = {}
 
@@ -165,17 +184,38 @@ router.put('/', ...rt, async (req, res) => {
     if (body.outsideHoursEnabled !== undefined) data.outsideHoursEnabled = !!body.outsideHoursEnabled
     if (body.greetEnabled !== undefined) data.greetEnabled = !!body.greetEnabled
 
-    // v0.13.0 — greetMode: opsional; validasi enum, simpan apa adanya (D9)
+    // ── v4.0.0 — CB-AI fields (spec §8: ALLOWED + validasi ketat, field asing → 400) ──
+    // greetMode: "text" | "menu" | "cbai" (extend value — D4). cbai boleh diset walau
+    // plan ✗ (pre-set); PLAN GATE ada di handler (bisa lihat req/res) — pola menuGateway D5.
     if (body.greetMode !== undefined) {
-      if (!GREET_MODES.includes(body.greetMode)) {
-        return res.status(400).json({ error: 'greetMode harus "text" atau "menu"' })
+      if (typeof body.greetMode !== 'string' || !GREET_MODES.includes(body.greetMode)) {
+        return res.status(400).json({ error: 'greetMode harus "text", "menu", atau "cbai"' })
       }
       data.greetMode = body.greetMode
       // v0.13.2 — mode menu = greeting nyala (menu hanya jalan lewat greeting).
       // v3.9.4 fix — HANYA menu yang memaksa ON; mode 'text' HORMAT ke checkbox
       // (bug lama: selalu dipaksa true → user uncheck greeting = nyala lagi sendiri,
       // ketahuan di E2E T3: greetEnabled:false terkirim tapi tersimpan true).
-      if (body.greetMode === 'menu') data.greetEnabled = true
+      // v4.0.0 — mode 'cbai' juga memaksa greetEnabled=true (radio CB-AI = greeting hidup).
+      if (body.greetMode === 'menu' || body.greetMode === 'cbai') data.greetEnabled = true
+    }
+    if (body.outsideHoursMode !== undefined) {
+      if (typeof body.outsideHoursMode !== 'string' || !OUTSIDE_MODES.includes(body.outsideHoursMode)) {
+        return res.status(400).json({ error: 'outsideHoursMode harus "text" atau "cbai"' })
+      }
+      data.outsideHoursMode = body.outsideHoursMode
+    }
+    if (body.cbaiLimit !== undefined) {
+      if (!Number.isInteger(body.cbaiLimit) || body.cbaiLimit < 1 || body.cbaiLimit > 10) {
+        return res.status(400).json({ error: 'cbaiLimit harus integer 1..10' })
+      }
+      data.cbaiLimit = body.cbaiLimit
+    }
+    if (body.cbaiInfoFooter !== undefined) {
+      if (typeof body.cbaiInfoFooter !== 'boolean') {
+        return res.status(400).json({ error: 'cbaiInfoFooter harus boolean' })
+      }
+      data.cbaiInfoFooter = body.cbaiInfoFooter
     }
 
     // Teks (≤1000 char, placeholder hanya {name})
@@ -192,6 +232,20 @@ router.put('/', ...rt, async (req, res) => {
 
     if (errors.length > 0) {
       return res.status(400).json({ error: errors[0], errors })
+    }
+
+    // ═══ v4.0.0 — Plan gate CB-AI (D8/D5a — pola D5a v3.9.25, NO BACKDOOR) ═══
+    // PUT mode 'cbai' (jam kerja ATAU luar jam) + plan ✗ → 403 upsell ramah —
+    // BERLAKU utk SEMUA aktor (admin MAUPUN super_admin via ?tenant=). Set balik ke
+    // 'text'/'menu' SELALU bebas (matikan tidak diblokir plan).
+    if (data.greetMode === 'cbai' || data.outsideHoursMode === 'cbai') {
+      const plan = await plans.getPlan(req.tenantId)
+      if (!plan || plan.featAiKnowledge === false) {
+        return res.status(403).json({
+          error: 'ChatBareng AI (Auto Reply) tidak tersedia di paket Anda. Hubungi admin platform untuk upgrade.',
+          feature: 'featAiKnowledge',
+        })
+      }
     }
 
     // v3.9.4 — tulis scope:

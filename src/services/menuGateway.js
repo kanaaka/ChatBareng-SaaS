@@ -379,6 +379,16 @@ function matchOption(text, options) {
  * @returns {Promise<boolean>} true = chat adalah milik gateway & transisi terjadi
  */
 async function handleChoice(chatId, plaintextText) {
+  return handleChoiceWithText(chatId, plaintextText, null)
+}
+
+/**
+ * v4.0.0 — handleChoiceWithText: varian handleChoice yang meneruskan plaintext
+ * customer ke executeGatewayChoice (§7b CB-AI QA butuh PERTANYAAN asli).
+ * plaintextText non-null → dipakai utk prompt KB; null → jalur v3.9.25 (classifier
+ * saja, opsi text — PERSIS perilaku lama).
+ */
+async function handleChoiceWithText(chatId, plaintextText, customerTextForKb = null) {
   try {
     const chat = await prisma.chat.findUnique({
       where: { id: chatId },
@@ -405,7 +415,7 @@ async function handleChoice(chatId, plaintextText) {
     let aiOpt = null // v3.9.25 — opsi terpilih via AI classifier (null = fallback lama)
 
     if (opt) {
-      await executeGatewayChoice(chat, cfg, opt, 'keyword')
+      await executeGatewayChoice(chat, cfg, opt, 'keyword', customerTextForKb)
     } else {
       // ═══ v3.9.25 — AI Hybrid Routing (D1–D6): LLM classifier fallback ═══
       // HANYA saat: toggle ON + plan featAiRouting ✓ + AiConfig ada key. LLM dipanggil
@@ -418,7 +428,7 @@ async function handleChoice(chatId, plaintextText) {
         console.error('[MenuGateway] AI classify error (non-fatal, fallback lama):', aiErr.message)
       }
       if (aiOpt) {
-        await executeGatewayChoice(chat, cfg, aiOpt, 'ai')
+        await executeGatewayChoice(chat, cfg, aiOpt, 'ai', customerTextForKb)
       } else {
         // ── Fallback (D2): TIDAK ada loop menu → tag "Lainnya" + queue ──
         const sent = await sendAutoMessage(chat, cfg.fallbackText, chat.contactName)
@@ -445,8 +455,16 @@ async function handleChoice(chatId, plaintextText) {
  * Pindahan persis dari blok "Pilihan valid (D10)" lama di handleChoice — logic
  * TIDAK diubah: set menuOptionId → ChatEvent menu_choice → sendAutoMessage(replyText)
  * → tagContactAndMirror. LLM TIDAK PERNAH menyusun pesan ke customer (D2).
+ *
+ * v4.0.0 — §7b CB-AI per-opsi (D9 all-in-one): opsi answerMode='ai_knowledge' + plan
+ * featAiKnowledge ✓ + AiConfig hasKey → QA scoped buildKnowledgeBlock(opt.aiDocIds ||
+ * null) → covered → kirim JAWABAN AI (counter++ shared CB-AI, metering source='knowledge');
+ * !covered / LLM gagal / plan ✗ / 0 doc aktif → kirim option.replyText PERSIS (fallback
+ * deterministic, DIHITUNG). Mechanics menuState/timeout/tag TIDAK berubah — AI answer
+ * mengganti ISI pesan opsi, bukan alurnya. Classifier (viaLabel='ai') TIDAK kehitung.
  */
-async function executeGatewayChoice(chat, cfg, opt, viaLabel) {
+const CBAI_REPLY_FALLBACK_LIMIT = 600 // jawaban AI ≤600 char + footer (mirror ANSWER_MAX_CHARS)
+async function executeGatewayChoice(chat, cfg, opt, viaLabel, customerTextForKb = null) {
   const chatId = chat.id
   const tenantId = chat.tenantId
   if (chat.menuOptionId !== opt.id) {
@@ -460,8 +478,79 @@ async function executeGatewayChoice(chat, cfg, opt, viaLabel) {
     data: { tenantId, chatId, userId: null, type: 'menu_choice', createdAt: new Date() },
   }).catch(e => console.error('[MenuGateway] chatEvent error (non-fatal):', e.message))
 
-  const sent = await sendAutoMessage(chat, opt.replyText || cfg.fallbackText, chat.contactName)
+  // ═══ v4.0.0 — §7b: answerMode='ai_knowledge' → QA KB scoped ═══
+  let sent = false
+  let aiAnswered = false
+  let textToSend = opt.replyText || cfg.fallbackText
+  let reserved = { ok: false, prev: null } // fix audit MEDIUM-1 — reserve ATOMIK sebelum LLM
+  if (opt.answerMode === 'ai_knowledge') {
+    let planOk = false
+    try {
+      const plans = require('./plans')
+      const plan = await plans.getPlan(tenantId)
+      planOk = !!(plan && plan.featAiKnowledge === true)
+    } catch {}
+    if (planOk) {
+      try {
+        const aiKb = require('./aiKnowledge') // lazy — hindari circular require
+        const autoCfg = await require('./autoReply').getConfigForSlot(tenantId, chat.numberSlot)
+        const cfgAi = await prisma.aiConfig.findUnique({ where: { id: 1 }, select: { apiKeyEnc: true } })
+        const aiCfgOk = !!(cfgAi && cfgAi.apiKeyEnc)
+        const fresh = await prisma.chat.findUnique({ where: { id: chatId } })
+        if (fresh && aiCfgOk) {
+          const docIds = String(opt.aiDocIds || '').split(',').map((s) => parseInt(s.trim(), 10)).filter(Number.isFinite)
+          // Fix audit MEDIUM-2: keyword fast-path → pertanyaan QA = label + aliases
+          // (bukan digit/keyword mentah "1" — semantik: customer menanyakan topik ini).
+          // Classifier (viaLabel='ai') → plaintext customer asli (pertanyaan bebas).
+          const qaText = viaLabel === 'keyword'
+            ? [opt.label, String(opt.aliases || '').trim()].filter(Boolean).join(' — ')
+            : (customerTextForKb || '')
+          const limit = Math.min(aiKb.CBAI_LIMIT_MAX, Math.max(aiKb.CBAI_LIMIT_MIN, Number(autoCfg?.cbaiLimit) || 3))
+          const { reserveAiSlot } = require('./autoReply')
+          reserved = await reserveAiSlot(chat, limit) // race-safe (fix MEDIUM-1)
+          if (reserved.ok) {
+            const r = await aiKb.answerFromKnowledge({
+              tenantId,
+              chat: fresh,
+              customerText: qaText,
+              mode: 'ai_knowledge',
+              docIds: docIds.length ? docIds : null, // kosong = whole KB
+              cbaiInfoFooter: autoCfg?.cbaiInfoFooter !== false,
+            })
+            if (r.ok && r.covered && r.answer) {
+              textToSend = r.answer.slice(0, CBAI_REPLY_FALLBACK_LIMIT)
+              aiAnswered = true
+            }
+          }
+        }
+      } catch (aiErr) {
+        console.error('[MenuGateway] CB-AI option error (non-fatal → replyText fallback):', aiErr.message)
+        reserved = { ok: false, prev: null } // aman: tak ada reserve yang bocor
+      }
+    }
+  }
+
+  sent = await sendAutoMessage(chat, textToSend, chat.contactName)
   if (!sent) console.error(`[MenuGateway] reply opsi gagal terkirim (chat=${chatId}) — tag & queue tetap jalan`)
+
+  // v4.0.0 — counter shared CB-AI: HANYA jawaban generate yang kehitung (D5);
+  // classifier (viaLabel='ai') TIDAK kehitung; fallback replyText DIHITUNG.
+  // Fix audit MEDIUM-1: reserve ATOMIK sudah jalan sebelum LLM — bila terkirim,
+  // slot sudah dibayar (tanpa bump lagi); bila GAGAL kirim → reserve di-revert.
+  if (opt.answerMode === 'ai_knowledge') {
+    try {
+      const { revertAiCounter } = require('./autoReply')
+      if (sent && reserved.ok) {
+        // counter sudah direserve — snapshot marker window terbaru (marker ditulis di reserve)
+      } else if (!sent && reserved.ok) {
+        await revertAiCounter(chat, reserved.prev) // tidak ada pesan → slot dikembalikan
+      } else if (!reserved.ok) {
+        // fallback replyText TANPA reserve (limit habis) → TIDAK dihitung (nol LLM call — spec Q2)
+      }
+    } catch (e) {
+      console.error('[MenuGateway] revertAiCounter error (non-fatal):', e.message)
+    }
+  }
 
   // Tag kontak (persistent) + mirror chat — bila opsi punya tag
   if (opt.tagId && chat.contact) {
@@ -469,6 +558,8 @@ async function executeGatewayChoice(chat, cfg, opt, viaLabel) {
   }
   if (viaLabel === 'ai') {
     console.log(`[MenuGateway] opsi ${opt.position} (${opt.label}) dipilih via AI classifier (chat=${chatId})`)
+  } else if (aiAnswered) {
+    console.log(`[MenuGateway] opsi ${opt.position} (${opt.label}) dijawab CB-AI dari KB (chat=${chatId})`)
   }
 }
 
@@ -770,6 +861,7 @@ module.exports = {
   classifyAiRoute,
   parseAiRouteJson,
   executeGatewayChoice,
+  handleChoiceWithText, // v4.0.0 — §7b: meneruskan plaintext customer ke QA KB
   AI_CLASSIFY_TIMEOUT_MS,
   AI_CLASSIFY_MAX_HISTORY,
   AI_DESC_MAX_LEN,

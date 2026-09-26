@@ -128,6 +128,10 @@ const modules = [
   { icon: '🗂️', title: 'Backup & Restore', desc: 'Export/import history', to: '/admin/history', feature: 'historyExport' },
   { icon: '🤖', title: 'Auto Reply', desc: 'Greeting & jam kerja', to: '/admin/autoreply' },
   { icon: '🧭', title: 'Menu Gateway', desc: 'Triage otomatis', to: '/admin/menu-gateway', feature: 'menuGateway' },
+  // v4.0.0 — ChatBareng AI (CB-AI Knowledge): halaman tampil utk semua admin; guard plan
+  // dilakukan server-side (403 upsell di semua endpoint). Client-side gating opsional
+  // dibiarkan terbuka agar admin Lite tetap bisa lihat + paham fitur (trial → 403 ramah).
+  { icon: '🤖', title: 'ChatBareng AI', desc: 'Jawaban AI dari KB', to: '/admin/ai-knowledge' },
   { icon: '⭐', title: 'CSAT', desc: 'Survey kepuasan', to: '/admin/csat', feature: 'csat' },
   { icon: '☁️', title: 'Backup Drive', desc: 'Google Drive otomatis', to: '/admin/backup', feature: 'gdriveBackup' },
   { icon: '🎨', title: 'Tampilan', desc: 'Warna aksen aplikasi', to: '/admin/appearance' },
@@ -145,6 +149,7 @@ const SEARCH_INDEX = [
   { label: 'WhatsApp', keywords: 'qr, scan, session, logout wa, centang biru, read receipt', path: '/admin/whatsapp', sectionHint: 'Admin Panel', icon: '📱' },
   { label: 'Auto Reply', keywords: 'away, greeting, sambutan, jam kerja, jam operasional, luar jam', path: '/admin/autoreply', sectionHint: 'Admin Panel', icon: '🤖' },
   { label: 'Menu Gateway', keywords: 'menu, triage, intro, timeout, frekuensi, tag otomatis', path: '/admin/menu-gateway', sectionHint: 'Admin Panel', icon: '🧭' },
+  { label: 'ChatBareng AI', keywords: 'ai, knowledge, kb, dokumen, cbai, jawaban otomatis, chatbareng ai', path: '/admin/ai-knowledge', sectionHint: 'Admin Panel', icon: '🤖' },
   { label: 'Templates', keywords: 'template, balasan cepat', path: '/admin/templates', sectionHint: 'Admin Panel', icon: '📝' },
   { label: 'CSAT', keywords: 'bintang, rating, survey, kepuasan, csat', path: '/admin/csat', sectionHint: 'Admin Panel', icon: '⭐' },
   { label: 'Purge', keywords: 'hapus chat, bersih-bersih, purge', path: '/admin/purge', sectionHint: 'Admin Panel', icon: '🧹' },

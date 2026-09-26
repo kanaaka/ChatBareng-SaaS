@@ -25,6 +25,8 @@ const routes = [
       { path: '/admin/backup', name: 'AdminBackup', component: () => import('./views/AdminBackup.vue'), meta: { auth: true, admin: true, feature: 'gdriveBackup' } },
       // v0.13.0 — Menu Gateway (Auto Reply Triage, admin)
       { path: '/admin/menu-gateway', name: 'AdminMenuGateway', component: () => import('./views/AdminMenuGateway.vue'), meta: { auth: true, admin: true, feature: 'menuGateway' } },
+      // v4.0.0 — ChatBareng AI (CB-AI Knowledge, admin; plan gate featAiKnowledge server-side)
+      { path: '/admin/ai-knowledge', name: 'AdminAiKnowledge', component: () => import('./views/AdminAiKnowledge.vue'), meta: { auth: true, admin: true } },
       // v0.10.0 — CSAT Survey (Fitur C, admin)
       { path: '/admin/csat', name: 'AdminCsat', component: () => import('./views/AdminCsat.vue'), meta: { auth: true, admin: true, feature: 'csat' } },
       // v0.9.0 — Tampilan (accent color admin, M3 theme)

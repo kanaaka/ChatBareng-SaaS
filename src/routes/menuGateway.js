@@ -46,7 +46,10 @@ const ALLOWED_TOP_FIELDS = new Set([
   'aiHybrid', 'aiThreshold', // v3.9.25 — AI Hybrid Routing (spec D3/D5)
   'options',
 ])
-const ALLOWED_OPTION_FIELDS = new Set(['position', 'label', 'aliases', 'replyText', 'tagId', 'aiDescription']) // v3.9.25 + aiDescription
+// v4.0.0 — §7b CB-AI per-opsi (D9): answerMode + aiDocIds (≤200 char, id divalidasi milik tenant)
+const ALLOWED_OPTION_FIELDS = new Set(['position', 'label', 'aliases', 'replyText', 'tagId', 'aiDescription', 'answerMode', 'aiDocIds'])
+const ANSWER_MODES = ['text', 'ai_knowledge']
+const AI_DOC_IDS_MAX = 200
 
 // v3.9.25 — batas AI Hybrid (spec D3/D8): threshold 0.50–0.95, aiDescription ≤200 char
 const AI_THRESHOLD_MIN = 0.5
@@ -262,7 +265,33 @@ async function validatePayload(body, errors) {
             }
           }
         }
-        parsed.push({ position: o.position, label: o.label, aliases, replyText, tagId, aiDescription })
+        // ── v4.0.0 — §7b: answerMode + aiDocIds (D9) ──
+        let answerMode = 'text'
+        if (o.answerMode !== undefined && o.answerMode !== null) {
+          if (typeof o.answerMode !== 'string' || !ANSWER_MODES.includes(o.answerMode)) {
+            errors.push(`options[${i}].answerMode harus "text" atau "ai_knowledge"`)
+          } else {
+            answerMode = o.answerMode
+          }
+        }
+        let aiDocIds = ''
+        if (o.aiDocIds !== undefined && o.aiDocIds !== null) {
+          if (typeof o.aiDocIds !== 'string') {
+            errors.push(`options[${i}].aiDocIds harus csv string id dokumen (mis. "1,2")`)
+          } else {
+            aiDocIds = o.aiDocIds.trim()
+            if (aiDocIds.length > AI_DOC_IDS_MAX) {
+              errors.push(`options[${i}].aiDocIds maksimal ${AI_DOC_IDS_MAX} karakter`)
+            } else if (aiDocIds) {
+              // Format ketat: csv integer — elemen selain digit → 400
+              const items = aiDocIds.split(',').map((s) => s.trim())
+              if (items.some((s) => s && !/^\d+$/.test(s))) {
+                errors.push(`options[${i}].aiDocIds harus csv id angka (mis. "1,2")`)
+              }
+            }
+          }
+        }
+        parsed.push({ position: o.position, label: o.label, aliases, replyText, tagId, aiDescription, answerMode, aiDocIds })
       }
 
       // ≥1 opsi wajib punya replyText non-kosong (§8)
@@ -271,6 +300,7 @@ async function validatePayload(body, errors) {
       }
 
       if (errors.length > 0) return null
+      // v4.0.0 — OWNERSHIP aiDocIds divalidasi di PUT handler (butuh req.tenantId)
       // Urutkan by position — deterministik terhadap urutan input
       parsed.sort((a, b) => a.position - b.position)
       data.options = parsed
@@ -444,6 +474,37 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
       }
     }
 
+    // ═══ v4.0.0 — Plan gate CB-AI knowledge (D9/D8 — NO BACKDOOR, semua aktor) ═══
+    // SET opsi answerMode='ai_knowledge' + plan featAiKnowledge ✗ → 403 upsell ramah
+    // (admin & SA ?tenant=). Set balik ke 'text' SELALU bebas (matikan tidak diblokir).
+    if (Array.isArray(data.options) && data.options.some((o) => o.answerMode === 'ai_knowledge')) {
+      const plan = await plans.getPlan(req.tenantId)
+      if (!plan || plan.featAiKnowledge === false) {
+        return res.status(403).json({
+          error: 'ChatBareng AI (Auto Reply) tidak tersedia di paket Anda. Hubungi admin platform untuk upgrade.',
+          feature: 'featAiKnowledge',
+        })
+      }
+      // OWNERSHIP: setiap id di aiDocIds HARUS milik tenant ini (ada di KB-nya)
+      const allIds = new Set()
+      for (const o of data.options) {
+        for (const s of String(o.aiDocIds || '').split(',')) {
+          const v = s.trim()
+          if (v) allIds.add(parseInt(v, 10))
+        }
+      }
+      if (allIds.size > 0) {
+        const rows = await prisma.aiKnowledgeDoc.findMany({ where: { tenantId: req.tenantId, id: { in: [...allIds] } }, select: { id: true } })
+        const owned = new Set(rows.map((r) => r.id))
+        for (const o of data.options) {
+          const missing = String(o.aiDocIds || '').split(',').map((s) => s.trim()).filter(Boolean).map(Number).filter((v) => !owned.has(v))
+          if (missing.length > 0) {
+            return res.status(400).json({ error: `options[${o.position}].aiDocIds berisi id dokumen yang bukan milik tenant ini / tidak ada: ${missing.join(',')}` })
+          }
+        }
+      }
+    }
+
     // v3.9.4 — proteksi dua arah (kawan Auto Reply 409): slot yang punya auto-reply
     // TEKS aktif tidak boleh ditimpa menu — admin diminta matikan dulu di Auto Reply.
     if (targetList && body.enabled === true) {
@@ -502,6 +563,8 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
               replyText: o.replyText,
               tagId: o.tagId,
               aiDescription: o.aiDescription || '', // v3.9.25 — D8
+              answerMode: o.answerMode || 'text', // v4.0.0 — §7b D9
+              aiDocIds: o.aiDocIds || '', // v4.0.0 — §7b D9 (kosong = whole KB)
             })),
           })
         }

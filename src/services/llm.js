@@ -304,7 +304,7 @@ async function logAiUsage({ source = 'summary', tenantId = null, chatId = null, 
   try {
     const usedModel = String(model || '').trim()
     if (!usedModel) return
-    const safeSource = ['summary', 'preview', 'test', 'gateway'].includes(source) ? source : 'summary' // v3.9.25 + 'gateway' (AI Hybrid Routing, spec D7)
+    const safeSource = ['summary', 'preview', 'test', 'gateway', 'knowledge'].includes(source) ? source : 'summary' // v3.9.25 + 'gateway'; v4.0.0 + 'knowledge' (CB-AI, spec D8)
     let promptTokens = 0
     let cachedTokens = 0
     let outputTokens = 0

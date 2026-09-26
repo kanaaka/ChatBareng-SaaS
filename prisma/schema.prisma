@@ -139,6 +139,12 @@ model Chat {
   menuState             String?
   menuRequestedAt       DateTime?
   menuOptionId          Int?
+  // ═══ v4.0.0 — CB-AI budget per chat (ADDITIVE kolom, spec §3/D5) ═══
+  // aiReplyCount: jumlah balasan AI (jawaban + fallback) dalam jendela 24 jam sejak
+  // lastAiReplyAt; window ≥24h → counter direset 0 sebelum increment (budget segar).
+  // Human out-message (marker lastAutoGreetDate existing) TETAP skip semua auto.
+  aiReplyCount          Int                @default(0)
+  lastAiReplyAt         DateTime?
   messages              Message[]
   notes                 ChatNote[]
   csatSurveys           CsatSurvey[]
@@ -250,6 +256,12 @@ model MenuGatewayOption {
   tagId         Int? // tag kontak yg dilekatkan; null = tanpa tag
   // v3.9.25 — Deskripsi AI per opsi (≤200 char; kosong → prompt pakai label+aliases, D8)
   aiDescription String            @default("")
+  // ═══ v4.0.0 — CB-AI Gateway integration (ADDITIVE kolom, spec §4/D9 all-in-one) ═══
+  // answerMode: isi pesan opsi — "text" (replyText PERSIS, perilaku lama) | "ai_knowledge"
+  // (AI menjawab dari KB tenant; gagal/no_answer/plan✗/0 doc → fallback replyText PERSIS).
+  // aiDocIds: csv AiKnowledgeDoc.id (≤200 char; id divalidasi milik tenant; kosong = whole KB).
+  answerMode    String            @default("text") // "text" | "ai_knowledge"
+  aiDocIds      String            @default("")
   config        MenuGatewayConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
 
   @@unique([configId, position])
@@ -550,6 +562,13 @@ model AutoReplyConfig {
   // Trigger 1: Outside Hours Reply
   outsideHoursEnabled Boolean  @default(false)
   outsideHoursText    String   @default("Halo! Mohon maaf, saat ini berada di luar jam operasional. Pesan Anda sudah kami terima dan akan dibalas saat jam kerja berikutnya. Terima kasih! 🙏")
+  // ═══ v4.0.0 — ChatBareng AI (CB-AI) Knowledge Auto-Reply (ADDITIVE kolom, spec §4) ═══
+  // outsideHoursMode: mode balasan di luar jam kerja — "text" (perilaku lama) | "cbai" (AI jaga malam).
+  // cbaiLimit: budget balasan AI per chat per jendela 24 jam (1..10, default 3 — D5).
+  // cbaiInfoFooter: footer "(info per <tgl>)" di jawaban AI — default ON (D3).
+  outsideHoursMode    String   @default("text") // "text" | "cbai"
+  cbaiLimit           Int      @default(3) // 1..10
+  cbaiInfoFooter      Boolean  @default(true)
   // Trigger 2: First-of-Day Greeting
   greetEnabled        Boolean  @default(false)
   greetText           String   @default("Halo! Selamat datang 🙏 Ada yang bisa kami bantu?")
@@ -714,6 +733,9 @@ model TenantPlan {
   featApiAccess     Boolean  @default(false)
   // v3.9.25 — AI Hybrid Routing (plan gate; preset Lite ✗ / Pro ✓ / Max ✓ — D5). Kolom ADDITIVE.
   featAiRouting     Boolean  @default(false)
+  // v4.0.0 — ChatBareng AI (CB-AI) Knowledge Auto-Reply (plan gate; preset Lite ✗ / Pro ✓ /
+  // Max ✓ — D8). Kolom ADDITIVE; semua default OFF → zero behavior change.
+  featAiKnowledge   Boolean  @default(false)
   updatedAt         DateTime @updatedAt
   updatedBy         Int? // plain Int, TANPA FK (hindari urutan purge)
 
@@ -857,4 +879,30 @@ model AiModelRate {
   outputPerM  Float
   updatedAt   DateTime @updatedAt
   updatedById Int?
+}
+
+// ═════════════════════════════════════════════════════════════════
+// v4.0.0 — ChatBareng AI (CB-AI) Knowledge: dokumen KB per-tenant (spec §4).
+// CLOSED-BOOK: AI hanya menjawab dari dokumen ini; tidak pernah pengetahuan umum,
+// tidak pernah nasihat medis (hard-ban di prompt, D12). label WAJIB & unik per
+// tenant (re-upload label sama = upsert replace, D1). content = teks hasil parse
+// (txt/md/csv/docx/xlsx + composer) cap 100.000 char. Migration ADDITIVE murni —
+// tabel baru + 8 ADD COLUMN (AutoReplyConfig 3, Chat 2, MenuGatewayOption 2,
+// TenantPlan 1); ZERO DROP/ALTER-destruktif → rollback aman 2 lapis (§11).
+// ═════════════════════════════════════════════════════════════════
+model AiKnowledgeDoc {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int
+  label       String // wajib, mis. "Pricelist", "Jam Buka" — unique per tenant
+  sourceType  String   @default("file") // "file" | "composer"
+  fileName    String? // nama file asli (composer = null)
+  content     String // teks hasil parse (cap 100.000 char)
+  charCount   Int      @default(0)
+  active      Boolean  @default(true)
+  updatedById Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, label])
+  @@index([tenantId])
 }
