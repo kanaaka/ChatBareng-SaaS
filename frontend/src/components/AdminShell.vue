@@ -150,6 +150,7 @@ const SEARCH_INDEX = [
   { label: 'Auto Reply', keywords: 'away, greeting, sambutan, jam kerja, jam operasional, luar jam', path: '/admin/autoreply', sectionHint: 'Admin Panel', icon: '🤖' },
   { label: 'Menu Gateway', keywords: 'menu, triage, intro, timeout, frekuensi, tag otomatis', path: '/admin/menu-gateway', sectionHint: 'Admin Panel', icon: '🧭' },
   { label: 'ChatBareng AI', keywords: 'ai, knowledge, kb, dokumen, cbai, jawaban otomatis, chatbareng ai', path: '/admin/ai-knowledge', sectionHint: 'Admin Panel', icon: '🤖' },
+  { label: 'Channel', keywords: 'channel, kanal, newsletter, arsip, siaran, broadcast', path: '/channels', sectionHint: 'Admin Panel', icon: '📢' },
   { label: 'Templates', keywords: 'template, balasan cepat', path: '/admin/templates', sectionHint: 'Admin Panel', icon: '📝' },
   { label: 'CSAT', keywords: 'bintang, rating, survey, kepuasan, csat', path: '/admin/csat', sectionHint: 'Admin Panel', icon: '⭐' },
   { label: 'Purge', keywords: 'hapus chat, bersih-bersih, purge', path: '/admin/purge', sectionHint: 'Admin Panel', icon: '🧹' },

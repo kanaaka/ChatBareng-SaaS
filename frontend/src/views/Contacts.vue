@@ -16,7 +16,10 @@
     <div class="max-w-4xl mx-auto w-full p-6 space-y-4">
       <!-- v0.14.0 — Segmen mobile "Kontak | Grup" (spec §6 mobile). Desktop tidak
            berubah (halaman Kontak tetap kontak; nav Grup ada di topbar desktop).
-           Homerow TIDAK disentuh. -->
+           Homerow TIDAK disentuh.
+           v4.1.0 — segmen jadi "Kontak | Grup | Channel" (D4b — pola Grup); Channel
+           = read-only (admin-only, tapi tab tetap tampil utk semua role — panel
+           menampilkan pesan ramah bila bukan admin, konsisten pola halaman lain). -->
       <div class="md:hidden bg-white rounded-lg shadow-sm p-1 flex gap-1">
         <button
           @click="mobileTab = 'contacts'"
@@ -26,11 +29,20 @@
           @click="mobileTab = 'groups'"
           :class="['flex-1 py-2 text-sm font-medium rounded-md transition-colors', mobileTab === 'groups' ? 'bg-wa-dark text-white' : 'text-gray-600 hover:bg-gray-100']"
         >Grup</button>
+        <button
+          @click="mobileTab = 'channels'"
+          :class="['flex-1 py-2 text-sm font-medium rounded-md transition-colors', mobileTab === 'channels' ? 'bg-wa-dark text-white' : 'text-gray-600 hover:bg-gray-100']"
+        >Channel</button>
       </div>
 
       <!-- v0.14.0 — Konten tab Grup (mobile): panel list sama dgn halaman Grup -->
       <div v-if="mobileTab === 'groups'" class="md:hidden">
         <GroupListPanel @open="openGroupMobile" />
+      </div>
+
+      <!-- v4.1.0 — Konten tab Channel (mobile, D4b): panel read-only (list + postingan) -->
+      <div v-if="mobileTab === 'channels'" class="md:hidden">
+        <ChannelListPanel />
       </div>
 
       <!-- Konten tab Kontak (mobile: hidden saat tab Grup aktif; desktop selalu tampil) -->
@@ -409,6 +421,8 @@ import PageShell from '../components/PageShell.vue'
 import ContactEditModal from '../components/ContactEditModal.vue'
 // v0.14.0 — tab Grup mobile: panel list grup + navigasi detail via Dashboard (?chat=)
 import GroupListPanel from './GroupListPanel.vue'
+// v4.1.0 — tab Channel mobile (D4b): panel read-only (list + postingan)
+import ChannelListPanel from '../components/ChannelListPanel.vue'
 import { useRouter } from 'vue-router'
 
 const API = import.meta.env.VITE_API_URL || ''

@@ -51,6 +51,9 @@ const routes = [
   // v0.14.0 — Manajemen Grup (PIC Model): halaman list grup + detail grup
   // (ChatDetail existing + panel member/settings). Pola route /contacts.
   { path: '/groups', name: 'Groups', component: () => import('./views/Groups.vue'), meta: { auth: true } },
+  // v4.1.0 — Channels (WA Channel archive, read-only, admin-only — D5): guard admin
+  // di halaman level (redirect bila !isAdmin, pola halaman lain). TANPA plan gate (D8).
+  { path: '/channels', name: 'Channels', component: () => import('./views/Channels.vue'), meta: { auth: true } },
   // v0.2.0 — Blast jadi satu halaman 2 tab (Kirim/Riwayat); deep-link lama tetap jalan
   { path: '/blast', name: 'Blast', component: () => import('./views/Blast.vue'), meta: { auth: true, feature: 'blast' } },
   { path: '/blast/history', redirect: to => ({ path: '/blast', query: { tab: 'riwayat' } }) },

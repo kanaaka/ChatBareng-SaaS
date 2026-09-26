@@ -42,6 +42,9 @@
         <router-link to="/contacts" class="text-sm hover:underline m3-topbar__link">Kontak</router-link>
         <!-- v0.14.0 — nav Grup (desktop topbar, setelah Kontak) -->
         <router-link to="/groups" class="text-sm hover:underline m3-topbar__link">Grup</router-link>
+        <!-- v4.1.0 — nav Channel (desktop topbar, D4a): SETELAH Grup, SEBELUM Blast;
+             admin-gated (D5) pola Admin Panel -->
+        <router-link v-if="auth.isAdmin" to="/channels" class="text-sm hover:underline m3-topbar__link">Channel</router-link>
         <router-link to="/blast" class="text-sm hover:underline m3-topbar__link">Blast</router-link>
         <AnnouncementBell />
         <button

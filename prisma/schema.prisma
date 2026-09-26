@@ -909,3 +909,43 @@ model AiKnowledgeDoc {
   @@unique([tenantId, label])
   @@index([tenantId])
 }
+
+// ═════════════════════════════════════════════════════════════════
+// v4.1.0 — Channels (WA Channel archive, read-only) — spec §1.
+// Channel = one-way broadcast (fitur "Channel" WA) — arsip TANPA chat row:
+// TIDAK menyentuh Chat/Message/queue/unread/assignment/metering (D3 read-only
+// total). Auto-capture: postingan pertama dari JID @newsletter (per tenant+slot)
+// → auto-register + arsip (D1, tanpa registrasi manual). Nama best-effort (D2):
+// sock.newsletterMetadata → propName event → JID prefix; gagal = tetap arsip.
+// Dedupe by [archiveId, serverId] — re-run idempoten. Tanpa plan gate (D8).
+// MIGRATION 2026092613000000_channel_archive = 2 CREATE TABLE, 0 DROP.
+// ═════════════════════════════════════════════════════════════════
+model ChannelArchive {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int
+  numberSlot  Int      @default(0) // slot yang melihat channel (multi-nomor)
+  waJid       String // "...@newsletter"
+  name        String   @default("") // best-effort (D2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  updatedById Int?
+
+  @@unique([tenantId, numberSlot, waJid])
+  @@index([tenantId])
+}
+
+model ChannelPost {
+  id           Int       @id @default(autoincrement())
+  archiveId    Int
+  serverId     String? // msg ID newsletter (server_id — dipakai react nanti)
+  content      String    @default("") // teks postingan
+  mediaPath    String? // bila media tersimpan (D6)
+  mediaType    String?
+  mediaMime    String?
+  fromMe       Boolean   @default(false) // postingan admin channel sendiri
+  msgTimestamp DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@unique([archiveId, serverId])
+  @@index([archiveId])
+}

@@ -459,11 +459,21 @@ async function connectTenant(tenantId, opts = {}) {
     for (const msg of messages) {
       try {
         if (msg.key?.remoteJid === 'status@broadcast') continue
-        // v4.0.0c hotfix (QA Kanaka 11:57) — WA Channel (@newsletter) BUKAN percakapan:
-        // one-way broadcast. Postingan channel (termasuk channel milik tenant sendiri)
-        // TIDAK boleh create chat / auto-reply / queue — bug nyata: "Jadwal Oktober"
-        // dijawab Auto Reply + masuk antrean. Jalur arsip Channel = fitur terpisah (parked).
-        if (typeof msg.key?.remoteJid === 'string' && msg.key.remoteJid.endsWith('@newsletter')) continue
+        // v4.1.0 — WA Channel (@newsletter) = one-way broadcast — BUKAN percakapan
+        // customer (fondasi: v4.0.0c hotfix, QA Kanaka 11:57). Ganti plain-skip →
+        // JALUR ARSIP read-only (spec docs/spec-v4.1.0-channels.md §3):
+        // archiveNewsletterMessage (try/catch log-only, TIDAK PERNAH throw) →
+        // continue. TETAP TIDAK ke processIncomingMessage (guard defense-in-depth
+        // v4.0.0c di entry tetap hidup). D3: tanpa Chat/queue/unread/metering.
+        if (typeof msg.key?.remoteJid === 'string' && msg.key.remoteJid.endsWith('@newsletter')) {
+          try {
+            const channelArchive = require('../services/channelArchive')
+            await channelArchive.archiveNewsletterMessage(tid, slot, msg, { sock })
+          } catch (ae) {
+            logErr(tid, slot, 'channel archive error (log-only):', ae.message)
+          }
+          continue
+        }
         if (!msg.message) continue // protocol/ephemeral control events
         await processIncomingMessage(tid, msg, { slot })
       } catch (e) {
@@ -1771,6 +1781,8 @@ module.exports = {
   extractQuote,
   quotedColumnsFromExtract,
   buildQuotedShape,
+  // v4.1.0 — Channels: helper media utk services/channelArchive (metadata → ext)
+  getExtFromMime,
   WA_NOT_CONNECTED_MSG,
   WA_DISABLED_MSG,
   // v3.9 — multi-nomor per-slot
