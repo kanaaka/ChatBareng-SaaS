@@ -546,6 +546,7 @@ async function cbaiReplyForMessage(chat, cfg, today, { outside = false, customer
       customerText,
       mode: 'cbai',
       cbaiInfoFooter: cfg.cbaiInfoFooter !== false,
+      personaCfg: cfg, // v4.1.1 — persona (D2/D3); kosong = prompt persis v4.1.0
     })
     if (!r.ok) {
       // Guard gagal (plan ✗/0 doc/NO_CONFIG/error) → jalur lama PERSIS (deterministik).

@@ -139,6 +139,8 @@
             Jendela 24 jam sejak balasan AI terakhir: setelah {{ form.cbaiLimit }} balasan (jawaban AI + fallback
             dihitung), chat diam sampai 24 jam lewat — lalu budget segar. CS yang bales TIDAK mereset hitungan.
           </p>
+          <!-- v4.1.1 (D5b) — counter transparan: edukasi reset 24 jam -->
+          <p class="text-xs text-gray-400 mt-1">Limit per chat · reset 24 jam — chat baru mulai dari 0.</p>
         </div>
         <label class="flex items-center justify-between mt-4 cursor-pointer">
           <div>

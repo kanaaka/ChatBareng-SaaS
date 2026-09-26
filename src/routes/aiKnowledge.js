@@ -2,7 +2,7 @@
 // v4.0.0 — ChatBareng AI (CB-AI) Knowledge API — NEW (spec §8).
 // Mount /api/ai-knowledge (server.js pola :168). admin + SA ?tenant= (requireTenant).
 //
-// GET    /              → list docs + aiUsage bulan WIB + config {cbaiLimit, cbaiInfoFooter}
+// GET    /              → list docs + aiUsage bulan WIB + config {cbaiLimit, cbaiInfoFooter, persona v4.1.1}
 // POST   /upload        → multer memory (pola blast.js:17), 5MB, whitelist txt/md/csv/docx/xlsx,
 //                         label wajib; label sama = upsert REPLACE (D1); body.docId → replace itu
 // POST   /compose       → {label, content} composer (warga kelas satu, D1)
@@ -11,7 +11,8 @@
 // PUT    /:id/content   → composer edit inline (sourceType composer ATAU file — content replace)
 // PUT    /:id/active    → {active: bool}
 // DELETE /:id
-// PUT    /config        → {cbaiLimit 1..10 int strict, cbaiInfoFooter bool strict} → 400 liar
+// PUT    /config        → {cbaiLimit 1..10 int strict, cbaiInfoFooter bool strict, persona v4.1.1
+//                         (cbaiBotName/cbaiBotRole/cbaiHumanAgentLabel — string trim cap 120)} → 400 liar
 //
 // Konvensi pola: routes/autoreply.js (requireAuth+requireTenant+requireAdmin, validate-first,
 // 400 {error}, 500 internal). Field asing DITOLAK (400) — ketat.
@@ -70,7 +71,7 @@ router.get('/', ...rt, featAiKnowledgeGate, async (req, res) => {
     })
     const cfg = await prisma.autoReplyConfig.findFirst({
       where: { tenantId: tid, numberSlot: null },
-      select: { cbaiLimit: true, cbaiInfoFooter: true, outsideHoursMode: true, greetMode: true },
+      select: { cbaiLimit: true, cbaiInfoFooter: true, outsideHoursMode: true, greetMode: true, cbaiBotName: true, cbaiBotRole: true, cbaiHumanAgentLabel: true },
     })
     // plan ✗ → 403 by gate; aiUsage selalu diisi (fitur sudah terbuka di sini)
     res.json({
@@ -81,6 +82,10 @@ router.get('/', ...rt, featAiKnowledgeGate, async (req, res) => {
         cbaiInfoFooter: cfg?.cbaiInfoFooter !== false,
         outsideHoursMode: cfg?.outsideHoursMode || 'text',
         greetMode: cfg?.greetMode || 'text',
+        // v4.1.1 — persona (D1): 3 field + GET echo; kosong = '' (perilaku lama)
+        cbaiBotName: cfg?.cbaiBotName || '',
+        cbaiBotRole: cfg?.cbaiBotRole || '',
+        cbaiHumanAgentLabel: cfg?.cbaiHumanAgentLabel || '',
       },
     })
   } catch (e) {
@@ -191,13 +196,14 @@ router.post('/trial', ...rt, featAiKnowledgeGate, async (req, res) => {
     const question = String(body.question || '').trim()
     if (!question) return res.status(400).json({ error: 'Pertanyaan wajib diisi' })
     if (question.length > 1000) return res.status(400).json({ error: 'Pertanyaan maksimal 1000 karakter' })
-    const cfg = await prisma.autoReplyConfig.findFirst({ where: { tenantId: tid, numberSlot: null }, select: { cbaiInfoFooter: true } })
+    const cfg = await prisma.autoReplyConfig.findFirst({ where: { tenantId: tid, numberSlot: null }, select: { cbaiInfoFooter: true, cbaiBotName: true, cbaiBotRole: true, cbaiHumanAgentLabel: true } })
     const r = await aiKnowledge.answerFromKnowledge({
       tenantId: tid,
       chat: null, // TIDAK ada Chat → counter tidak nambah, chatId metering null
       customerText: question,
       mode: 'trial',
       cbaiInfoFooter: cfg?.cbaiInfoFooter !== false,
+      personaCfg: cfg, // v4.1.1 — persona ikut di prompt trial (D2; tidak menyentuh counter)
     })
     if (!r.ok) {
       const map = {
@@ -235,11 +241,13 @@ router.get('/:id', ...rt, featAiKnowledgeGate, async (req, res) => {
 })
 
 // ── PUT /config — cbaiLimit 1..10 int STRICT + cbaiInfoFooter bool STRICT (§8) ──
+// v4.1.1 — persona (D1): cbaiBotName/cbaiBotRole/cbaiHumanAgentLabel — string trim cap
+// 120; tipe liar → 400 (spec N3). Kosong '' = hapus persona (perilaku v4.1.0 kembali).
 router.put('/config', ...rt, featAiKnowledgeGate, async (req, res) => {
   try {
     const body = req.body || {}
     for (const key of Object.keys(body)) {
-      if (!['cbaiLimit', 'cbaiInfoFooter'].includes(key)) return res.status(400).json({ error: `Field tidak dikenal: ${key}` })
+      if (!['cbaiLimit', 'cbaiInfoFooter', 'cbaiBotName', 'cbaiBotRole', 'cbaiHumanAgentLabel'].includes(key)) return res.status(400).json({ error: `Field tidak dikenal: ${key}` })
     }
     if (Object.keys(body).length === 0) return res.status(400).json({ error: 'Tidak ada field yang valid untuk diupdate' })
     const data = {}
@@ -252,6 +260,17 @@ router.put('/config', ...rt, featAiKnowledgeGate, async (req, res) => {
     if (body.cbaiInfoFooter !== undefined) {
       if (typeof body.cbaiInfoFooter !== 'boolean') return res.status(400).json({ error: 'cbaiInfoFooter harus boolean' })
       data.cbaiInfoFooter = body.cbaiInfoFooter
+    }
+    // v4.1.1 — persona: string STRICT (bukan string → 400), trim, cap 120 char (D1).
+    for (const pf of ['cbaiBotName', 'cbaiBotRole', 'cbaiHumanAgentLabel']) {
+      if (body[pf] !== undefined) {
+        if (typeof body[pf] !== 'string') return res.status(400).json({ error: `${pf} harus berupa teks` })
+        const v = body[pf].trim()
+        if (v.length > aiKnowledge.PERSONA_FIELD_CAP) {
+          return res.status(400).json({ error: `${pf} maksimal ${aiKnowledge.PERSONA_FIELD_CAP} karakter` })
+        }
+        data[pf] = v
+      }
     }
     // Prisma menolak compound unique dgn NULL (lesson v3.9 fix BUG-1) → findFirst +
     // create-catch-race (pola getConfig autoReply), BUKAN upsert tenantId_numberSlot:null.
@@ -267,7 +286,7 @@ router.put('/config', ...rt, featAiKnowledgeGate, async (req, res) => {
         })
     // invalidate cache service autoReply (config dibaca runtime via cache)
     require('../services/autoReply').invalidateConfig(req.tenantId)
-    res.json({ config: { cbaiLimit: cfg.cbaiLimit, cbaiInfoFooter: cfg.cbaiInfoFooter } })
+    res.json({ config: { cbaiLimit: cfg.cbaiLimit, cbaiInfoFooter: cfg.cbaiInfoFooter, cbaiBotName: cfg.cbaiBotName, cbaiBotRole: cfg.cbaiBotRole, cbaiHumanAgentLabel: cfg.cbaiHumanAgentLabel } })
   } catch (e) {
     console.error('AiKnowledge PUT config error:', e)
     res.status(500).json({ error: 'Internal server error' })

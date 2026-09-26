@@ -73,6 +73,8 @@ const OUTSIDE_MODES = ['text', 'cbai']
 
 // ── GET /api/autoreply (admin only) ──
 router.get('/', ...rt, async (req, res) => {
+  // v4.1.1 — GET echo persona (cbaiBotName/cbaiBotRole/cbaiHumanAgentLabel) otomatis
+  // ikut di {...cfg} (full row) — baik jalur slot maupun shared. Tanpa perubahan bentuk.
   try {
     // v3.9 — ?slot= → config per-slot (fallback shared); tanpa slot = shared (compat)
     const slotRaw = req.query.slot
@@ -112,6 +114,7 @@ router.put('/', ...rt, async (req, res) => {
       'outsideHoursEnabled', 'outsideHoursText', 'outsideHoursMode',
       'greetEnabled', 'greetMode', 'greetText',
       'cbaiLimit', 'cbaiInfoFooter', // v4.0.0 — CB-AI
+      'cbaiBotName', 'cbaiBotRole', 'cbaiHumanAgentLabel', // v4.1.1 — persona (D1)
       // v4.0.0a hotfix (QA Kanaka 09:15) — repeatFrequency PINDAH ke halaman ini (D10):
       // FE kirim full-form → tanpa ini SEMUA save Auto Reply 400 "Field tidak dikenal".
       // Validasi ketat di bawah (enum, GREET_MODES-style) — bukan cuma whitelist.
@@ -224,6 +227,21 @@ router.put('/', ...rt, async (req, res) => {
         return res.status(400).json({ error: 'cbaiInfoFooter harus boolean' })
       }
       data.cbaiInfoFooter = body.cbaiInfoFooter
+    }
+    // v4.1.1 — persona (D1): string STRICT (bukan string → 400), trim, cap 120.
+    // Kosong '' = reset (perilaku v4.1.0). Validasi SEBELUM plan-gate — 400 liar
+    // selalu menang atas 403 plan (pola validasi-first).
+    for (const pf of ['cbaiBotName', 'cbaiBotRole', 'cbaiHumanAgentLabel']) {
+      if (body[pf] !== undefined) {
+        if (typeof body[pf] !== 'string') {
+          return res.status(400).json({ error: `${pf} harus berupa teks` })
+        }
+        const v = body[pf].trim()
+        if (v.length > 120) {
+          return res.status(400).json({ error: `${pf} maksimal 120 karakter` })
+        }
+        data[pf] = v
+      }
     }
     // v4.0.0a hotfix (QA Kanaka 09:15) — repeatFrequency PINDAH ke halaman ini (D10):
     // whitelist doang gak cukup — validasi enum + tulis data. NULL kolom (tenant

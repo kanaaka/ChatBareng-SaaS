@@ -518,6 +518,7 @@ async function executeGatewayChoice(chat, cfg, opt, viaLabel, customerTextForKb 
               mode: 'ai_knowledge',
               docIds: docIds.length ? docIds : null, // kosong = whole KB
               cbaiInfoFooter: autoCfg?.cbaiInfoFooter !== false,
+              personaCfg: autoCfg, // v4.1.1 — persona (D2/D3); kosong = prompt persis v4.1.0
             })
             if (r.ok && r.covered && r.answer) {
               textToSend = r.answer.slice(0, CBAI_REPLY_FALLBACK_LIMIT)

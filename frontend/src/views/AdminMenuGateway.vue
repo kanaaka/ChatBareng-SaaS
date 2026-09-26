@@ -292,6 +292,8 @@
               </div>
               <div v-if="opt.answerMode === 'ai_knowledge'" class="mt-2">
                 <span class="text-xs text-gray-600 block mb-1">Scope dokumen KB (kosong = semua dokumen aktif)</span>
+                <!-- v4.1.1 (D5b) — counter transparan: edukasi limit + reset 24 jam -->
+                <p class="text-xs text-gray-400 mt-1">Jawaban AI dari opsi ini ikut limit per chat · reset 24 jam — chat baru mulai dari 0.</p>
                 <div v-if="kbDocs.length === 0" class="text-xs text-amber-600 px-2 py-1 rounded bg-amber-50">
                   Belum ada dokumen aktif — upload dulu di menu ChatBareng AI.
                 </div>

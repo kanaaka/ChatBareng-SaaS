@@ -5,6 +5,8 @@
     (label, badge File/Composer, charCount, toggle aktif, updatedAt sortable) · Upload
     modal (label wajib + info PDF) · Composer modal (edit inline) · Preview parse drawer
     (+ warning truncate) · 🧪 Trial chatbox (badge "tercakup/tidak dari KB"). TANPA v-html.
+    v4.1.1 — kartu Pengaturan CB-AI: + persona bot (3 field, D1) + baris
+    "Terpakai bulan ini: N jawaban · ≈ Rp X" (counter transparan D5a, dari aiUsage).
   -->
   <PageShell title="ChatBareng AI" back-to="/admin">
     <header class="hidden md:flex m3-topbar px-4 py-3 items-center justify-between">
@@ -58,13 +60,49 @@
           <M3Switch v-model="config.cbaiInfoFooter" :disabled="saving" />
         </label>
 
+        <!-- v4.1.1 — Persona bot (D1): 3 field; kosong semua = perilaku lama -->
+        <div class="mt-4 border-t border-gray-100 pt-4">
+          <span class="text-sm text-gray-800 block">Persona bot</span>
+          <p class="text-xs text-gray-500 mt-0.5">Opsional — kosongkan semua untuk perilaku default.</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+            <div>
+              <span class="text-xs text-gray-600 block mb-1">Nama bot</span>
+              <input
+                v-model="config.cbaiBotName"
+                maxlength="120"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                placeholder="mis. Sinta"
+              />
+            </div>
+            <div>
+              <span class="text-xs text-gray-600 block mb-1">Label agent manusia (handoff)</span>
+              <input
+                v-model="config.cbaiHumanAgentLabel"
+                maxlength="120"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                placeholder="mis. Kak Nadia (CS) — kosong = default"
+              />
+            </div>
+            <div class="sm:col-span-2">
+              <span class="text-xs text-gray-600 block mb-1">Bekerja di mana / bisnis apa</span>
+              <input
+                v-model="config.cbaiBotRole"
+                maxlength="120"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                placeholder="mis. Klinik Kecantikan Mazaya — cabang Bandung"
+              />
+            </div>
+          </div>
+        </div>
+
         <div class="flex justify-end mt-4">
           <button @click="saveConfig" :disabled="saving" class="m3-btn m3-btn--tonal text-sm">
             {{ saving ? 'Menyimpan...' : 'Simpan pengaturan' }}
           </button>
         </div>
-        <p v-if="aiUsage" class="text-xs text-gray-400 mt-2">
-          ≈ Rp {{ (aiUsage.costRp || 0).toLocaleString('id-ID') }} bulan ini ({{ aiUsage.calls || 0 }} call AI) — metering otomatis.
+        <!-- v4.1.1 (D5a) — counter transparan dari aiUsage existing (audit LOW: baris lama "metering otomatis" dihapus, redundan) -->
+        <p v-if="aiUsage" class="text-xs text-gray-500 mt-2">
+          Terpakai bulan ini: {{ (aiUsage.calls || 0) }} jawaban · ≈ Rp {{ (aiUsage.costRp || 0).toLocaleString('id-ID') }}
         </p>
       </div>
 
@@ -239,7 +277,8 @@ const { confirmAction } = useConfirm()
 const saving = ref(false)
 const docs = ref([])
 const aiUsage = ref(null)
-const config = ref({ cbaiLimit: 3, cbaiInfoFooter: true })
+// v4.1.1 — persona (D1): 3 field di kartu Pengaturan CB-AI; kosong = perilaku lama
+const config = ref({ cbaiLimit: 3, cbaiInfoFooter: true, cbaiBotName: '', cbaiBotRole: '', cbaiHumanAgentLabel: '' })
 // v4.0.1 hotfix — plan gate graceful (quirk #2 QA Kanaka): plan ✗ → banner upsell
 // ramah (pola Auto Reply), BUKAN toast "Gagal memuat" (403 kena interceptor global).
 const planOk = ref(true)
@@ -420,9 +459,17 @@ async function saveConfig() {
     const res = await axios.put(`${API}/api/ai-knowledge/config`, {
       cbaiLimit: Number(config.value.cbaiLimit),
       cbaiInfoFooter: !!config.value.cbaiInfoFooter,
+      // v4.1.1 — persona: trim + ikut simpan (backend cap 120 / tipe liar → 400)
+      cbaiBotName: String(config.value.cbaiBotName || '').trim(),
+      cbaiBotRole: String(config.value.cbaiBotRole || '').trim(),
+      cbaiHumanAgentLabel: String(config.value.cbaiHumanAgentLabel || '').trim(),
     })
     config.value.cbaiLimit = res.data.config.cbaiLimit
     config.value.cbaiInfoFooter = res.data.config.cbaiInfoFooter
+    // v4.1.1 — echo persona (nilai tersistem = versi trim backend)
+    config.value.cbaiBotName = res.data.config.cbaiBotName ?? ''
+    config.value.cbaiBotRole = res.data.config.cbaiBotRole ?? ''
+    config.value.cbaiHumanAgentLabel = res.data.config.cbaiHumanAgentLabel ?? ''
     toast.show({ icon: '✅', title: 'Tersimpan', message: 'Pengaturan CB-AI berhasil disimpan' })
   } catch (e) {
     toast.show({ icon: '⚠️', title: 'Gagal simpan', message: e.response?.data?.error || 'Terjadi kesalahan' })
@@ -439,6 +486,10 @@ async function fetchAll() {
     if (res.data.config) {
       config.value.cbaiLimit = res.data.config.cbaiLimit ?? 3
       config.value.cbaiInfoFooter = res.data.config.cbaiInfoFooter !== false
+      // v4.1.1 — persona: load dari GET config (kosong = '')
+      config.value.cbaiBotName = res.data.config.cbaiBotName || ''
+      config.value.cbaiBotRole = res.data.config.cbaiBotRole || ''
+      config.value.cbaiHumanAgentLabel = res.data.config.cbaiHumanAgentLabel || ''
     }
   } catch (e) {
     if (e?.response?.status === 403) {

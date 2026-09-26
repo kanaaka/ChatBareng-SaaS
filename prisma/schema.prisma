@@ -569,6 +569,11 @@ model AutoReplyConfig {
   outsideHoursMode    String   @default("text") // "text" | "cbai"
   cbaiLimit           Int      @default(3) // 1..10
   cbaiInfoFooter      Boolean  @default(true)
+  // ═══ v4.1.1 — CB-AI Persona (ADDITIVE 3 kolom, spec docs/spec-v4.1.1-persona.md D1/D6) ═══
+  // Kosong semua = prompt PERSIS v4.1.0 (golden-compare E2E N2 — backward-compat).
+  cbaiBotName         String   @default("") // nama bot (mis. "Sinta")
+  cbaiBotRole         String   @default("") // bekerja di mana / bisnis apa (teks bebas ≤120)
+  cbaiHumanAgentLabel String   @default("") // label agent manusia utk instruksi handoff (D3)
   // v4.0.0b hotfix — repeatFrequency PINDAH ke sini (D10): NULL = belum pernah di-save
   // via UI baru → runtime fallback ke MenuGatewayConfig.repeatFrequency (setting lama tetap hidup).
   repeatFrequency     String? // "per_chat" | "daily" | "weekly"
