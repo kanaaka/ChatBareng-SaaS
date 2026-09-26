@@ -31,9 +31,11 @@
 - `covered:false` (LLM jawab tapi gak cover) & LLM error/API down → default fallback text (in-hours `greetText`, outside `outsideHoursText`) + counter++ — PERSIS existing (Kanaka 00:19: "kalau LLM tidak merespon... kembalinya ke default text").
 - HANYA limit-exhausted in-hours yang pakai `cbaiEndText` (D2).
 
-## D4 — Data fix prod (OLEH PARENT saat deploy — HARAM utk subagent)
+## D4 — Data fix prod (DIBATALKAN oleh Kanaka 00:42)
 
-`UPDATE AutoReplyConfig SET greetMode='cbai' WHERE tenantId=10 AND numberSlot=1;` (restore state pre-clobber 19:08:55). `outsideHoursMode` slot-1 dibiarkan `text` (di luar jam = away text; Kanaka belum minta CB-AI outside). Restart juga membersihkan config cache.
+**CANCELLED — owner intent:** slot-1 Parahita `greetMode/outsideHoursMode = 'text'` adalah setting yang **disengaja Kanaka** ("Emang aku yang set itu jadi text replies"). BUKAN clobber bug. **JANGAN sentuh row tenant 10 saat deploy** — tidak ada data fix. Dory juga sudah HARAM menyentuhnya (rule spec).
+
+Catatan historis (root-cause analysis tetap valid utk kode): sebelum 19:08:55 slot-1 jalur CB-AI aktif (log: counter 1→2→fallback→3 di chat 7908); save 19:08:55 = Kanaka sendiri mengubah mode jadi text.
 
 ## E2E — `scripts/e2e-v4121.cjs` (pola v4120; server copy 5099; WAJIB apply migration baru ke copy-DB + bookkeeping SEBELUM e2e — lesson v4.1.1)
 
