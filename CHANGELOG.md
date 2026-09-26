@@ -27,7 +27,7 @@
 
 ---
 
-# v4.0.0c — HOTFIX: WA Channel (@newsletter) dijawab Auto Reply + masuk antrean (QA Kanaka 11:57, RELEASED 12:40)
+# v4.0.0c — HOTFIX: WA Channel (@newsletter) dijawab Auto Reply + masuk antrean (QA Kanaka 11:57, RELEASED 12:40, USER-VERIFIED via QA CB-AI 13:35)
 
 **Bug:** postingan Channel WA milik tenant Mazaya ("Jadwal Oktober tayang…", JID `120363424886543307@newsletter`) ter-create sbg chat normal (chat 7858, status open + queued + menuState awaiting) → **Auto Reply terkirim ke Channel** (dir=out isAuto=true, detik sama) → nyangkut di antrean. Channel = one-way broadcast, bukan percakapan customer.
 
@@ -41,7 +41,7 @@
 
 ---
 
-# v4.0.0b — HOTFIX: Auto Reply save GAGAL semua tenant ("Field tidak dikenal: repeatFrequency") (QA Kanaka 09:15, RELEASED 09:45)
+# v4.0.0b — HOTFIX: Auto Reply save GAGAL semua tenant ("Field tidak dikenal: repeatFrequency") (QA Kanaka 09:15, RELEASED 09:45, USER-VERIFIED — save Auto Reply jalan di QA 13:35)
 
 **Trigger QA Kanaka:** tenant tanpa CB-AI, setting semua teks biasa, klik Simpan → toast "Gagal simpan, field tidak dikenal: Repeat Frequency". **Dugaan Kanaka ("dropdown terikat CB-AI krn satu kartu") = setengah bener** — dropdown gak terikat logic CB-AI (placement doang), tapi **D10 incomplete**: dropdown pindah UI ke Auto Reply, backend TIDAK disiapin (kolom `repeatFrequency` tetap di MenuGatewayConfig + whitelist PUT autoreply gak ditambah) → FE kirim full-form → `repeatFrequency` dianggap field asing → **400 buat SEMUA save Auto Reply, SEMUA tenant** (bukan cuma CB-AI). E2E gak nangkap: test lama kirim payload eksplisit minimal, bukan full-form spread kayak UI.
 
@@ -67,7 +67,7 @@
 
 ---
 
-# v4.0.0 — MAJOR: ChatBareng AI (CB-AI) Knowledge Auto-Reply — "Introducing ChatBarengAI" (GO Kanaka 2026-09-26 06:48) — RELEASED 08:03 (deploy 08:02–08:03: backup 20260926-0802-pre-v4.0.0.db ×2 → migrate deploy → restart PID 42438, health 200, 3 WA slot reconnect; audit Kimi GO-WITH-NOTES — 2 MEDIUM + 1 LOW + 4 NIT difix pre-deploy, E2E final 72/72 + regresi 324/324; menunggu USER-VERIFY Kanaka)
+# v4.0.0 — MAJOR: ChatBareng AI (CB-AI) Knowledge Auto-Reply — "Introducing ChatBarengAI" (GO Kanaka 2026-09-26 06:48) — RELEASED 08:03 (deploy 08:02–08:03: backup 20260926-0802-pre-v4.0.0.db ×2 → migrate deploy → restart PID 42438, health 200, 3 WA slot reconnect; audit Kimi GO-WITH-NOTES — 2 MEDIUM + 1 LOW + 4 NIT difix pre-deploy, E2E final 72/72 + regresi 324/324; USER-VERIFIED ✅ (Kanaka QA 13:35 — 4 jalur: KB trial, AR full CB-AI, gateway AI Hybrid+CB-AI, rollback teks; quirk counter+personifikasi → backlog v4.1.x)
 
 **Request (Kanaka 05:19–06:48, spec `docs/spec-v4.0.0-cbai-knowledge.md` — 12 keputusan D1–D12 + 4 jawaban final §14 terkunci):** tenant upload/paste dokumen → AI menjawab pertanyaan customer **HANYA dari KB itu** (closed-book L3.5 — bukan L4; keputusan "L4 NO klinik" 03:00 tetap terjaga) di jam kerja dan/atau luar jam; tidak tercakup → fallback deterministik; chat tetap masuk antrean untuk di-*take* agent. Differentiator vs Wablas/Qontak gateway = jawaban kontekstual dari knowledge tenant + metering cost transparan.
 
