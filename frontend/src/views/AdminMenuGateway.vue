@@ -261,14 +261,20 @@
                 v-model="opt.aiDescription"
                 rows="2"
                 maxlength="200"
-                :disabled="!kbPlanOk"
+                :disabled="!aiRoutingPlanOk"
                 class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-60"
                 placeholder="Deskripsi AI (opsional, ≤200) — mis. 'rute buat pasien mau booking jadwal terapi'. Kosong = AI pakai label + alias."
               ></textarea>
               <div class="text-right text-[10px] text-gray-400">{{ (opt.aiDescription || '').length }}/200</div>
             </div>
-            <!-- v4.0.0 — §7b (D9): Jawaban opsi = Teks / AI (Knowledge) + scope dokumen KB -->
-            <div v-if="kbPlanOk" class="border-t border-gray-100 pt-2">
+            <!-- v4.0.0 — §7b (D9): Jawaban opsi = Teks / AI (Knowledge) + scope dokumen KB.
+                 v4.0.0a hotfix (quirk #2): section SELALU tampil — plan ✗ → banner upsell
+                 (pola Auto Reply), radio AI disabled, Teks tetap bebas. -->
+            <div class="border-t border-gray-100 pt-2">
+              <p v-if="!kbPlanOk" class="text-xs mb-2 px-3 py-2 rounded-lg bg-amber-50 text-amber-700">
+                ChatBareng AI belum tersedia di paket kamu — hubungi admin platform untuk upgrade.
+                Opsi tetap dibalas pakai teks resmi di bawah ini.
+              </p>
               <div class="flex flex-wrap items-center gap-3">
                 <span class="text-xs text-gray-600">Jawaban:</span>
                 <label class="flex items-center gap-1.5 text-sm text-gray-800 cursor-pointer">
@@ -532,21 +538,22 @@ async function fetchAll() {
     // v3.9.25 — AI Hybrid state + plan gate + metering (spec §7)
     form.value.aiHybrid = !!cfg.aiHybrid
     form.value.aiThreshold = Number(cfg.aiThreshold ?? 0.70)
-    // v4.0.0 — plan gate: aiUsage null = featAiRouting ✗ ATAU featAiKnowledge ✗ →
-    // cek ulang featAiKnowledge via /api/ai-knowledge (plan CB-AI bisa ✓ terpisah)
+    // v4.0.0a hotfix (quirk #1 + #2 QA Kanaka) — plan flag dari SERVER (pola
+    // AutoReply), BUKAN probe GET /api/ai-knowledge: probe 403 kena interceptor
+    // global v3.4 → toast "Fitur terkunci" + redirect keluar halaman gated.
+    // (Dan JANGAN shadow ref `kbPlanOk` dgn let lokal — TypeError → toast gagal memuat.)
     const aiRoutingOk = res.data.aiUsage !== null // plan featAiRouting ✓ (toggle classifier)
     aiUsage.value = res.data.aiUsage || null
-    let kbPlanOk = false
-    try {
-      const kbd = await axios.get(`${API}/api/ai-knowledge`)
-      kbPlanOk = true
-      kbDocs.value = (kbd.data?.docs || []).filter((d) => d.active)
-    } catch (kbErr) {
-      kbPlanOk = kbErr?.response?.status !== 403
+    aiRoutingPlanOk.value = aiRoutingOk
+    kbPlanOk.value = res.data.cbaiPlanOk !== false
+    if (kbPlanOk.value) {
+      try {
+        const kbd = await axios.get(`${API}/api/ai-knowledge`) // plan ✓ → 200, interceptor aman
+        kbDocs.value = (kbd.data?.docs || []).filter((d) => d.active)
+      } catch { kbDocs.value = [] }
+    } else {
       kbDocs.value = []
     }
-    aiRoutingPlanOk.value = aiRoutingOk
-    kbPlanOk.value = kbPlanOk // fix audit LOW-2 — flag berbeda per fitur (bukan OR)
     form.value.options = (cfg.options || []).map(o => ({
       position: o.position,
       label: o.label || '',
@@ -554,7 +561,7 @@ async function fetchAll() {
       replyText: o.replyText || '',
       tagId: o.tagId ?? null,
       aiDescription: o.aiDescription || '',
-      answerMode: o.answerMode || 'text', // v4.0.0 — §7b
+      answerMode: (o.answerMode === 'ai_knowledge' && kbPlanOk.value) ? 'ai_knowledge' : 'text', // v4.0.0a hotfix — coerce text bila plan ✗ (PUT gak 403)
       aiDocIds: o.aiDocIds || '',
       aiDocIdsList: String(o.aiDocIds || '').split(',').map((s) => parseInt(s.trim(), 10)).filter(Number.isFinite),
     }))
@@ -582,7 +589,7 @@ async function fetchAll() {
         if ((sCfg.options || []).length > 0) {
           form.value.options = sCfg.options.map(o => ({
             position: o.position, label: o.label || '', aliases: o.aliases || '', replyText: o.replyText || '', tagId: o.tagId ?? null, aiDescription: o.aiDescription || '',
-            answerMode: o.answerMode || 'text', aiDocIds: o.aiDocIds || '',
+            answerMode: (o.answerMode === 'ai_knowledge' && kbPlanOk.value) ? 'ai_knowledge' : 'text', aiDocIds: o.aiDocIds || '',
             aiDocIdsList: String(o.aiDocIds || '').split(',').map((s) => parseInt(s.trim(), 10)).filter(Number.isFinite),
           }))
         }
@@ -634,7 +641,7 @@ async function save() {
         tagId: o.tagId,
         aiDescription: (o.aiDescription || '').trim(),
         // v4.0.0 — §7b D9 (aiDocIds csv; kosong = whole KB)
-        answerMode: o.answerMode === 'ai_knowledge' ? 'ai_knowledge' : 'text',
+        answerMode: (o.answerMode === 'ai_knowledge' && kbPlanOk.value) ? 'ai_knowledge' : 'text', // v4.0.0a hotfix — plan ✗ → text (PUT gak 403)
         aiDocIds: Array.isArray(o.aiDocIdsList) && o.aiDocIdsList.length > 0 ? o.aiDocIdsList.join(',') : '',
       })),
     }

@@ -1,3 +1,13 @@
+# v4.0.0a — HOTFIX: 2 quirks QA Kanaka (08:44) — Menu Gateway toast + kick-out plan ✗ (RELEASED 09:02)
+
+**Quirk #1 — toast "Gagal memuat / config tidak bisa dimuat" SETIAP buka Menu Gateway:** akar = **variable shadowing ulah fix audit LOW-2 Alita sendiri** — `let kbPlanOk` lokal di `fetchAll()` nge-shadow ref global; `kbPlanOk.value = kbPlanOk` nge-assign `.value` ke boolean primitif → TypeError strict mode → catch → toast fallback text. Fix: rename lokal → `kbOk` (LHS resolve ke ref). Vite build gak nangkap ini (runtime-only) — lesson: refactor FE ref WAJIB smoke-test halaman beneran, build hijau ≠ jalan.
+
+**Quirk #2 — tenant tanpa featAiKnowledge ditendang keluar dari Menu Gateway:** akar = probe plan FE (`GET /api/ai-knowledge` → 403) kena **interceptor global v3.4** (toast "Fitur terkunci" + redirect — `/admin/menu-gateway` ada di array gated). Fix tuntas: (1) GET menu-gateway ikutkan flag **`cbaiPlanOk`** dari server (pola AutoReply — halaman itu emang gak kena masalah ini); FE gak lagi probe 403; (2) section "Jawaban: Teks / AI (Knowledge)" per-opsi **SELALU tampil** — plan ✗ → banner upsell ramah "ChatBareng AI belum tersedia di paket kamu" (persis permintaan Kanaka: radio dilimit, halaman tetap kebuka), radio AI disabled, `answerMode` di-coerce `text` saat save (PUT gak 403); (3) halaman ChatBareng AI: 403 → kartu upsell ramah (bukan toast "Gagal memuat"), Konten (Pengaturan/Dokumen/Trial) hidden.
+
+**Verifikasi:** node --check backend OK; `npx vite build` exit 0 (public fresh); E2E post-fix: v4000 72/72 + regresi v3925 59/59 + v3924 72/72 + v3919 121/121 — SEMUA PASS. Deploy 09:02: restart prod (backend menuGateway.js GET + flag baru), frontend statik fresh.
+
+---
+
 # v4.0.0 — MAJOR: ChatBareng AI (CB-AI) Knowledge Auto-Reply — "Introducing ChatBarengAI" (GO Kanaka 2026-09-26 06:48) — RELEASED 08:03 (deploy 08:02–08:03: backup 20260926-0802-pre-v4.0.0.db ×2 → migrate deploy → restart PID 42438, health 200, 3 WA slot reconnect; audit Kimi GO-WITH-NOTES — 2 MEDIUM + 1 LOW + 4 NIT difix pre-deploy, E2E final 72/72 + regresi 324/324; menunggu USER-VERIFY Kanaka)
 
 **Request (Kanaka 05:19–06:48, spec `docs/spec-v4.0.0-cbai-knowledge.md` — 12 keputusan D1–D12 + 4 jawaban final §14 terkunci):** tenant upload/paste dokumen → AI menjawab pertanyaan customer **HANYA dari KB itu** (closed-book L3.5 — bukan L4; keputusan "L4 NO klinik" 03:00 tetap terjaga) di jam kerja dan/atau luar jam; tidak tercakup → fallback deterministik; chat tetap masuk antrean untuk di-*take* agent. Differentiator vs Wablas/Qontak gateway = jawaban kontekstual dari knowledge tenant + metering cost transparan.

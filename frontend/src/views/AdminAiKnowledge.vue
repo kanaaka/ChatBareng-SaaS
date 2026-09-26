@@ -17,8 +17,13 @@
     </header>
 
     <div class="max-w-4xl mx-auto w-full p-6 space-y-4">
+      <!-- v4.0.1 hotfix — plan ✗ → upsell ramah -->
+      <div v-if="!planOk" class="m3-card p-6">
+        <p class="text-sm text-gray-800">🔒 ChatBareng AI belum tersedia di paket kamu — hubungi admin platform untuk upgrade.</p>
+        <p class="text-xs text-gray-500 mt-2">Setelah fitur diaktifkan, di sini kamu bisa "mengajarkan" AI: upload dokumen (pricelist, jam buka, alamat, layanan) dan AI menjawab pertanyaan customer HANYA dari dokumen itu — tidak bisa dijawab → fallback teks + chat masuk antrean CS.</p>
+      </div>
       <!-- Kartu Pengaturan CB-AI -->
-      <div class="m3-card p-6">
+      <div v-if="planOk" class="m3-card p-6">
         <h2 class="font-semibold text-gray-900">Pengaturan CB-AI</h2>
         <p class="text-xs text-gray-500 mt-1">
           AI menjawab pertanyaan customer HANYA dari dokumen yang kamu ajarkan di bawah (closed-book).
@@ -64,7 +69,7 @@
       </div>
 
       <!-- Tabel dokumen -->
-      <div class="m3-card p-6">
+      <div v-if="planOk" class="m3-card p-6">
         <div class="flex items-center justify-between mb-1">
           <h2 class="font-semibold text-gray-900">Dokumen Knowledge ({{ docs.length }})</h2>
           <div class="flex items-center gap-2">
@@ -121,7 +126,7 @@
       </div>
 
       <!-- 🧪 Trial chatbox -->
-      <div class="m3-card p-6">
+      <div v-if="planOk" class="m3-card p-6">
         <h2 class="font-semibold text-gray-900">🧪 Trial — coba jawaban AI</h2>
         <p class="text-xs text-gray-500 mt-1">
           Jalur sama persis dengan auto-reply, TANPA mengirim WhatsApp & TANPA menambah counter chat.
@@ -235,6 +240,9 @@ const saving = ref(false)
 const docs = ref([])
 const aiUsage = ref(null)
 const config = ref({ cbaiLimit: 3, cbaiInfoFooter: true })
+// v4.0.1 hotfix — plan gate graceful (quirk #2 QA Kanaka): plan ✗ → banner upsell
+// ramah (pola Auto Reply), BUKAN toast "Gagal memuat" (403 kena interceptor global).
+const planOk = ref(true)
 
 // sortable updatedAt (default desc = terbaru dulu)
 const sortDesc = ref(true)
@@ -433,6 +441,13 @@ async function fetchAll() {
       config.value.cbaiInfoFooter = res.data.config.cbaiInfoFooter !== false
     }
   } catch (e) {
+    if (e?.response?.status === 403) {
+      // v4.0.1 hotfix — plan ✗ → tampil upsell ramah, bukan toast error
+      planOk.value = false
+      docs.value = []
+      aiUsage.value = null
+      return
+    }
     toast.show({ icon: '⚠️', title: 'Gagal memuat', message: e.response?.data?.error || 'Data tidak bisa dimuat' })
   }
 }

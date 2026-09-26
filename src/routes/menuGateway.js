@@ -361,6 +361,7 @@ router.get('/', ...rt, featMenuGatewayGate, async (req, res) => {
       // v3.9.4 — auto-reply-managed = row TEKS dgn trigger AKTIF (menu rows = menu-managed)
       prisma.autoReplyConfig.findMany({ where: { tenantId: req.tenantId, numberSlot: { not: null }, greetMode: { not: 'menu' }, OR: [{ greetEnabled: true }, { outsideHoursEnabled: true }] }, select: { numberSlot: true } }),
     ])
+    const planRow = await plans.getPlan(req.tenantId) // v4.0.1 hotfix — sekali fetch
     res.json({
       config: cfg,
       waitingCount,
@@ -370,7 +371,10 @@ router.get('/', ...rt, featMenuGatewayGate, async (req, res) => {
       menuManagedSlots: mgRows.map(r => Number(r.numberSlot)).sort((a, b) => a - b),
       arManagedSlots: arRows.map(r => Number(r.numberSlot)).sort((a, b) => a - b),
       // v3.9.25 — AI Hybrid: plan ✗ → aiUsage null (spec D7)
-      aiUsage: (await plans.getPlan(req.tenantId))?.featAiRouting ? await aiUsageForTenant(req.tenantId) : null,
+      aiUsage: planRow?.featAiRouting ? await aiUsageForTenant(req.tenantId) : null,
+      // v4.0.1 hotfix (quirk #2 QA Kanaka) — flag plan CB-AI utk FE (pola AutoReply);
+      // plan null (SA impersonasi) → allow-safe true, konsisten requireFeature.
+      cbaiPlanOk: !planRow || planRow.featAiKnowledge !== false,
     })
   } catch (e) {
     console.error('MenuGateway GET error:', e)
