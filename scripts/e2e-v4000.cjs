@@ -584,6 +584,17 @@ print('ok')
   const leaks = JSON.stringify({ s3: cfgPut.data, n9: n9get.data }).includes('test-key-123456')
   check('S3b key TIDAK bocor di response apapun', !leaks, '')
 
+  // ═══════════ N17 — v4.0.0c hotfix: @newsletter (WA Channel) bukan chat customer ═══════════
+  // Bug QA Kanaka 11:57: postingan Channel Mazaya ("Jadwal Oktober tayang") dijawab
+  // Auto Reply + masuk antrean. Fix: JID @newsletter skip total di inbound.
+  const n17a = await api('POST', '/api/wa/inbound', {
+    tenantId: 8,
+    messages: { key: { remoteJid: '120363999999999999@newsletter', fromMe: true }, message: { conversation: 'posting channel test' } },
+  }, saTok)
+  check('N17a inbound @newsletter → skip (handled=false)', n17a.status === 200 && n17a.data?.handled === false, `status=${n17a.status} handled=${n17a.data?.handled}`)
+  const n17b = await prisma.chat.findFirst({ where: { tenantId: 8, waJid: '120363999999999999@newsletter' } })
+  check('N17b chat @newsletter TIDAK dibuat', !n17b, n17b ? `chatId=${n17b.id}` : '')
+
   // ═══════════ N15 — ROLLBACK TEST (wajib rilis major, spec §10 N14) ═══════════
   // Restore backup PRE-v4.0.0 ke COPY-DB → kode lama (checkout tag pre-v4.0.0) jalan +
   // kolom baru diabaikan SQLite + health 200 → bukti jalur mundur hidup.

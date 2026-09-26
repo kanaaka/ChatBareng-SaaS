@@ -1,3 +1,17 @@
+# v4.0.0c — HOTFIX: WA Channel (@newsletter) dijawab Auto Reply + masuk antrean (QA Kanaka 11:57, RELEASED 12:40)
+
+**Bug:** postingan Channel WA milik tenant Mazaya ("Jadwal Oktober tayang…", JID `120363424886543307@newsletter`) ter-create sbg chat normal (chat 7858, status open + queued + menuState awaiting) → **Auto Reply terkirim ke Channel** (dir=out isAuto=true, detik sama) → nyangkut di antrean. Channel = one-way broadcast, bukan percakapan customer.
+
+**Akar:** inbound filter cuma skip `status@broadcast`; JID `@newsletter` (fitur WA Channel) gak pernah ada di radar — pesan notify dari channel jalan ke `processIncomingMessage` → create chat → auto-reply.
+
+**Fix (2 lapis, additive):** (1) `pool.js` messages.upsert — skip JID ber-`@newsletter` SEBELUM `processIncomingMessage`; (2) defense-in-depth guard di `processIncomingMessage` entry. Jalur arsip Channel (watch/read-only, fitur "Channel" baru di topbar) = spec terpisah nunggu GO — bukan bagian fix ini.
+
+**E2E:** +N17a-b (inbound @newsletter → handled=false, chat TIDAK dibuat) → v4000 **78/78** + regresi v3925 59 + v3924 72 + v3919 121 = **330/330 PASS**. Deploy: commit + tag + restart (gak ada migration).
+
+**Catatan prod:** chat sisa 7858 di-resolve (keluar antrean); postingan auto-reply yang sempat ke-publish ke Channel Mazaya dicek/dihapus manual dari WA app oleh tenant.
+
+---
+
 # v4.0.0b — HOTFIX: Auto Reply save GAGAL semua tenant ("Field tidak dikenal: repeatFrequency") (QA Kanaka 09:15, RELEASED 09:45)
 
 **Trigger QA Kanaka:** tenant tanpa CB-AI, setting semua teks biasa, klik Simpan → toast "Gagal simpan, field tidak dikenal: Repeat Frequency". **Dugaan Kanaka ("dropdown terikat CB-AI krn satu kartu") = setengah bener** — dropdown gak terikat logic CB-AI (placement doang), tapi **D10 incomplete**: dropdown pindah UI ke Auto Reply, backend TIDAK disiapin (kolom `repeatFrequency` tetap di MenuGatewayConfig + whitelist PUT autoreply gak ditambah) → FE kirim full-form → `repeatFrequency` dianggap field asing → **400 buat SEMUA save Auto Reply, SEMUA tenant** (bukan cuma CB-AI). E2E gak nangkap: test lama kirim payload eksplisit minimal, bukan full-form spread kayak UI.

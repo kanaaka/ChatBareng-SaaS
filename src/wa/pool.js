@@ -459,6 +459,11 @@ async function connectTenant(tenantId, opts = {}) {
     for (const msg of messages) {
       try {
         if (msg.key?.remoteJid === 'status@broadcast') continue
+        // v4.0.0c hotfix (QA Kanaka 11:57) — WA Channel (@newsletter) BUKAN percakapan:
+        // one-way broadcast. Postingan channel (termasuk channel milik tenant sendiri)
+        // TIDAK boleh create chat / auto-reply / queue — bug nyata: "Jadwal Oktober"
+        // dijawab Auto Reply + masuk antrean. Jalur arsip Channel = fitur terpisah (parked).
+        if (typeof msg.key?.remoteJid === 'string' && msg.key.remoteJid.endsWith('@newsletter')) continue
         if (!msg.message) continue // protocol/ephemeral control events
         await processIncomingMessage(tid, msg, { slot })
       } catch (e) {
@@ -1089,6 +1094,7 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
   const rawJid = msg?.key?.remoteJid
   if (!Number.isFinite(tid) || tid <= 0 || !rawJid) return null
   if (rawJid === 'status@broadcast') return null
+  if (rawJid.endsWith('@newsletter')) return null // v4.0.0c — Channel bukan chat customer (defense-in-depth)
   const inboxSlot = Number(meta?.slot) || 0
   // v3.9.2 — true bila chat dibuat BARU oleh pesan ini (unread=1 sudah dihitung
   // di create — update final tidak increment lagi, cegah double-increment).
