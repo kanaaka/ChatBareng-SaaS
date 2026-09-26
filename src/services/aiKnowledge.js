@@ -262,6 +262,14 @@ const SYSTEM_PROMPT_HEADER = [
 // v4.1.2 D3 — disclaimer AI: kalimat FIX (teknologi, TIDAK mengikuti nama persona).
 const DISCLAIMER_TEXT = 'Jawaban ini di generate oleh ChatBareng AI, jangan jadikan jawaban menjadi keputusan final.'
 
+// v4.1.2.1 — "End of AI Replies" (spec docs/spec-v4.1.2.1-cbai-endtext-merge.md D2):
+// template bawaan notice budget-habis (in-hours). {n} = limit efektif (clamped),
+// {label} = cbaiHumanAgentLabel (row shared via D1 merge) / 'agen kami' — substitusi OLEH
+// KODE di maybeSendHandoffNotice (autoReply.js). cbaiEndText terisi (trim non-kosong) →
+// teks custom dipakai (substitusi sama); NULL/kosong → template ini PERSIS v4.1.2.
+const DEFAULT_CBAI_END_TEXT = 'Balasan oleh Agent AI dibatasi sampai {n} pesan per chat (reset 24 jam). Chat kamu akan dibalas oleh {label}, harap ditunggu 🙏'
+const CBAI_END_TEXT_CAP = 500 // PUT /ai-knowledge/config — cbaiEndText string ≤500 char (lebih → 400)
+
 /**
  * v4.1.2 D3 — appendDisclaimer(answer, cfg): append kalimat disclaimer oleh KODE
  * (bukan perintah prompt — LLM tidak deterministik) di akhir jawaban LLM.
@@ -504,6 +512,8 @@ module.exports = {
   CBAI_LIMIT_MAX,
   PERSONA_FIELD_CAP,
   DISCLAIMER_TEXT,
+  DEFAULT_CBAI_END_TEXT, // v4.1.2.1 — template bawaan "End of AI Replies" (D2)
+  CBAI_END_TEXT_CAP, // v4.1.2.1 — cap 500 char utk validasi PUT config
   MIME_WHITELIST,
   rejectUploadReason,
   parseUpload,

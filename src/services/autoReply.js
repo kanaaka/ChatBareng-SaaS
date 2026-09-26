@@ -60,7 +60,21 @@ async function getConfig(tenantId) {
  * v3.9 — resolve config untuk SLOT tertentu: baris dgn numberSlot = slot → menang;
  * tidak ada → fallback config shared (numberSlot null = link-all). Cache per
  * (tenantId:slot) — invalidateConfig tetap membersihkan semuanya.
+ *
+ * v4.1.2.1 D1 — CB-AI = setting TENANT-LEVEL (spec docs/spec-v4.1.2.1-cbai-endtext-merge.md):
+ * setelah row terpilih, field CB-AI dari row SHARED (numberSlot null) di-OVERLAY bila row
+ * shared ada — shared MENANG. Akar bug QA 19:07–19:08: toggle di kartu CB-AI (PUT
+ * /ai-knowledge/config) selalu nulis row shared, tapi runtime per-slot duluan baca row slot
+ * (cbaiDisclaimer=0 stale + greetMode ke-clobber). Field TRIGGER tetap PER-SLOT (tidak
+ * disentuh): outsideHours*, greet*, jam harian, repeatFrequency, greetMode 'menu' semantics.
+ * - Row slot TIDAK ada → hasil = row shared utuh (perilaku fallback existing).
+ * - Shared TIDAK ada → perilaku existing persis (kompat).
+ * - ⚠️ getConfig() (shared) TIDAK diubah — sudah bener.
  */
+const CBAI_SHARED_FIELDS = [ // v4.1.2.1 D1 — overlay ini SAJA (shared MENANG)
+  'cbaiLimit', 'cbaiInfoFooter', 'cbaiBotName', 'cbaiBotRole', 'cbaiHumanAgentLabel',
+  'cbaiDisclaimer', 'cbaiUpsellEnabled', 'cbaiUpsellDocId', 'cbaiEndText',
+]
 async function getConfigForSlot(tenantId, slot = 0) {
   const tid = Number(tenantId)
   const s = Number(slot) || 0
@@ -75,6 +89,17 @@ async function getConfigForSlot(tenantId, slot = 0) {
     orderBy: [{ numberSlot: 'desc' }], // slot-spesifik (non-null) menang di atas null
   })
   if (!cfg) cfg = await getConfig(tid) // fallback seed/compat
+  // v4.1.2.1 D1 — overlay CB-AI dari row SHARED (tenant-level), shared MENANG.
+  // Hanya bila row terpilih BUKAN row shared dan row shared ada (kalau tidak, tidak
+  // ada yang di-overlay — perilaku existing persis). Field trigger tidak disentuh.
+  if (cfg && cfg.numberSlot !== null) {
+    const shared = await prisma.autoReplyConfig.findFirst({ where: { tenantId: tid, numberSlot: null } })
+    if (shared) {
+      for (const f of CBAI_SHARED_FIELDS) {
+        if (shared[f] !== undefined) cfg[f] = shared[f]
+      }
+    }
+  }
   configCache.set(key, cfg)
   return cfg
 }
@@ -498,10 +523,13 @@ function effectiveTextForCbai(msg) {
 
 /**
  * v4.1.2 D1 — CB-AI handoff notice (cap 1×/24 jam): saat budget habis (in-hours),
- * kirim TEKS FIX via sendAutoText SEBELUM return bisu:
- *   "Balasan oleh Agent AI dibatasi sampai {limit} pesan per chat (reset 24 jam).
- *    Chat kamu akan dibalas oleh {humanLabel}, harap ditunggu 🙏"
- * {limit} = limit efektif (clamped); {humanLabel} = cbaiHumanAgentLabel, kosong → "agen kami".
+ * kirim TEKS notice via sendAutoText SEBELUM return bisu:
+ *   "Balasan oleh Agent AI dibatasi sampai {n} pesan per chat (reset 24 jam).
+ *    Chat kamu akan dibalas oleh {label}, harap ditunggu 🙏"
+ * v4.1.2.1 D2 — teks = cfg.cbaiEndText (trim) BILA terisi, else DEFAULT_CBAI_END_TEXT
+ * (field tenant "End of AI Replies"). Substitusi variabel OLEH KODE (deterministik —
+ * bukan perintah prompt) di template ATAU teks custom: {n} → limit efektif (clamped),
+ * {label} → cbaiHumanAgentLabel (row shared via D1 merge), kosong → "agen kami".
  * Cap: HANYA bila chat.lastHandoffNotifiedAt NULL/≥24h (window sama AI_WINDOW_MS).
  * Set marker ATOMIK HANYA bila kirim sukses (updateMany kondisi — race-safe pola claim).
  * TIDAK dihitung counter (bukan jawaban AI); TIDAK dapat disclaimer (bukan jalur LLM).
@@ -519,7 +547,14 @@ async function maybeSendHandoffNotice(chat, cfg, today, limit) {
     if (windowAlive) return // sudah dinotif <24 jam → bisu persis existing (cap)
     const humanLabel = String(cfg?.cbaiHumanAgentLabel || '').trim() || 'agen kami'
     const lim = Math.min(CBAI_LIMIT_MAX_CLAMP(), Math.max(CBAI_LIMIT_MIN_CLAMP(), Number(limit) || 3))
-    const text = `Balasan oleh Agent AI dibatasi sampai ${lim} pesan per chat (reset 24 jam). Chat kamu akan dibalas oleh ${humanLabel}, harap ditunggu 🙏`
+    // v4.1.2.1 D2 — field tenant "End of AI Replies" (row shared via D1 merge): terisi
+    // (trim non-kosong) → teks custom; NULL/kosong → template bawaan PERSIS v4.1.2.
+    // Substitusi {n}/{label} oleh KODE — juga di teks custom.
+    // v4.1.2.1 Kimi-audit M1 — runtime clamp defense-in-depth: cap 500 di-apply juga di
+    // runtime (route-only cap bisa di-bypass direct-DB write; super-admin tooling).
+    const kb = require('./aiKnowledge')
+    const template = (String(cfg?.cbaiEndText ?? '').trim() || kb.DEFAULT_CBAI_END_TEXT).slice(0, kb.CBAI_END_TEXT_CAP || 500)
+    const text = template.replace(/\{n\}/g, String(lim)).replace(/\{label\}/g, humanLabel)
     const sent = await sendAutoText(chat, text, today)
     if (!sent) {
       console.log(`[AutoReply] CB-AI handoff notice GAGAL kirim chat=${chatId} → marker tidak diset (coba lagi pesan berikutnya)`)
@@ -597,14 +632,24 @@ async function cbaiReplyForMessage(chat, cfg, today, { outside = false, customer
       personaCfg: cfg, // v4.1.1 — persona (D2/D3); kosong = prompt persis v4.1.0
     })
     if (!r.ok) {
-      // Guard gagal (plan ✗/0 doc/NO_CONFIG/error) → jalur lama PERSIS (deterministik).
-      // Reserve dikembalikan (tidak ada pesan keluar dari tier AI).
-      await revertAiCounter(chat, prev)
-      // outside → away existing; in-hours → greet text/menu existing (pemanggil lanjut).
-      return { sent: false, used: false }
-    }
-
-    if (r.covered) {
+      // v4.1.2.1 D3/N6 — GUARD gagal (plan ✗/MODE_OFF/NO_CONFIG/0 doc) → jalur lama PERSIS
+      // (deterministik): reserve dikembalikan; outside → away existing; in-hours → greet
+      // text/menu existing (pemanggil lanjut) — UNCHANGED.
+      const GUARD_CODES = ['PLAN_OFF', 'MODE_OFF', 'NO_CONFIG', 'NO_KB']
+      if (GUARD_CODES.includes(r.code)) {
+        await revertAiCounter(chat, prev)
+        return { sent: false, used: false }
+      }
+      // v4.1.2.1 D3/N6 — LLM error/API down (AUTH_401/TIMEOUT/NETWORK/UPSTREAM_5XX/LLM_FAIL…)
+      // SETELAH guard lolos (plan+KB+config OK, LLM benar-benar dipanggil) → fallback
+      // deterministik PERSIS no_answer: outside → outsideHoursText; in-hours → greetText
+      // + DIHITUNG (counter tetap reserved — pola no_answer). Spec v4.1.2.1 D3: "LLM
+      // error/API down → default fallback text + counter++" (Kanaka 00:19); v4.1.2 lama
+      // diam total utk hard error (never e2e-tested) — kini persis spec N6.
+      console.log(`[AutoReply] CB-AI LLM error (${r.code || 'LLM_FAIL'}) → fallback deterministik (pola no_answer): chat=${chatId}`)
+      // jatuh ke blok fallback di bawah — PERSIS jalur no_answer (teks default, tanpa
+      // disclaimer, tanpa endText; send gagal → revert).
+    } else if (r.covered) {
       // ── Jawaban AI + counter SUDAH direserve (fix MEDIUM-1) + lastAiReplyAt=now (D5) ──
       // v4.1.2 D3 — disclaimer append oleh KODE SEBELUM kirim (kalimat FIX; fallback
       // & handoff notice TIDAK lewat sini).

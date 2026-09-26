@@ -92,6 +92,20 @@
           <M3Switch v-model="config.cbaiDisclaimer" :disabled="saving" />
         </label>
 
+        <!-- v4.1.2.1 — End of AI Replies (D2): teks notice saat budget AI chat habis -->
+        <div class="mt-4 border-t border-gray-100 pt-4">
+          <span class="text-xs text-gray-600 block mb-1">End of AI Replies</span>
+          <textarea
+            v-model="config.cbaiEndText"
+            maxlength="500"
+            rows="3"
+            :disabled="saving"
+            class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            placeholder="Balasan oleh Agent AI dibatasi sampai {n} pesan per chat (reset 24 jam). Chat kamu akan dibalas oleh {label}, harap ditunggu 🙏"
+          ></textarea>
+          <p class="text-xs text-gray-500 mt-1">Teks yang dikirim ke customer saat batas balasan AI habis. Kosong = pakai template bawaan. Variabel: {n} = batas pesan, {label} = nama agent manusia.</p>
+        </div>
+
         <!-- v4.1.1 — Persona bot (D1): 3 field; kosong semua = perilaku lama -->
         <div class="mt-4 border-t border-gray-100 pt-4">
           <span class="text-sm text-gray-800 block">Persona bot</span>
@@ -311,7 +325,7 @@ const docs = ref([])
 const aiUsage = ref(null)
 // v4.1.1 — persona (D1): 3 field di kartu Pengaturan CB-AI; kosong = perilaku lama
 // v4.1.2 — upselling + disclaimer (D2/D3/D8): switch + dropdown doc + switch disclaimer
-const config = ref({ cbaiLimit: 3, cbaiInfoFooter: true, cbaiBotName: '', cbaiBotRole: '', cbaiHumanAgentLabel: '', cbaiUpsellEnabled: false, cbaiUpsellDocId: null, cbaiDisclaimer: false })
+const config = ref({ cbaiLimit: 3, cbaiInfoFooter: true, cbaiBotName: '', cbaiBotRole: '', cbaiHumanAgentLabel: '', cbaiUpsellEnabled: false, cbaiUpsellDocId: null, cbaiDisclaimer: false, cbaiEndText: '' })
 // v4.0.1 hotfix — plan gate graceful (quirk #2 QA Kanaka): plan ✗ → banner upsell
 // ramah (pola Auto Reply), BUKAN toast "Gagal memuat" (403 kena interceptor global).
 const planOk = ref(true)
@@ -500,6 +514,8 @@ async function saveConfig() {
       cbaiUpsellEnabled: !!config.value.cbaiUpsellEnabled,
       cbaiUpsellDocId: config.value.cbaiUpsellEnabled ? (Number.isInteger(Number(config.value.cbaiUpsellDocId)) && Number(config.value.cbaiUpsellDocId) > 0 ? Number(config.value.cbaiUpsellDocId) : null) : null,
       cbaiDisclaimer: !!config.value.cbaiDisclaimer,
+      // v4.1.2.1 — End of AI Replies (D2): trim; kosong → null = template bawaan
+      cbaiEndText: String(config.value.cbaiEndText || '').trim() || null,
     })
     config.value.cbaiLimit = res.data.config.cbaiLimit
     config.value.cbaiInfoFooter = res.data.config.cbaiInfoFooter
@@ -511,6 +527,8 @@ async function saveConfig() {
     config.value.cbaiUpsellEnabled = res.data.config.cbaiUpsellEnabled === true
     config.value.cbaiUpsellDocId = res.data.config.cbaiUpsellDocId ?? null
     config.value.cbaiDisclaimer = res.data.config.cbaiDisclaimer === true
+    // v4.1.2.1 — echo End of AI Replies (D2; null = default → tampil kosong)
+    config.value.cbaiEndText = res.data.config.cbaiEndText ?? ''
     toast.show({ icon: '✅', title: 'Tersimpan', message: 'Pengaturan CB-AI berhasil disimpan' })
   } catch (e) {
     toast.show({ icon: '⚠️', title: 'Gagal simpan', message: e.response?.data?.error || 'Terjadi kesalahan' })
@@ -535,6 +553,8 @@ async function fetchAll() {
       config.value.cbaiUpsellEnabled = res.data.config.cbaiUpsellEnabled === true
       config.value.cbaiUpsellDocId = res.data.config.cbaiUpsellDocId ?? null
       config.value.cbaiDisclaimer = res.data.config.cbaiDisclaimer === true
+      // v4.1.2.1 — End of AI Replies: load dari GET config (null/kosong = default)
+      config.value.cbaiEndText = res.data.config.cbaiEndText || ''
     }
   } catch (e) {
     if (e?.response?.status === 403) {

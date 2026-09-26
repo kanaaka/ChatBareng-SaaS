@@ -71,7 +71,7 @@ router.get('/', ...rt, featAiKnowledgeGate, async (req, res) => {
     })
     const cfg = await prisma.autoReplyConfig.findFirst({
       where: { tenantId: tid, numberSlot: null },
-      select: { cbaiLimit: true, cbaiInfoFooter: true, outsideHoursMode: true, greetMode: true, cbaiBotName: true, cbaiBotRole: true, cbaiHumanAgentLabel: true, cbaiUpsellEnabled: true, cbaiUpsellDocId: true, cbaiDisclaimer: true },
+      select: { cbaiLimit: true, cbaiInfoFooter: true, outsideHoursMode: true, greetMode: true, cbaiBotName: true, cbaiBotRole: true, cbaiHumanAgentLabel: true, cbaiUpsellEnabled: true, cbaiUpsellDocId: true, cbaiDisclaimer: true, cbaiEndText: true },
     })
     // plan ✗ → 403 by gate; aiUsage selalu diisi (fitur sudah terbuka di sini)
     res.json({
@@ -90,6 +90,8 @@ router.get('/', ...rt, featAiKnowledgeGate, async (req, res) => {
         cbaiUpsellEnabled: cfg?.cbaiUpsellEnabled === true,
         cbaiUpsellDocId: cfg?.cbaiUpsellDocId ?? null,
         cbaiDisclaimer: cfg?.cbaiDisclaimer === true,
+        // v4.1.2.1 — "End of AI Replies" (D2): echo raw (bisa null = pakai default).
+        cbaiEndText: cfg?.cbaiEndText ?? null,
       },
     })
   } catch (e) {
@@ -252,7 +254,7 @@ router.put('/config', ...rt, featAiKnowledgeGate, async (req, res) => {
   try {
     const body = req.body || {}
     for (const key of Object.keys(body)) {
-      if (!['cbaiLimit', 'cbaiInfoFooter', 'cbaiBotName', 'cbaiBotRole', 'cbaiHumanAgentLabel', 'cbaiUpsellEnabled', 'cbaiUpsellDocId', 'cbaiDisclaimer'].includes(key)) return res.status(400).json({ error: `Field tidak dikenal: ${key}` })
+      if (!['cbaiLimit', 'cbaiInfoFooter', 'cbaiBotName', 'cbaiBotRole', 'cbaiHumanAgentLabel', 'cbaiUpsellEnabled', 'cbaiUpsellDocId', 'cbaiDisclaimer', 'cbaiEndText'].includes(key)) return res.status(400).json({ error: `Field tidak dikenal: ${key}` })
     }
     if (Object.keys(body).length === 0) return res.status(400).json({ error: 'Tidak ada field yang valid untuk diupdate' })
     const data = {}
@@ -288,6 +290,21 @@ router.put('/config', ...rt, featAiKnowledgeGate, async (req, res) => {
       if (typeof body.cbaiDisclaimer !== 'boolean') return res.status(400).json({ error: 'cbaiDisclaimer harus boolean' })
       data.cbaiDisclaimer = body.cbaiDisclaimer
     }
+    // v4.1.2.1 — "End of AI Replies" (D2): string STRICT (bukan string → 400), cap 500
+    // char (lebih → 400); null / '' = pakai template bawaan (disimpan NULL).
+    if (body.cbaiEndText !== undefined) {
+      if (body.cbaiEndText === null) {
+        data.cbaiEndText = null
+      } else if (typeof body.cbaiEndText !== 'string') {
+        return res.status(400).json({ error: 'cbaiEndText harus berupa teks atau null' })
+      } else {
+        const v = body.cbaiEndText.trim()
+        if (v.length > aiKnowledge.CBAI_END_TEXT_CAP) {
+          return res.status(400).json({ error: `cbaiEndText maksimal ${aiKnowledge.CBAI_END_TEXT_CAP} karakter` })
+        }
+        data.cbaiEndText = v === '' ? null : v
+      }
+    }
     if (body.cbaiUpsellDocId !== undefined) {
       if (body.cbaiUpsellDocId === null) {
         data.cbaiUpsellDocId = null
@@ -313,7 +330,7 @@ router.put('/config', ...rt, featAiKnowledgeGate, async (req, res) => {
         })
     // invalidate cache service autoReply (config dibaca runtime via cache)
     require('../services/autoReply').invalidateConfig(req.tenantId)
-    res.json({ config: { cbaiLimit: cfg.cbaiLimit, cbaiInfoFooter: cfg.cbaiInfoFooter, cbaiBotName: cfg.cbaiBotName, cbaiBotRole: cfg.cbaiBotRole, cbaiHumanAgentLabel: cfg.cbaiHumanAgentLabel, cbaiUpsellEnabled: cfg.cbaiUpsellEnabled === true, cbaiUpsellDocId: cfg.cbaiUpsellDocId ?? null, cbaiDisclaimer: cfg.cbaiDisclaimer === true } })
+    res.json({ config: { cbaiLimit: cfg.cbaiLimit, cbaiInfoFooter: cfg.cbaiInfoFooter, cbaiBotName: cfg.cbaiBotName, cbaiBotRole: cfg.cbaiBotRole, cbaiHumanAgentLabel: cfg.cbaiHumanAgentLabel, cbaiUpsellEnabled: cfg.cbaiUpsellEnabled === true, cbaiUpsellDocId: cfg.cbaiUpsellDocId ?? null, cbaiDisclaimer: cfg.cbaiDisclaimer === true, cbaiEndText: cfg.cbaiEndText ?? null } })
   } catch (e) {
     console.error('AiKnowledge PUT config error:', e)
     res.status(500).json({ error: 'Internal server error' })

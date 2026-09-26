@@ -787,12 +787,11 @@ router.get('/:id', ...rt, async (req, res) => {
     // ─── v4.1.2 D4 — counter CB-AI live: chat sudah bawa aiReplyCount + lastAiReplyAt
     // (kolom existing — TIDAK ada kolom baru); tambah limit efektif utk chip 🤖 AI n/limit.
     // Non-fatal: config gagal → tanpa limit (chip FE menampilkan tanpa limit bila null).
+    // v4.1.2.1 D1 — baca via service getConfigForSlot (merge CB-AI row shared) — chip
+    // limit/mode HARUS identik dgn runtime CB-AI (raw findFirst = limit stale row slot,
+    // kelas bug sama yg diperbaiki D1).
     try {
-      const arCfg = await prisma.autoReplyConfig.findFirst({
-        where: { tenantId: req.tenantId, OR: [{ numberSlot: chat.numberSlot ?? null }, { numberSlot: null }] },
-        orderBy: [{ numberSlot: 'desc' }],
-        select: { cbaiLimit: true, greetMode: true, outsideHoursMode: true, greetEnabled: true },
-      })
+      const arCfg = await require('../services/autoReply').getConfigForSlot(req.tenantId, chat.numberSlot ?? 0)
       if (arCfg) {
         const { CBAI_LIMIT_MIN, CBAI_LIMIT_MAX } = require('../services/aiKnowledge')
         chat.cbaiReplyLimit = Math.min(CBAI_LIMIT_MAX, Math.max(CBAI_LIMIT_MIN, Number(arCfg.cbaiLimit) || 3))

@@ -585,6 +585,11 @@ model AutoReplyConfig {
   cbaiUpsellDocId     Int? // FK AiKnowledgeDoc — hapus doc → SET NULL (degrade senyap)
   cbaiUpsellDoc       AiKnowledgeDoc? @relation(fields: [cbaiUpsellDocId], references: [id], onDelete: SetNull)
   cbaiDisclaimer      Boolean         @default(false) // disclaimer AI (kalimat tetap, teknologi)
+  // ═══ v4.1.2.1 — End of AI Replies (hotfix, spec docs/spec-v4.1.2.1-cbai-endtext-merge.md D2) ═══
+  // Teks notice saat budget CB-AI habis (in-hours) — field TENANT (row shared; merge D1 ke semua slot).
+  // NULL/kosong = template bawaan DEFAULT_CBAI_END_TEXT (aiKnowledge.js); {n} = limit clamped,
+  // {label} = cbaiHumanAgentLabel — substitusi OLEH KODE (deterministik), juga di teks custom.
+  cbaiEndText         String?
   // v4.0.0b hotfix — repeatFrequency PINDAH ke sini (D10): NULL = belum pernah di-save
   // via UI baru → runtime fallback ke MenuGatewayConfig.repeatFrequency (setting lama tetap hidup).
   repeatFrequency     String? // "per_chat" | "daily" | "weekly"
