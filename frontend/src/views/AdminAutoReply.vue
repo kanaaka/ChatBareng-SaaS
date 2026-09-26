@@ -120,8 +120,10 @@
         </div>
       </div>
 
-      <!-- v4.0.0 — Kartu Pengaturan CB-AI (limit slider + jendela 24 jam + footer + hint biaya;
-           dropdown Frekuensi greeting PINDAH ke sini — D10) -->
+      <!-- v4.0.0 — Kartu Pengaturan CB-AI (limit slider + jendela 24 jam + footer + hint biaya).
+           v4.0.0b hotfix (QA Kanaka 09:15) — dropdown Frekuensi greeting KELUAR dari kartu ini
+           (misleading — dugaan Kanaka wajar); pindah ke kartu Greeting di atas (tetap halaman
+           Auto Reply sesuai D10, tapi berdiri sendiri karena ini aturan greeting, bukan CB-AI). -->
       <div class="bg-white rounded-lg shadow-sm p-6">
         <div class="flex items-center justify-between gap-2">
           <h2 class="font-semibold text-gray-900">Pengaturan ChatBareng AI</h2>
@@ -145,7 +147,11 @@
           </div>
           <M3Switch v-model="form.cbaiInfoFooter" :disabled="!aiPlanOk || saving" />
         </label>
-        <div class="mt-4">
+      </div>
+
+      <!-- v4.0.0b hotfix — Frekuensi greeting: kartu sendiri (aturan greeting, BUKAN bagian CB-AI) -->
+      <div class="bg-white rounded-lg shadow-sm p-6">
+        <div class="mt-1">
           <span class="text-xs text-gray-600 block mb-1">Frekuensi greeting (menu &amp; teks)</span>
           <select
             v-model="form.repeatFrequency"
@@ -156,7 +162,7 @@
             <option value="daily">Sekali per hari</option>
             <option value="weekly">Sekali per minggu</option>
           </select>
-          <p class="text-xs text-gray-400 mt-1">Mengatur seberapa sering sapaan/greeting terkirim ke kontak yang sama (berlaku juga utk menu gateway).</p>
+          <p class="text-xs text-gray-400 mt-1">Mengatur seberapa sering sapaan/greeting terkirim ke kontak yang sama (berlaku juga utk menu gateway). Pengaturan lama di Menu Gateway tetap berlaku sampai kamu menyimpan dari sini.</p>
         </div>
       </div>
 

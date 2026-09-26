@@ -569,6 +569,9 @@ model AutoReplyConfig {
   outsideHoursMode    String   @default("text") // "text" | "cbai"
   cbaiLimit           Int      @default(3) // 1..10
   cbaiInfoFooter      Boolean  @default(true)
+  // v4.0.0b hotfix — repeatFrequency PINDAH ke sini (D10): NULL = belum pernah di-save
+  // via UI baru → runtime fallback ke MenuGatewayConfig.repeatFrequency (setting lama tetap hidup).
+  repeatFrequency     String? // "per_chat" | "daily" | "weekly"
   // Trigger 2: First-of-Day Greeting
   greetEnabled        Boolean  @default(false)
   greetText           String   @default("Halo! Selamat datang 🙏 Ada yang bisa kami bantu?")

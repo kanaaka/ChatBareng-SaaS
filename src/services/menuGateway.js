@@ -251,7 +251,9 @@ async function startFlow(chat) {
     if (!contact) {
       contact = await prisma.contact.findUnique({ where: { chatId } })
     }
-    if (!repeatAllows(contact, cfg.repeatFrequency)) {
+    // v4.0.0b hotfix (QA Kanaka 09:15) — D10: freq utama = AR config (kolom baru);
+    // fallback MG config (setting lama tetap hidup sampai disimpan via UI baru).
+    if (!repeatAllows(contact, autoCfg.repeatFrequency ?? cfg.repeatFrequency)) {
       const { ensureChatQueued } = require('./autoReply')
       await ensureChatQueued(chatId)
       return false

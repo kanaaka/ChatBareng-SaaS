@@ -81,13 +81,17 @@ router.get('/', ...rt, async (req, res) => {
       if (!Number.isFinite(s) || s < 0 || s > 2) return res.status(400).json({ error: 'Slot tidak valid (0..2)' })
       const svc = require('../services/autoReply')
       const cfg = await svc.getConfigForSlot(req.tenantId, s)
-      return res.json({ config: cfg, numberSlot: cfg.numberSlot ?? null })
+      // v4.0.0b hotfix — echo repeatFrequency efektif (AR ?? MG ?? 'daily')
+      const mg = await require('../services/menuGateway').getConfigForSlot(req.tenantId, s).catch(() => null)
+      return res.json({ config: { ...cfg, repeatFrequency: cfg.repeatFrequency ?? mg?.repeatFrequency ?? 'daily' }, numberSlot: cfg.numberSlot ?? null })
     }
     const cfg = await getConfig(req.tenantId)
     // v3.9.4 — info tick-box utk UI: slot dgn row sendiri mode text (dikelola halaman
     // ini) + slot menu-managed (dikelola Menu Gateway — dilindungi dari save di sini).
     const scopedInfo = await listSlotsWithConfig(req.tenantId)
-    res.json({ config: cfg, numberSlots: scopedInfo.scoped, menuManagedSlots: scopedInfo.menuManaged })
+    // v4.0.0b hotfix — echo repeatFrequency efektif (AR ?? MG ?? 'daily')
+    const mg = await require('../services/menuGateway').getConfig(req.tenantId).catch(() => null)
+    res.json({ config: { ...cfg, repeatFrequency: cfg.repeatFrequency ?? mg?.repeatFrequency ?? 'daily' }, numberSlots: scopedInfo.scoped, menuManagedSlots: scopedInfo.menuManaged })
   } catch (e) {
     console.error('AutoReply GET error:', e)
     res.status(500).json({ error: 'Internal server error' })
@@ -108,6 +112,10 @@ router.put('/', ...rt, async (req, res) => {
       'outsideHoursEnabled', 'outsideHoursText', 'outsideHoursMode',
       'greetEnabled', 'greetMode', 'greetText',
       'cbaiLimit', 'cbaiInfoFooter', // v4.0.0 — CB-AI
+      // v4.0.0a hotfix (QA Kanaka 09:15) — repeatFrequency PINDAH ke halaman ini (D10):
+      // FE kirim full-form → tanpa ini SEMUA save Auto Reply 400 "Field tidak dikenal".
+      // Validasi ketat di bawah (enum, GREET_MODES-style) — bukan cuma whitelist.
+      'repeatFrequency',
       'monFriEnabled', 'monFriStart', 'monFriEnd',
       'satEnabled', 'satStart', 'satEnd',
       'sunEnabled', 'sunStart', 'sunEnd',
@@ -217,6 +225,15 @@ router.put('/', ...rt, async (req, res) => {
       }
       data.cbaiInfoFooter = body.cbaiInfoFooter
     }
+    // v4.0.0a hotfix (QA Kanaka 09:15) — repeatFrequency PINDAH ke halaman ini (D10):
+    // whitelist doang gak cukup — validasi enum + tulis data. NULL kolom (tenant
+    // belum save) → runtime fallback ke MenuGatewayConfig (back-compat).
+    if (body.repeatFrequency !== undefined) {
+      if (typeof body.repeatFrequency !== 'string' || !['per_chat', 'daily', 'weekly'].includes(body.repeatFrequency)) {
+        return res.status(400).json({ error: 'repeatFrequency harus "per_chat", "daily", atau "weekly"' })
+      }
+      data.repeatFrequency = body.repeatFrequency
+    }
 
     // Teks (≤1000 char, placeholder hanya {name})
     const ohText = validateTextField(body, 'outsideHoursText', 'Teks Outside Hours', errors)
@@ -295,6 +312,13 @@ router.put('/', ...rt, async (req, res) => {
 
     invalidateConfig(req.tenantId) // cache service invalid → config baru aktif
 
+    // v4.0.0b hotfix (QA Kanaka 09:15) — echo repeatFrequency efektif utk FE sync
+    // (AR ?? MG ?? 'daily') — kolom baru nullable, FE select gak punya opsi kosong.
+    const mgSvcEcho = require('../services/menuGateway')
+    const mgEcho = (Array.isArray(targets) && targets.length > 0)
+      ? await mgSvcEcho.getConfigForSlot(req.tenantId, targets[targets.length - 1])
+      : await mgSvcEcho.getConfig(req.tenantId)
+
     // v0.13.2 sync — v3.9.4 SCOPED (bug lama: updateMany SEMUA row → config slot
     // lain ketimpa, hybrid mustahil). Jalur 'menu' = legacy (UI baru tidak mengirim;
     // mode menu kini dimiliki halaman Menu Gateway).
@@ -364,7 +388,7 @@ router.put('/', ...rt, async (req, res) => {
       menuGatewaySvc.invalidateConfig(req.tenantId)
     }
 
-    res.json({ config: cfg, menuGatewayEnabled })
+    res.json({ config: { ...cfg, repeatFrequency: cfg.repeatFrequency ?? mgEcho?.repeatFrequency ?? 'daily' }, menuGatewayEnabled })
   } catch (e) {
     console.error('AutoReply PUT error:', e)
     res.status(500).json({ error: 'Internal server error' })

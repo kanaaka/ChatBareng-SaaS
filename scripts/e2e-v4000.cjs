@@ -539,6 +539,25 @@ print('ok')
     ],
   }, t8AdminTok)
 
+  // ═══════════ N16 — v4.0.0b hotfix: repeatFrequency (QA Kanaka 09:15) ═══════════
+  // Simulasi UI: FE kirim FULL-FORM (spread semua field) — dulu 400 "Field tidak
+  // dikenal: repeatFrequency" krn kolom gak dibuat pas dropdown pindah (D10).
+  const n16a = await api('PUT', '/api/autoreply', {
+    outsideHoursEnabled: true, outsideHoursText: 'x', outsideHoursMode: 'text',
+    greetEnabled: false, greetMode: 'text', greetText: 'halo',
+    repeatFrequency: 'weekly',
+    monFriEnabled: true, monFriStart: '08:00', monFriEnd: '17:00',
+    satEnabled: true, satStart: '08:00', satEnd: '17:00',
+    sunEnabled: true, sunStart: '08:00', sunEnd: '17:00',
+  }, t8AdminTok)
+  check('N16a PUT autoreply FULL-FORM (repeatFrequency ikut) → 200', n16a.status === 200, `status=${n16a.status} err=${n16a.data?.error || ''}`)
+  check('N16b repeatFrequency tersimpan + echo (weekly)', n16a.data?.config?.repeatFrequency === 'weekly', `rf=${n16a.data?.config?.repeatFrequency}`)
+  const n16c = await api('GET', '/api/autoreply', undefined, t8AdminTok)
+  check('N16c GET autoreply ikutkan repeatFrequency efektif', n16c.data?.config?.repeatFrequency === 'weekly', `rf=${n16c.data?.config?.repeatFrequency}`)
+  const n16d = await api('PUT', '/api/autoreply', { repeatFrequency: 'kadaluarsa' }, t8AdminTok)
+  check('N16d repeatFrequency invalid enum → 400', n16d.status === 400, `status=${n16d.status}`)
+  await api('PUT', '/api/autoreply', { repeatFrequency: 'daily' }, t8AdminTok) // restore (idempoten re-run)
+
   // ═══════════ N-liar — validasi ketat ═══════════
   const n14a = await api('PUT', '/api/ai-knowledge/config', { cbaiLimit: 0 }, t8AdminTok)
   check('N-liar cbaiLimit 0 → 400', n14a.status === 400, `status=${n14a.status}`)

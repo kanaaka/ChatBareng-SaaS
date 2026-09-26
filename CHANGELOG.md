@@ -1,3 +1,19 @@
+# v4.0.0b — HOTFIX: Auto Reply save GAGAL semua tenant ("Field tidak dikenal: repeatFrequency") (QA Kanaka 09:15, RELEASED 09:45)
+
+**Trigger QA Kanaka:** tenant tanpa CB-AI, setting semua teks biasa, klik Simpan → toast "Gagal simpan, field tidak dikenal: Repeat Frequency". **Dugaan Kanaka ("dropdown terikat CB-AI krn satu kartu") = setengah bener** — dropdown gak terikat logic CB-AI (placement doang), tapi **D10 incomplete**: dropdown pindah UI ke Auto Reply, backend TIDAK disiapin (kolom `repeatFrequency` tetap di MenuGatewayConfig + whitelist PUT autoreply gak ditambah) → FE kirim full-form → `repeatFrequency` dianggap field asing → **400 buat SEMUA save Auto Reply, SEMUA tenant** (bukan cuma CB-AI). E2E gak nangkap: test lama kirim payload eksplisit minimal, bukan full-form spread kayak UI.
+
+**Fix (4 lapis):**
+1. **Migration `2026092609250000_ar_repeat_frequency`** — `AutoReplyConfig.repeatFrequency TEXT` **nullable** (ADDITIVE murni): row lama NULL → runtime fallback ke `MenuGatewayConfig.repeatFrequency` (setting lama tetap hidup sampai tenant save via UI baru — back-compat persis desain D10).
+2. **Route PUT autoreply:** whitelist + `repeatFrequency` → validasi enum ketat (`per_chat|daily|weekly`, liar → 400) → tulis ke data (per-slot & link-all sama).
+3. **Echo efektif GET/PUT:** response ikutkan `repeatFrequency: AR ?? MG ?? 'daily'` (nullable aman — FE select gak punya opsi kosong).
+4. **Runtime read sites ×3 fallback:** autoReply.js jalur menu (b), jalur text (c), menuGateway.startFlow — `cfg.repeatFrequency ?? mg?.repeatFrequency ?? 'daily'` (prioritas setting baru; lama tetap hidup sampai disimpan).
+
+**FE:** dropdown Frekuensi greeting **KELUAR dari kartu "Pengaturan ChatBareng AI"** — kartu sendiri "Frekuensi greeting" (aturan greeting, BUKAN bagian CB-AI — dugaan Kanaka wajar: placement lama misleading). Tetap di halaman Auto Reply sesuai D10.
+
+**E2E:** +N16a-d (full-form save 200 + persist weekly + GET echo + invalid enum 400) → v4000 **76/76** + regresi v3925 59 + v3924 72 + v3919 121 = **328/328 PASS**. `node --check` ×3 + prisma format/validate/generate OK; vite build exit 0 (fresh 09:37). Prod: backup → `migrate deploy` → restart.
+
+---
+
 # v4.0.0a — HOTFIX: 2 quirks QA Kanaka (08:44) — Menu Gateway toast + kick-out plan ✗ (RELEASED 09:02)
 
 **Quirk #1 — toast "Gagal memuat / config tidak bisa dimuat" SETIAP buka Menu Gateway:** akar = **variable shadowing ulah fix audit LOW-2 Alita sendiri** — `let kbPlanOk` lokal di `fetchAll()` nge-shadow ref global; `kbPlanOk.value = kbPlanOk` nge-assign `.value` ke boolean primitif → TypeError strict mode → catch → toast fallback text. Fix: rename lokal → `kbOk` (LHS resolve ke ref). Vite build gak nangkap ini (runtime-only) — lesson: refactor FE ref WAJIB smoke-test halaman beneran, build hijau ≠ jalan.

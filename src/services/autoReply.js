@@ -712,7 +712,9 @@ async function maybeAutoReply(chat, msg) {
       // v3.9.5 — config MG EFEKTIF utk slot asal chat (per-slot tick-box), bukan shared
       const menuGW = await menuGatewayConfigSafe(tenantId, chat.numberSlot)
       const gatewayOn = !!(menuGW && menuGW.enabled)
-      if (gatewayOn && repeatAllows(contact, menuGW.repeatFrequency, dbTimestamp)) {
+      if (gatewayOn && repeatAllows(contact, cfg.repeatFrequency ?? menuGW?.repeatFrequency ?? 'daily', dbTimestamp)) {
+        // v4.0.0b hotfix (QA Kanaka 09:15) — repeatFrequency kini milik AutoReplyConfig (D10);
+        // NULL = tenant belum save via UI baru → fallback ke MG config (setting lama tetap hidup).
         let handled = false
         try {
           const menuGateway = require('./menuGateway') // lazy — hindari circular require
@@ -749,8 +751,9 @@ async function maybeAutoReply(chat, msg) {
     // marker = Contact.lastMenuShownAt (sama dgn menu).
     if (!outside && cfg.greetEnabled && cfg.greetMode === 'text') {
       // v3.9.5 — freq ikut config MG efektif slot (per-slot repeatFrequency)
+      // v4.0.0b hotfix — D10: freq utama = AR config (kolom baru); MG = fallback back-compat
       const menuGW = await menuGatewayConfigSafe(tenantId, chat.numberSlot)
-      const freq = menuGW ? menuGW.repeatFrequency : null
+      const freq = cfg.repeatFrequency ?? (menuGW ? menuGW.repeatFrequency : null) ?? 'daily'
       if (!repeatAllows(contact, freq, dbTimestamp)) {
         // Repeat blocked → skip total (tanpa fallback greet).
         await revertClaim()
