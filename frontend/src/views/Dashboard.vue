@@ -1804,6 +1804,20 @@ function onTagDeleted(data) {
   })
 }
 
+// v4.1.4 — edit tag (rename + warna) di tempat lain → sync in-place by id:
+// dropdown chat detail + chip tag di list ikut segar tanpa refetch.
+function onTagUpdated(data) {
+  if (!data.tag) return
+  const idx = allTags.value.findIndex(t => t.id === data.tag.id)
+  if (idx !== -1) allTags.value[idx] = { ...allTags.value[idx], name: data.tag.name, color: data.tag.color }
+  if (currentChat.value?.tags) {
+    currentChat.value.tags.forEach(ct => { if (ct.tag.id === data.tag.id) { ct.tag = { ...ct.tag, name: data.tag.name, color: data.tag.color } } })
+  }
+  chats.chats.forEach(c => {
+    if (c.tags) c.tags.forEach(ct => { if (ct.tag.id === data.tag.id) { ct.tag = { ...ct.tag, name: data.tag.name, color: data.tag.color } } })
+  })
+}
+
 // Global keyboard shortcuts (Ctrl+F, Escape)
 function onGlobalKeydown(e) {
   if ((e.ctrlKey || e.metaKey) && e.key === 'f' && currentChat.value) {
@@ -1923,6 +1937,7 @@ onMounted(async () => {
   socketStore.on('message_status', onMessageStatus)
   socketStore.on('tag_created', onTagCreated)
   socketStore.on('tag_deleted', onTagDeleted)
+  socketStore.on('tag_updated', onTagUpdated) // v4.1.4 — edit tag realtime
   socketStore.on('template_update', onTemplateUpdate)
   // v0.10.0 — Empat Fitur listeners
   socketStore.on('note_added', onNoteAdded)
@@ -1957,6 +1972,7 @@ onUnmounted(() => {
   socketStore.off('message_status', onMessageStatus)
   socketStore.off('tag_created', onTagCreated)
   socketStore.off('tag_deleted', onTagDeleted)
+  socketStore.off('tag_updated', onTagUpdated) // v4.1.4 — edit tag realtime
   socketStore.off('template_update', onTemplateUpdate)
   // v0.10.0 — Empat Fitur listeners off
   socketStore.off('note_added', onNoteAdded)

@@ -112,21 +112,48 @@
           <!-- Daftar tag -->
           <div class="space-y-1">
             <div v-if="tags.length === 0" class="text-sm text-gray-400 py-2">Belum ada tag</div>
+            <!-- v4.1.4 — row edit inline: form ganti nama + warna (menggantikan tampilan row) -->
             <div
               v-for="t in tags"
               :key="t.id"
               class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-gray-100"
             >
-              <div class="flex items-center gap-2 min-w-0">
-                <span :class="['w-2.5 h-2.5 rounded-full flex-shrink-0', tagDotClass(t.color)]"></span>
-                <span class="text-sm font-medium truncate">{{ t.name }}</span>
-                <span class="text-xs text-gray-400 whitespace-nowrap">{{ t.contactCount ?? 0 }} kontak</span>
-              </div>
-              <div class="flex items-center gap-1.5 flex-shrink-0">
-                <button @click="selectTag(t.id)" class="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200">Lihat kontak</button>
-                <button @click="exportTagCsv(t)" class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200">Export CSV</button>
-                <button @click="deleteTag(t)" class="text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200">Hapus</button>
-              </div>
+              <template v-if="editingTagId === t.id">
+                <div class="flex items-center gap-2 flex-1 min-w-0">
+                  <input
+                    ref="editTagInput"
+                    v-model="editTagName"
+                    type="text"
+                    maxlength="40"
+                    class="flex-1 min-w-0 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-wa-green"
+                    @keydown.enter="saveTagEdit"
+                    @keydown.esc="cancelTagEdit"
+                  />
+                  <select v-model="editTagColor" class="px-2 py-1.5 text-sm border border-gray-300 rounded-lg bg-white">
+                    <option v-for="c in TAG_COLORS" :key="c.value" :value="c.value">{{ c.label }}</option>
+                  </select>
+                  <button
+                    @click="saveTagEdit"
+                    :disabled="!hasTagEditChanges || tagBusy"
+                    class="text-xs px-2 py-1 rounded bg-wa-green text-white hover:bg-green-600 disabled:opacity-50 whitespace-nowrap"
+                  >Simpan</button>
+                  <button @click="cancelTagEdit" class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200 whitespace-nowrap">Batal</button>
+                </div>
+              </template>
+              <template v-else>
+                <div class="flex items-center gap-2 min-w-0">
+                  <span :class="['w-2.5 h-2.5 rounded-full flex-shrink-0', tagDotClass(t.color)]"></span>
+                  <span class="text-sm font-medium truncate">{{ t.name }}</span>
+                  <span class="text-xs text-gray-400 whitespace-nowrap">{{ t.contactCount ?? 0 }} kontak</span>
+                </div>
+                <div class="flex items-center gap-1.5 flex-shrink-0">
+                  <button @click="selectTag(t.id)" class="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200">Lihat kontak</button>
+                  <!-- v4.1.4 — Edit tag (rename + ganti warna), admin only -->
+                  <button v-if="auth.isAdmin" @click="startTagEdit(t)" class="text-xs px-2 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200">Edit</button>
+                  <button @click="exportTagCsv(t)" class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200">Export CSV</button>
+                  <button @click="deleteTag(t)" class="text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200">Hapus</button>
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -410,7 +437,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 import { useToastStore } from '../stores/toast'
@@ -472,6 +499,16 @@ const showTagPanel = ref(false)
 const newTagName = ref('')
 const newTagColor = ref('blue')
 const tagBusy = ref(false)
+// v4.1.4 — Edit tag (rename + ganti warna): mode edit inline per-row, admin only
+const editingTagId = ref(null)
+const editTagName = ref('')
+const editTagColor = ref('blue')
+const editTagInput = ref(null)
+const hasTagEditChanges = computed(() => {
+  const t = tags.value.find((x) => x.id === editingTagId.value)
+  if (!t) return false
+  return editTagName.value.trim() !== t.name || editTagColor.value !== t.color
+})
 
 async function fetchTags() {
   try {
@@ -513,6 +550,56 @@ async function createTag() {
     } else {
       console.error('Create tag error:', e)
       toast.show({ icon: '⚠️', title: 'Gagal membuat tag', message: e.response?.data?.error || e.message })
+    }
+  } finally {
+    tagBusy.value = false
+  }
+}
+
+// v4.1.4 — Edit tag: mulai mode edit (prefill nama+warna) → form inline
+function startTagEdit(t) {
+  editingTagId.value = t.id
+  editTagName.value = t.name
+  editTagColor.value = t.color
+  // autofocus input nama (row re-render — tunggu nextTick)
+  nextTick(() => {
+    const el = Array.isArray(editTagInput.value) ? editTagInput.value[0] : editTagInput.value
+    if (el) el.focus()
+  })
+}
+
+function cancelTagEdit() {
+  editingTagId.value = null
+  editTagName.value = ''
+  editTagColor.value = 'blue'
+}
+
+async function saveTagEdit() {
+  const id = editingTagId.value
+  if (id === null || tagBusy.value) return
+  const name = editTagName.value.trim()
+  if (!name) return
+  // guard: tanpa perubahan → tidak ada PUT (tombol Simpan juga disabled)
+  const t = tags.value.find((x) => x.id === id)
+  if (t && name === t.name && editTagColor.value === t.color) return
+  tagBusy.value = true
+  try {
+    const res = await axios.put(`${API}/api/tags/${id}`, { name, color: editTagColor.value }, {
+      headers: { Authorization: `Bearer ${auth.token}` },
+    })
+    // Update in-place (array tags) — tanpa nunggu refetch
+    const idx = tags.value.findIndex((x) => x.id === id)
+    if (idx !== -1) tags.value[idx] = { ...tags.value[idx], name: res.data.tag.name, color: res.data.tag.color, contactCount: res.data.tag.contactCount ?? tags.value[idx].contactCount }
+    toast.show({ icon: '✅', title: 'Tag diperbarui', message: `Tag "${res.data.tag.name}" sudah disimpan` })
+    editingTagId.value = null
+  } catch (e) {
+    if (e.response?.status === 409) {
+      // Dup name → TETAP di mode edit biar user bisa ganti nama
+      toast.show({ icon: '⚠️', title: 'Nama tag sudah dipakai', message: 'Pakai nama lain untuk tag ini' })
+    } else {
+      console.error('Update tag error:', e)
+      toast.show({ icon: '⚠️', title: 'Gagal memperbarui tag', message: e.response?.data?.error || e.message })
+      editingTagId.value = null
     }
   } finally {
     tagBusy.value = false

@@ -623,6 +623,7 @@ watch(search, (newVal) => {
 })
 
 // Real-time tag sync (tag_created/tag_deleted) — sama seperti v0.1.x di Dashboard
+// v4.1.4 — tag_updated: rename/ganti warna tag di tempat lain → update in-place by id
 function onTagCreated(data) {
   if (data.tag && !allTags.value.find(t => t.id === data.tag.id)) {
     allTags.value.push(data.tag)
@@ -630,6 +631,11 @@ function onTagCreated(data) {
 }
 function onTagDeleted(data) {
   allTags.value = allTags.value.filter(t => t.id !== data.tagId)
+}
+function onTagUpdated(data) {
+  if (!data.tag) return
+  const idx = allTags.value.findIndex(t => t.id === data.tag.id)
+  if (idx !== -1) allTags.value[idx] = { ...allTags.value[idx], name: data.tag.name, color: data.tag.color }
 }
 
 import { useSocketStore } from '../stores/socket'
@@ -653,6 +659,7 @@ onMounted(() => {
   fetchWaSlots() // v3.9.2 K1-A — data badge nomor asal
   socketStore.on('tag_created', onTagCreated)
   socketStore.on('tag_deleted', onTagDeleted)
+  socketStore.on('tag_updated', onTagUpdated) // v4.1.4 — edit tag realtime
   // v3.9.2 — refresh slot badge saat status WA berubah (connect/logout)
   socketStore.on('wa_status', onWaStatusChanged)
   // v4.0.0 — tick 60s: badge "🤖 ×N" mati otomatis saat window 24 jam lewat
@@ -668,6 +675,7 @@ onUnmounted(() => {
   clearTimeout(manualUnreadTouchTimer)
   socketStore.off('tag_created', onTagCreated)
   socketStore.off('tag_deleted', onTagDeleted)
+  socketStore.off('tag_updated', onTagUpdated) // v4.1.4 — edit tag realtime
   socketStore.off('wa_status', onWaStatusChanged)
   if (nowTimer) { clearInterval(nowTimer); nowTimer = null }
 })

@@ -65,6 +65,70 @@ router.post('/', ...rt, async (req, res) => {
   }
 })
 
+// v4.1.4 — PUT /api/tags/:id — edit tag: rename + ganti warna (admin only,
+// konsisten dgn DELETE: edit = mutasi resource yg dipakai lintas chat/kontak).
+// Body { name?, color? } — minimal satu (dua-duanya kosong → 400). Self-rename
+// (nama sama dgn dirinya sendiri) = OK; dup dgn tag LAIN = 409. Invalid color
+// STRING → fallback 'blue' (konsisten dgn POST); bukan string → 400.
+router.put('/:id', ...rt, requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const tagRow = await prisma.tag.findFirst({ where: { id, tenantId: req.tenantId } })
+    if (!tagRow) return res.status(404).json({ error: 'Tag not found' })
+
+    const { name, color } = req.body || {}
+    const hasName = name !== undefined && name !== null
+    const hasColor = color !== undefined && color !== null
+    if (!hasName && !hasColor) {
+      return res.status(400).json({ error: 'Nothing to update' })
+    }
+
+    const data = {}
+    if (hasName) {
+      if (typeof name !== 'string') {
+        return res.status(400).json({ error: 'Tag name is required' })
+      }
+      const trimmed = name.trim()
+      if (!trimmed) return res.status(400).json({ error: 'Tag name is required' })
+      if (trimmed.length > 40) {
+        return res.status(400).json({ error: 'Tag name must be 40 characters or less' })
+      }
+      // Self-rename: nama sama dgn dirinya sendiri = OK (bukan dup). Dup cek HANYA
+      // bila nama berubah, dengan NOT { id } (belt-and-suspenders).
+      if (trimmed !== tagRow.name) {
+        const dup = await prisma.tag.findFirst({
+          where: { tenantId: req.tenantId, name: trimmed, NOT: { id } },
+        })
+        if (dup) return res.status(409).json({ error: 'Tag already exists', tag: dup })
+      }
+      data.name = trimmed
+    }
+    if (hasColor) {
+      if (typeof color !== 'string') {
+        return res.status(400).json({ error: 'Invalid color' })
+      }
+      const validColors = ['blue', 'green', 'red', 'yellow', 'purple', 'gray']
+      // Konsisten dgn POST: string di luar daftar → fallback 'blue' (BUKAN 400)
+      data.color = validColors.includes(color) ? color : 'blue'
+    }
+
+    const updated = await prisma.tag.update({
+      where: { id },
+      data,
+      include: { _count: { select: { chats: true, contacts: true } } },
+    })
+    const tag = { ...updated, contactCount: updated._count.contacts }
+
+    broadcast.emitToTenant(req.tenantId, 'tag_updated', { tag })
+    broadcast.emitToTenant(req.tenantId, 'tags_changed', { reason: 'tag_updated', tagId: id })
+
+    res.json({ tag })
+  } catch (e) {
+    console.error('Update tag error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // DELETE /api/tags/:id — delete tag (admin only)
 router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
   try {
