@@ -142,6 +142,11 @@
           v-for="chat in filteredChats"
           :key="chat.id"
           @click="$emit('select', chat)"
+          @contextmenu.prevent="openManualUnreadMenu($event, chat)"
+          @touchstart.passive="onChatTouchStart($event, chat)"
+          @touchend.passive="onChatTouchEnd"
+          @touchmove.passive="onChatTouchCancel"
+          @touchcancel.passive="onChatTouchCancel"
           :class="[
             'p-3 border-b border-gray-100 cursor-pointer active:bg-gray-100',
             chat.transferUnseen ? 'bg-amber-50 border-l-4 border-amber-400 hover:bg-amber-100' : (activeChatId === chat.id ? 'bg-green-50 hover:bg-gray-50' : 'hover:bg-gray-50')
@@ -150,12 +155,21 @@
           <div class="flex items-center justify-between">
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2">
-                <div class="w-10 h-10 rounded-full bg-wa-dark text-white flex items-center justify-center text-sm font-semibold flex-shrink-0">
+                <div class="relative w-10 h-10 rounded-full bg-wa-dark text-white flex items-center justify-center text-sm font-semibold flex-shrink-0">
                   {{ getInitials(chat.contactName || chat.contactPhone) }}
+                  <!-- v4.1.3.1 D3 — dot biru "belum dibaca" manual: HANYA bila marker
+                       aktif DAN unreadCount==0 (unread asli >0 → badge WA menang, dot
+                       TIDAK dobel). w-2.5 h-2.5 di pojok kanan-atas avatar. -->
+                  <span
+                    v-if="isManualUnread(chat.id) && !(chat.unreadCount > 0)"
+                    class="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-blue-500 border-2 border-white dark:border-[var(--md-sys-color-surface-container-lowest)]"
+                    title="Ditandai belum dibaca"
+                  ></span>
                 </div>
                 <div class="min-w-0">
                   <div class="flex items-center gap-1">
-                    <span class="font-medium text-sm truncate">{{ chat.contactName || chat.contactPhone }}</span>
+                    <!-- v4.1.3.1 D3 — nama font-semibold saat marker aktif (unread asli menang) -->
+                    <span :class="['text-sm truncate', isManualUnread(chat.id) && !(chat.unreadCount > 0) ? 'font-semibold' : 'font-medium']">{{ chat.contactName || chat.contactPhone }}</span>
                     <span v-if="chat.status === 'resolved'" class="text-green-500 text-xs flex-shrink-0" title="Resolved">✓</span>
                     <!-- v0.5.1 — badge "transfer belum dibaca" -->
                     <span v-if="chat.transferUnseen" class="inline-flex items-center gap-0.5 bg-amber-100 text-amber-700 text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0">📤 Transfer</span>
@@ -245,6 +259,34 @@
         <div v-if="!search && filteredChats.length === 0" class="p-4 text-center text-gray-400">No chats found</div>
       </template>
     </div>
+
+    <!-- v4.1.3.1 D1/D2 — menu kontekstual "Tandai belum dibaca" -->
+    <div class="chat-unread-ctxmenu fixed inset-0 z-40" @click="closeManualUnreadMenu" @contextmenu.prevent="closeManualUnreadMenu"></div>
+    <div
+      class="fixed z-50 w-56 rounded-lg border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container)] shadow-xl overflow-hidden py-1"
+      :style="manualUnreadMenuStyle"
+      role="menu"
+      aria-label="Menu chat"
+    >
+      <button
+        v-if="manualUnreadTarget && !isManualUnread(manualUnreadTarget.id)"
+        type="button"
+        class="w-full text-left px-3 py-2.5 text-sm text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)] flex items-center gap-2.5"
+        @click="markManualUnread"
+      >
+        <span class="w-2.5 h-2.5 rounded-full bg-blue-500 flex-shrink-0"></span>
+        Tandai belum dibaca
+      </button>
+      <button
+        v-else-if="manualUnreadTarget"
+        type="button"
+        class="w-full text-left px-3 py-2.5 text-sm text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)] flex items-center gap-2.5"
+        @click="unmarkManualUnread"
+      >
+        <span class="w-2.5 h-2.5 rounded-full border-2 border-[var(--md-sys-color-on-surface-variant)] flex-shrink-0"></span>
+        Tandai sudah dibaca
+      </button>
+    </div>
   </div>
 </template>
 
@@ -254,6 +296,8 @@ import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 import { useChatsStore } from '../stores/chats'
 import { getInitials, formatTime, formatListTime, tagColorClass, tagDotClass, highlightSearchTerm } from '../utils/format'
+// v4.1.3.1 — "Tandai belum dibaca" (FE-only, localStorage cb_manual_unread)
+import { list as manualUnreadList, has as manualUnreadHas, add as manualUnreadAdd, remove as manualUnreadRemove } from '../utils/manualUnread'
 import M3TextField from '../components/M3TextField.vue'
 
 const API = import.meta.env.VITE_API_URL || ''
@@ -279,6 +323,104 @@ const filterDateTo = ref('')
 const filterNumberSlot = ref(null)
 const showTagFilterMenu = ref(false)
 const agentList = ref([])
+
+// ── v4.1.3.1 — "Tandai belum dibaca" (D1/D2/D3): menu kontekstual + indikator ──
+// Marker = localStorage `cb_manual_unread` (personal per-device, pola WhatsApp).
+// State di-copy ke reactive ref manualUnreadMap supaya list re-render reaktif
+// (bukan hard refresh) saat add/remove.
+const manualUnreadMap = ref({})
+const manualUnreadTarget = ref(null)
+const manualUnreadPos = ref({ x: 0, y: 0 })
+const showManualUnreadMenu = ref(false)
+
+const manualUnreadMenuStyle = computed(() => {
+  if (!showManualUnreadMenu.value) return 'display: none;'
+  const mw = 224 // w-56
+  const mh = 46 // 1 item menu ≈ 44px + py-1 (2×4)
+  const pad = 8
+  const x = Math.max(pad, Math.min(manualUnreadPos.value.x, (window.innerWidth || 0) - mw - pad))
+  const y = Math.max(pad, Math.min(manualUnreadPos.value.y, (window.innerHeight || 0) - mh - pad))
+  return `left:${x}px; top:${y}px;`
+})
+
+function isManualUnread(chatId) {
+  return manualUnreadHas(chatId)
+}
+
+function openManualUnreadMenu(event, chat) {
+  if (!chat?.id) return
+  manualUnreadTarget.value = chat
+  manualUnreadPos.value = { x: event.clientX || event.pageX || 0, y: event.clientY || event.pageY || 0 }
+  showManualUnreadMenu.value = true
+  // re-sync dari localStorage (tab lain bisa berubah)
+  manualUnreadMap.value = { ...manualUnreadList() }
+}
+
+// ── D2 — long-press mobile 500ms; cancel saat touchmove/touchend sebelum 500ms;
+// tap normal (buka chat) TIDAK diganggu (touchend <500ms = tap biasa).
+let manualUnreadTouchTimer = null
+let manualUnreadTouchMoved = false
+const MANUAL_UNREAD_LONGPRESS_MS = 500
+
+function onChatTouchStart(event, chat) {
+  if (!chat?.id) return
+  manualUnreadTouchMoved = false
+  clearTimeout(manualUnreadTouchTimer)
+  const touch = event.touches?.[0]
+  if (!touch) return
+  manualUnreadTouchTimer = setTimeout(() => {
+    if (!manualUnreadTouchMoved) {
+      manualUnreadTarget.value = chat
+      manualUnreadPos.value = { x: touch.clientX || 0, y: touch.clientY || 0 }
+      showManualUnreadMenu.value = true
+      manualUnreadMap.value = { ...manualUnreadList() }
+    }
+  }, MANUAL_UNREAD_LONGPRESS_MS)
+}
+
+function onChatTouchCancel() {
+  manualUnreadTouchMoved = true
+  clearTimeout(manualUnreadTouchTimer)
+}
+
+function onChatTouchEnd() {
+  clearTimeout(manualUnreadTouchTimer)
+}
+
+function markManualUnread() {
+  const chat = manualUnreadTarget.value
+  if (chat) {
+    manualUnreadAdd(chat.id)
+    manualUnreadMap.value = { ...manualUnreadList() }
+  }
+  closeManualUnreadMenu()
+}
+
+function unmarkManualUnread() {
+  const chat = manualUnreadTarget.value
+  if (chat) {
+    manualUnreadRemove(chat.id)
+    manualUnreadMap.value = { ...manualUnreadList() }
+  }
+  closeManualUnreadMenu()
+}
+
+function closeManualUnreadMenu() {
+  showManualUnreadMenu.value = false
+  manualUnreadTarget.value = null
+}
+
+function onManualUnreadKeydown(e) {
+  if (e.key === 'Escape') closeManualUnreadMenu()
+}
+
+function onManualUnreadScroll() {
+  closeManualUnreadMenu()
+}
+
+function onManualUnreadRouteLeave() {
+  closeManualUnreadMenu()
+}
 
 // Tag data untuk filter dropdown
 const allTags = ref([])
@@ -483,9 +625,18 @@ function onTagDeleted(data) {
 }
 
 import { useSocketStore } from '../stores/socket'
+// v4.1.3.1 — pindah route → tutup menu kontekstual
+import { useRoute } from 'vue-router'
+const route = useRoute()
+watch(() => route.fullPath, () => { if (showManualUnreadMenu.value) closeManualUnreadMenu() })
 const socketStore = useSocketStore()
 
 onMounted(() => {
+  // v4.1.3.1 — load marker + listeners tutup menu (Esc / scroll / pindah route)
+  manualUnreadMap.value = { ...manualUnreadList() }
+  window.addEventListener('keydown', onManualUnreadKeydown)
+  window.addEventListener('scroll', onManualUnreadScroll, true)
+  window.addEventListener('popstate', onManualUnreadRouteLeave)
   fetchAllTags()
   fetchAgentList()
   fetchWaSlots() // v3.9.2 K1-A — data badge nomor asal
@@ -497,6 +648,11 @@ onMounted(() => {
   nowTimer = setInterval(() => { nowMs.value = Date.now() }, 60 * 1000)
 })
 onUnmounted(() => {
+  // v4.1.3.1 — cleanup
+  window.removeEventListener('keydown', onManualUnreadKeydown)
+  window.removeEventListener('scroll', onManualUnreadScroll, true)
+  window.removeEventListener('popstate', onManualUnreadRouteLeave)
+  clearTimeout(manualUnreadTouchTimer)
   socketStore.off('tag_created', onTagCreated)
   socketStore.off('tag_deleted', onTagDeleted)
   socketStore.off('wa_status', onWaStatusChanged)

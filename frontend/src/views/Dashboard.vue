@@ -349,6 +349,8 @@ import { useToastStore } from '../stores/toast'
 import { usePresenceStore } from '../stores/presence'
 import { getThemeMode, applyTheme } from '../utils/theme'
 import { useConfirm } from '../utils/confirm'
+// v4.1.3.1 — marker "Tandai belum dibaca" hilang saat chat dibuka / dibalas
+import { remove as manualUnreadRemove } from '../utils/manualUnread'
 import ChatListPane from './ChatListPane.vue'
 import ChatDetail from './ChatDetail.vue'
 import FilterChips from '../components/FilterChips.vue'
@@ -715,6 +717,8 @@ async function selectChat(chat, opts = {}) {
   await chats.markRead(chatId)
   const listChat = chats.chats.find(c => c.id === chatId)
   if (listChat) listChat.unreadCount = 0
+  // v4.1.3.1 — marker "Tandai belum dibaca" hilang saat chat dibuka (dibaca = dikerjakan)
+  manualUnreadRemove(chatId)
   chats.unreadTotal = chats.chats.reduce((n, c) => n + (c.unreadCount || 0), 0)
   // Fetch users for transfer menu — v0.5.0: selalu /api/users/agents
   // (server kirim online-only utk non-admin, semua+flag online utk admin)
@@ -852,6 +856,8 @@ async function sendReply() {
     templateMatches.value = []
     socketStore.emitStopTyping(currentChat.value.id, auth.user.id)
     scrollToBottom()
+    // v4.1.3.1 — sudah dibalas = sudah dikerjakan → marker "belum dibaca" hilang
+    manualUnreadRemove(currentChat.value.id)
   } catch (e) {
     console.error('Send reply error:', e)
     pendingQuote.value = null // v3.9.14 — chip clear on failure juga (spec §7.3)
