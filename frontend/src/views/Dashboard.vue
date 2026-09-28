@@ -1442,6 +1442,8 @@ function onNewMessage(data) {
     // Outgoing: update preview but don't touch unread count
     const chat = chats.chats.find(c => c.id === data.chatId)
     if (chat) {
+      // v4.1.3.1 hotfix — outgoing via jalur lain (tab/device lain, scheduled) juga = sudah dibalas
+      manualUnreadRemove(data.chatId)
       const preview = data.message.content || (data.message.mediaType ? `[${data.message.mediaType.charAt(0).toUpperCase() + data.message.mediaType.slice(1)}]` : '[Media]')
       chat.lastMessagePreview = preview
       chat.lastMessageAt = data.message.timestamp

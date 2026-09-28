@@ -297,7 +297,12 @@ import { useAuthStore } from '../stores/auth'
 import { useChatsStore } from '../stores/chats'
 import { getInitials, formatTime, formatListTime, tagColorClass, tagDotClass, highlightSearchTerm } from '../utils/format'
 // v4.1.3.1 — "Tandai belum dibaca" (FE-only, localStorage cb_manual_unread)
-import { list as manualUnreadList, has as manualUnreadHas, add as manualUnreadAdd, remove as manualUnreadRemove } from '../utils/manualUnread'
+import { list as manualUnreadList, add as manualUnreadAdd, remove as manualUnreadRemove } from '../utils/manualUnread'
+// v4.1.3.1 hotfix — reactivity: marker harus sync SEGERA (dot hilang saat dibales,
+// label menu ikut state terkini). Sync dari event util + storage cross-tab.
+function onManualUnreadChanged() {
+  manualUnreadMap.value = { ...manualUnreadList() }
+}
 import M3TextField from '../components/M3TextField.vue'
 
 const API = import.meta.env.VITE_API_URL || ''
@@ -344,7 +349,10 @@ const manualUnreadMenuStyle = computed(() => {
 })
 
 function isManualUnread(chatId) {
-  return manualUnreadHas(chatId)
+  // v4.1.3.1 hotfix — REACTIVE source: manualUnreadMap (di-sync dari event util),
+  // BUKAN baca localStorage langsung (gak ter-track Vue → dot/label stale).
+  if (chatId == null) return false
+  return Object.prototype.hasOwnProperty.call(manualUnreadMap.value, String(chatId))
 }
 
 function openManualUnreadMenu(event, chat) {
@@ -634,6 +642,9 @@ const socketStore = useSocketStore()
 onMounted(() => {
   // v4.1.3.1 — load marker + listeners tutup menu (Esc / scroll / pindah route)
   manualUnreadMap.value = { ...manualUnreadList() }
+  // v4.1.3.1 hotfix — reactivity: sync ulang saat add/remove (same-tab event) + cross-tab storage
+  window.addEventListener('cb-manual-unread-changed', onManualUnreadChanged)
+  window.addEventListener('storage', onManualUnreadChanged)
   window.addEventListener('keydown', onManualUnreadKeydown)
   window.addEventListener('scroll', onManualUnreadScroll, true)
   window.addEventListener('popstate', onManualUnreadRouteLeave)
@@ -649,6 +660,8 @@ onMounted(() => {
 })
 onUnmounted(() => {
   // v4.1.3.1 — cleanup
+  window.removeEventListener('cb-manual-unread-changed', onManualUnreadChanged)
+  window.removeEventListener('storage', onManualUnreadChanged)
   window.removeEventListener('keydown', onManualUnreadKeydown)
   window.removeEventListener('scroll', onManualUnreadScroll, true)
   window.removeEventListener('popstate', onManualUnreadRouteLeave)

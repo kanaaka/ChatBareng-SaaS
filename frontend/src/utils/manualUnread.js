@@ -32,6 +32,14 @@ function writeStore(obj) {
   }
 }
 
+// v4.1.3.1 hotfix — reactivity: localStorage BUKAN reactive source utk Vue.
+// Setiap add/remove emit CustomEvent (same-tab) — listener di ChatListPane sync
+// ulang map-nya → dot/label update SEGERA tanpa tunggu menu dibuka.
+// Cross-tab: event 'storage' native otomatis fire di tab lain (gratis).
+function notifyChanged() {
+  try { window.dispatchEvent(new CustomEvent('cb-manual-unread-changed')) } catch (e) {}
+}
+
 /** Object `{ "<chatId>": true }` — urutan key = insertion order. */
 export function list() {
   return readStore()
@@ -60,6 +68,7 @@ export function add(chatId) {
     delete store[key]
     store[key] = true
     writeStore(store)
+    notifyChanged()
   } catch (e) {
     // silent no-op
   }
@@ -74,6 +83,7 @@ export function remove(chatId) {
     if (!Object.prototype.hasOwnProperty.call(store, key)) return
     delete store[key]
     writeStore(store)
+    notifyChanged()
   } catch (e) {
     // silent no-op
   }
