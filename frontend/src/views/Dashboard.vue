@@ -1053,7 +1053,10 @@ function handleReplyKeydown(e) {
       templateMatches.value = []
     }
   } else {
-    if (e.key === 'Enter') {
+    // v4.1.5 — Enter = kirim, Shift+Enter = newline (pola WA Web, konsisten Groups.vue
+    // onGroupReplyKeydown); IME guard: e.isComposing (komposisi Mandarin/Jepang dkk)
+    // Enter konfirmasi IME TIDAK mengirim.
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       // v3.8 — tenant locked → Enter tidak mengirim (tombol & handler disabled)
       if (tenantLocked.value) {
         e.preventDefault()

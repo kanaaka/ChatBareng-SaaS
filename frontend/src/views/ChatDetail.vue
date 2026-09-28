@@ -722,16 +722,20 @@
           </div>
         </div>
 
-        <input
+        <!-- v4.1.5 — Composer auto-grow textarea (max 6 baris, scroll internal, pola WhatsApp Web):
+             Enter = kirim / Shift+Enter = newline (D2 di Dashboard), IME guard via e.isComposing.
+             autoGrow: height=auto → min(scrollHeight, maxHeight), overflow hidden↔auto. -->
+        <textarea
           ref="replyInputRef"
+          rows="1"
           :value="replyText"
-          @input="$emit('update:replyText', $event.target.value)"
+          @input="$emit('update:replyText', $event.target.value); autoGrow($event.target)"
           @keydown="$emit('reply-keydown', $event)"
-          type="text"
           :placeholder="replyPlaceholder"
           :disabled="sendingMedia"
-          class="w-full px-4 py-2.5 border border-[var(--md-sys-color-outline)] rounded-full text-[var(--md-sys-color-on-surface)] placeholder:text-[var(--md-sys-color-on-surface-variant)] bg-transparent focus:ring-2 focus:ring-wa-green focus:border-transparent disabled:opacity-50"
-        />
+          class="w-full px-4 py-2.5 border border-[var(--md-sys-color-outline)] rounded-2xl text-[var(--md-sys-color-on-surface)] placeholder:text-[var(--md-sys-color-on-surface-variant)] bg-transparent focus:ring-2 focus:ring-wa-green focus:border-transparent disabled:opacity-50 resize-none overflow-y-auto leading-snug"
+          style="max-height: 10.5rem"
+        ></textarea>
       </div>
 
       <button
@@ -857,6 +861,21 @@ const newTagColor = ref('blue')
 const isMobile = ref(typeof window !== 'undefined' ? window.innerWidth < 768 : false)
 const showScrollButton = ref(false)
 const composerHeight = ref(72)
+
+// v4.1.5 — Composer auto-grow (spec docs/spec-v4.1.5-composer-autogrow.md D1):
+// textarea tumbuh mengikuti isi sampai max 10.5rem (≈6 baris), lalu scroll internal.
+function autoGrow(el) {
+  if (!el) return
+  el.style.height = 'auto'
+  const maxH = parseInt(getComputedStyle(el).maxHeight) || 168
+  el.style.height = Math.min(el.scrollHeight, maxH) + 'px'
+  el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden'
+  // D1b fallback (spec §rollback): composerHeight (popover emoji bottom) ikut remeasure
+  // saat composer tumbuh/mengecil — nextTick microtask, gak ganggu perf typing.
+  measureComposer()
+}
+// Clear eksternal (send sukses replyText='' di Dashboard, swap chat) → reset ke 1 baris
+watch(() => props.replyText, () => autoGrow(replyInputRef.value))
 const keyboardOffset = ref(0)
 
 const tagColors = [
@@ -1271,6 +1290,8 @@ onMounted(() => {
   // v3.9.2 K1-A — badge nomor asal: fetch slot + live refresh (socket wa_status)
   fetchWaSlots()
   socketStore.on('wa_status', onWaStatusChanged)
+  // v4.1.5 — pastikan tinggi textarea benar saat pertama mount (1 baris)
+  nextTick(() => autoGrow(replyInputRef.value))
 })
 onUnmounted(() => {
   window.removeEventListener('resize', onWindowResize)
