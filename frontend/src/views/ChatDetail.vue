@@ -875,7 +875,9 @@ function autoGrow(el) {
   measureComposer()
 }
 // Clear eksternal (send sukses replyText='' di Dashboard, swap chat) → reset ke 1 baris
-watch(() => props.replyText, () => autoGrow(replyInputRef.value))
+// v4.1.5.1 — nextTick: ukur TINGGI SETELAH DOM ke-update (template "/" multi-line, clear, dll —
+// bukan cuma ketikan manual; watch biasa jalan SEBELUM DOM patched → tingginya stale)
+watch(() => props.replyText, () => nextTick(() => autoGrow(replyInputRef.value)))
 const keyboardOffset = ref(0)
 
 const tagColors = [
