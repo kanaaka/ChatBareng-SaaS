@@ -260,8 +260,8 @@
       </template>
     </div>
 
-    <!-- v4.1.3.1 D1/D2 — menu kontekstual "Tandai belum dibaca" -->
-    <div class="chat-unread-ctxmenu fixed inset-0 z-40" @click="closeManualUnreadMenu" @contextmenu.prevent="closeManualUnreadMenu"></div>
+    <!-- v4.1.3.1 D1/D2 — menu kontekstual "Tandai belum dibaca" (backdrop v-if: TIDAK boleh selalu render — fixed inset-0 selalu-ada nge-block semua klik di bawahnya) -->
+    <div v-if="showManualUnreadMenu" class="chat-unread-ctxmenu fixed inset-0 z-40" @click="closeManualUnreadMenu" @contextmenu.prevent="closeManualUnreadMenu"></div>
     <div
       class="fixed z-50 w-56 rounded-lg border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container)] shadow-xl overflow-hidden py-1"
       :style="manualUnreadMenuStyle"
