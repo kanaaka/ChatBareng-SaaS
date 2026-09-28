@@ -582,6 +582,10 @@
             <svg class="w-5 h-5 text-[var(--md-sys-color-on-surface-variant)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
             Pesan Terjadwal
           </button>
+          <button @click="attachMenuOpen = false; showTemplateDropdown = false; showEmojiPicker = true" :disabled="sendingMedia" class="w-full text-left px-3 py-2.5 text-sm text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)] flex items-center gap-3 disabled:opacity-50">
+            <svg class="w-5 h-5 text-[var(--md-sys-color-on-surface-variant)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" /></svg>
+            Emoji
+          </button>
         </div>
       </div>
       <!-- v0.10.2 — DESKTOP: tombol media eksplisit (tetap, tidak diubah) -->
@@ -662,6 +666,32 @@
         </svg>
       </button>
 
+      <!-- v4.1.3 D1 — tombol smiley Emoji — DESKTOP ONLY (mobile: item ke-5 di menu +).
+           Pola visual persis tombol composer lain; popover absolute di ATAS composer
+           (di luar flow — composerHeight tidak berubah, spec D4). -->
+      <button
+        v-if="!isMobile"
+        @click.stop="showEmojiPicker = !showEmojiPicker; showTemplateDropdown = false; attachMenuOpen = false"
+        :disabled="sendingMedia"
+        class="text-gray-500 hover:text-wa-green p-2 rounded-full hover:bg-gray-100 disabled:opacity-50 flex-shrink-0"
+        title="Emoji"
+      >
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10" />
+          <path stroke-linecap="round" stroke-linejoin="round" d="M8 14s1.5 2 4 2 4-2 4-2" />
+          <line x1="9" y1="9" x2="9.01" y2="9" />
+          <line x1="15" y1="9" x2="15.01" y2="9" />
+        </svg>
+      </button>
+
+      <!-- v4.1.3 D2/D4 — popover EmojiPicker: absolute bottom-full left-0 (di luar flow,
+           TIDAK mengubah composerHeight); insert at cursor via onEmojiSelect (D3). -->
+      <EmojiPicker
+        v-if="showEmojiPicker"
+        @select="onEmojiSelect"
+        @close="showEmojiPicker = false"
+      />
+
       <!-- v3.9.14 — composer quote chip (1 pending reply; ✕ = batal) -->
       <div v-if="pendingQuote" class="absolute bottom-full left-2 right-2 mb-1">
         <div class="flex items-stretch gap-1.5 rounded-lg border-l-4 border-blue-400 bg-[var(--md-sys-color-surface-container-high)] px-2 py-1.5 shadow-sm max-w-md">
@@ -737,6 +767,8 @@ import NotesPanel from '../components/NotesPanel.vue'
 import ScheduledPanel from '../components/ScheduledPanel.vue'
 // v3.9.23 — AI Chat Summary: tombol 🤖 + modal Summary Sesi
 import SummaryModal from '../components/SummaryModal.vue'
+// v4.1.3 — Emoji picker composer (FE-only, spec docs/spec-v4.1.3-emoji-picker.md)
+import EmojiPicker from '../components/EmojiPicker.vue'
 import { getInitials, formatTime, formatPhone, tagColorClass, tagDotClass } from '../utils/format'
 // v0.14.4 — participant action menu (save-contact + PM) via grup API client
 import { groupsClient, friendlyGroupError } from '../utils/groupsApi'
@@ -815,6 +847,8 @@ const searchInputRef = ref(null)
 const composerBar = ref(null)
 const showTagMenu = ref(false)
 const showTemplateDropdown = ref(false)
+// v4.1.3 — popover emoji picker composer (insert TIDAK menutup; tutup via backdrop/✕/Esc)
+const showEmojiPicker = ref(false)
 // v0.10.2 — menu "+" mobile (Kirim Media/Template/Tangan Kanan/Terjadwal dalam 1 menu M3)
 const attachMenuOpen = ref(false)
 const templateSearch = ref('')
@@ -1090,6 +1124,33 @@ async function sendPrivateMessage(msg) {
   }
 }
 
+// ═══ v4.1.3 — Emoji picker composer (FE-only, spec docs/spec-v4.1.3-emoji-picker.md) ═══
+// D3 — insert at cursor: baca replyInputRef.selectionStart/End SEBELUM insert
+// (fallback: akhir string), splice ke replyText → emit jalur 'update:replyText'
+// yang SAMA dengan input existing (wiring parent tidak berubah) → nextTick
+// restore caret ke insertPos + emoji.length (gagal = posisi default, bukan error).
+// Insert TIDAK menutup popover (multi-emoji — tutup via backdrop/✕/Esc di komponen).
+function onEmojiSelect(emoji) {
+  const el = replyInputRef.value
+  const len = props.replyText.length
+  let start = Number.isInteger(el?.selectionStart) ? el.selectionStart : null
+  let end = Number.isInteger(el?.selectionEnd) ? el.selectionEnd : null
+  if (start == null || start < 0 || start > len) start = len
+  if (end == null || end < start || end > len) end = start
+  const newVal = props.replyText.slice(0, start) + emoji + props.replyText.slice(end)
+  emit('update:replyText', newVal)
+  const caret = start + emoji.length
+  nextTick(() => {
+    if (!el) return
+    try {
+      const pos = Math.min(caret, (el.value || '').length)
+      // mobile: jangan force-focus (keyboard bisa terpop paksa); desktop: fokus balik
+      if (!isMobile.value) el.focus()
+      el.setSelectionRange(pos, pos)
+    } catch { /* gagal restore caret = biarkan posisi default (bukan error) */ }
+  })
+}
+
 /** Escape global utk popover (dipasang saat mounted, dilepas saat unmount). */
 function onSenderMenuKeydown(e) {
   if (e.key === 'Escape' && senderMenu.value.msgId) closeSenderMenu()
@@ -1140,6 +1201,8 @@ function measureComposer() {
 watch(() => props.chat?.id, () => {
   showTagMenu.value = false
   showTemplateDropdown.value = false
+  // v4.1.3 — tutup popover emoji saat pindah chat (pola menu/flyout existing)
+  showEmojiPicker.value = false
   showScrollButton.value = false
   // v0.14.4 — popover peserta ditutup saat pindah chat
   closeSenderMenu()
