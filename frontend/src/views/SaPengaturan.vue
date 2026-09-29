@@ -191,21 +191,44 @@
           </p>
           <div v-if="aiRatesError" class="text-sm mb-2 text-red-600" role="alert">{{ aiRatesError }}</div>
           <div v-if="aiRatesSuccess" class="text-sm mb-2 text-green-600" role="status">{{ aiRatesSuccess }}</div>
-          <div class="sa-aitable-wrap">
+          <!-- v4.1.11 — desktop: tabel asli (hidden md:block); mobile: THIN collapsed card
+               (nama + harga In/Out saja + Edit utk expand-edit/hapus — pinta Kanaka 13:37).
+               Media-query transform tabel lama v4.1.9 dihapus — tabel hanya desktop. -->
+          <div class="sa-aitable-wrap hidden md:block">
             <table class="sa-aitable">
               <thead>
                 <tr><th>Model</th><th>Input</th><th>Cached (kosong = pakai input)</th><th>Output</th><th></th></tr>
               </thead>
               <tbody>
                 <tr v-for="(r, i) in aiRateRows" :key="i">
-                  <td data-label="Model"><input v-model="r.model" type="text" class="sa-aitable__in" aria-label="Nama model" maxlength="64"></td>
-                  <td data-label="Input"><input v-model.number="r.inputPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga input per 1M token"></td>
-                  <td data-label="Cached (kosong = input)"><input v-model.number="r.cachedPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga cached per 1M token (kosong = pakai input)" placeholder="—"></td>
-                  <td data-label="Output"><input v-model.number="r.outputPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga output per 1M token"></td>
-                  <td data-label=" "><button type="button" class="m3-btn m3-btn--tonal !min-h-[36px]" @click="removeAiRateRow(i)" aria-label="Hapus rate model">Hapus</button></td>
+                  <td><input v-model="r.model" type="text" class="sa-aitable__in" aria-label="Nama model" maxlength="64"></td>
+                  <td><input v-model.number="r.inputPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga input per 1M token"></td>
+                  <td><input v-model.number="r.cachedPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga cached per 1M token (kosong = pakai input)" placeholder="—"></td>
+                  <td><input v-model.number="r.outputPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga output per 1M token"></td>
+                  <td><button type="button" class="m3-btn m3-btn--tonal !min-h-[36px]" @click="removeAiRateRow(i)" aria-label="Hapus rate model">Hapus</button></td>
                 </tr>
               </tbody>
             </table>
+          </div>
+          <!-- v4.1.11 — mobile-only: thin cards -->
+          <div class="md:hidden">
+            <div v-for="(r, i) in aiRateRows" :key="'mc' + i" class="sa-ainfo-card">
+              <button type="button" class="sa-ainfo-card__head" @click="toggleAiRateExpand(i)">
+                <span class="sa-ainfo-card__model">{{ r.model || '(tanpa nama)' }}</span>
+                <span class="sa-ainfo-card__prices">In {{ fmtNum(r.inputPerM) }} · Out {{ fmtNum(r.outputPerM) }}</span>
+                <span class="sa-ainfo-card__chev" aria-hidden="true">{{ aiRateExpandedIdx === i ? '▲' : '▼' }}</span>
+              </button>
+              <div v-if="aiRateExpandedIdx === i" class="sa-ainfo-card__body">
+                <input v-model="r.model" type="text" class="sa-aitable__in" aria-label="Nama model" maxlength="64">
+                <div class="grid grid-cols-2 gap-2">
+                  <input v-model.number="r.inputPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" style="max-width:none;" aria-label="Harga input per 1M token">
+                  <input v-model.number="r.cachedPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" style="max-width:none;" aria-label="Harga cached per 1M token (kosong = pakai input)" placeholder="—">
+                  <input v-model.number="r.outputPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" style="max-width:none;" aria-label="Harga output per 1M token">
+                  <button type="button" class="m3-btn m3-btn--tonal !min-h-[36px]" style="color: var(--md-sys-color-error);" @click="removeAiRateRow(i); aiRateExpandedIdx = -1" aria-label="Hapus rate model">Hapus</button>
+                </div>
+              </div>
+            </div>
+            <div v-if="aiRateRows.length === 0" class="sa-ainfo-empty">Belum ada rate tersimpan.</div>
           </div>
           <div class="flex flex-wrap items-center gap-2 mt-2">
             <button type="button" class="m3-btn m3-btn--tonal !min-h-[40px]" @click="addAiRateRow">+ Tambah Model</button>
@@ -484,6 +507,17 @@ async function pullLocalModel() {
 // di UI = kirim daftar tanpa row itu (konsisten dgn PUT; tombol Hapus row memanggil
 // DELETE endpoint eksplisit — dokumentasi pilihan: spec §8b izinkan keduanya).
 const aiRateRows = ref([])
+// v4.1.11 — mobile: state expand kartu harga (accordion, -1 = semua tutup); reset saat
+// load/save echo (index bergeser) + auto-expand row baru biar langsung bisa diedit.
+const aiRateExpandedIdx = ref(-1)
+function toggleAiRateExpand(idx) {
+  aiRateExpandedIdx.value = aiRateExpandedIdx.value === idx ? -1 : idx
+}
+function fmtNum(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '0'
+  return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/\.?0+$/, '')
+}
 const aiUsdToIdr = ref(16000)
 const aiRatesLoading = ref(false)
 const aiRatesReloading = ref(false)
@@ -504,6 +538,7 @@ async function loadAiRates() {
       _savedModel: r.model, // audit v3.9.24 MEDIUM-1: tandai tersimpan sejak initial load → Hapus = DELETE endpoint konsisten
     }))
     aiUsdToIdr.value = Number(data.usdToIdr) || 16000
+    aiRateExpandedIdx.value = -1 // v4.1.11 — index bergeser setelah reload → tutup semua
   } catch (e) {
     aiRatesError.value = e.response?.data?.error || 'Gagal memuat tabel harga'
   } finally {
@@ -513,6 +548,8 @@ async function loadAiRates() {
 
 function addAiRateRow() {
   aiRateRows.value.push({ model: '', inputPerM: 0, cachedPerM: null, outputPerM: 0 })
+  // v4.1.11 — row baru langsung kebuka di kartu mobile biar bisa langsung diedit
+  aiRateExpandedIdx.value = aiRateRows.value.length - 1
 }
 
 // Hapus row di UI = DELETE endpoint eksplisit (model harus sudah tersimpan); row baru
@@ -569,6 +606,7 @@ async function saveAiRates() {
   aiRatesSaving.value = true
   try {
     await axios.put(`${API}/api/sa/ai-rates`, { usdToIdr: kurs, rates })
+    aiRateExpandedIdx.value = -1 // v4.1.11 — index bergeser setelah echo reload
     // re-load dari server (echo resmi) — tandai _savedModel utk DELETE per-row
     const { data } = await axios.get(`${API}/api/sa/ai-rates`)
     aiRateRows.value = (data.rates || []).map((r) => ({
@@ -662,25 +700,59 @@ onMounted(() => {
 }
 @media (max-width: 767px) {
   .sa-pg-select { max-width: none; }
-  /* v4.1.9 — tabel harga: baris jadi kartu (tanpa scroll horizontal di mobile) */
-  .sa-aitable, .sa-aitable tbody, .sa-aitable tr, .sa-aitable td { display: block; width: 100%; }
-  .sa-aitable thead { display: none; }
-  .sa-aitable tr {
-    border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: var(--md-sys-shape-corner-m);
-    padding: 12px;
-    margin-bottom: 10px;
-    background: var(--md-sys-color-surface-container-low);
-  }
-  .sa-aitable td { border-bottom: none !important; padding: 5px 0; }
-  .sa-aitable td[data-label]:not([data-label=" "])::before {
-    content: attr(data-label);
-    display: block;
-    font-size: 0.72rem;
-    font-weight: 600;
-    color: var(--md-sys-color-on-surface-variant);
-    margin-bottom: 3px;
-  }
-  .sa-aitable td:last-child { margin-top: 4px; }
+}
+
+/* v4.1.11 — mobile pricing THIN cards (accordion): collapsed = nama + In/Out + chevron;
+   expand = edit fields + Hapus. Menggantikan transform tabel v4.1.9 (bikin card terlalu
+   panjang — pinta Kanaka 13:37 buat thin card). */
+.sa-ainfo-card {
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-m);
+  margin-bottom: 8px;
+  background: var(--md-sys-color-surface-container-low);
+  overflow: hidden;
+}
+.sa-ainfo-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  min-height: 44px;
+}
+.sa-ainfo-card__model {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--md-sys-color-on-surface);
+}
+.sa-ainfo-card__prices {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.78rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.sa-ainfo-card__chev {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.sa-ainfo-card__body {
+  display: grid;
+  gap: 8px;
+  padding: 4px 12px 12px;
+}
+.sa-ainfo-empty {
+  font-size: 0.85rem;
+  color: var(--md-sys-color-on-surface-variant);
+  padding: 8px 2px;
 }
 </style>
