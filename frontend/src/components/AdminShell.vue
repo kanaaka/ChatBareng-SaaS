@@ -39,6 +39,7 @@
               aria-label="Cari pengaturan"
               @keydown="onSearchKeydown"
               @focus="onSearchFocus"
+              @input="onSearchInput"
               @blur="onSearchBlur"
             />
             <!-- Dropdown hasil (M3 list) -->
@@ -132,7 +133,8 @@ const modules = [
   // dilakukan server-side (403 upsell di semua endpoint). Client-side gating opsional
   // dibiarkan terbuka agar admin Lite tetap bisa lihat + paham fitur (trial → 403 ramah).
   { icon: '🤖', title: 'ChatBareng AI', desc: 'Jawaban AI dari KB', to: '/admin/ai-knowledge' },
-  { icon: '⭐', title: 'CSAT', desc: 'Survey kepuasan', to: '/admin/csat', feature: 'csat' },
+  // v4.1.6 — label CSAT disamakan dgn kartu grid launcher ('CSAT' → 'CSAT Survey')
+  { icon: '⭐', title: 'CSAT Survey', desc: 'Survey kepuasan', to: '/admin/csat', feature: 'csat' },
   { icon: '☁️', title: 'Backup Drive', desc: 'Google Drive otomatis', to: '/admin/backup', feature: 'gdriveBackup' },
   { icon: '🎨', title: 'Tampilan', desc: 'Warna aksen aplikasi', to: '/admin/appearance' },
   // v3.9.13 — Public API v1: key mgmt (gated featApiAccess, plan max)
@@ -144,22 +146,24 @@ const modules = [
 const visibleModules = computed(() => modules.filter((m) => !m.feature || hasFeature(m.feature)))
 
 // ── B — Settings Search index statis (spec §2) ──
+// v4.1.6 — entri ber-plan dapat `feature` key = sama dgn modules sidebar → hasil
+// search difilter hasFeature() (Womba Lite gak nemu modul yang OFF buat dia).
 const SEARCH_INDEX = [
   { label: 'Users', keywords: 'cs, agent, user, password, role', path: '/admin/users', sectionHint: 'Admin Panel', icon: '👥' },
   { label: 'WhatsApp', keywords: 'qr, scan, session, logout wa, centang biru, read receipt', path: '/admin/whatsapp', sectionHint: 'Admin Panel', icon: '📱' },
   { label: 'Auto Reply', keywords: 'away, greeting, sambutan, jam kerja, jam operasional, luar jam', path: '/admin/autoreply', sectionHint: 'Admin Panel', icon: '🤖' },
-  { label: 'Menu Gateway', keywords: 'menu, triage, intro, timeout, frekuensi, tag otomatis', path: '/admin/menu-gateway', sectionHint: 'Admin Panel', icon: '🧭' },
+  { label: 'Menu Gateway', keywords: 'menu, triage, intro, timeout, frekuensi, tag otomatis', path: '/admin/menu-gateway', sectionHint: 'Admin Panel', icon: '🧭', feature: 'menuGateway' },
   { label: 'ChatBareng AI', keywords: 'ai, knowledge, kb, dokumen, cbai, jawaban otomatis, chatbareng ai', path: '/admin/ai-knowledge', sectionHint: 'Admin Panel', icon: '🤖' },
   { label: 'Channel', keywords: 'channel, kanal, newsletter, arsip, siaran, broadcast', path: '/channels', sectionHint: 'Admin Panel', icon: '📢' },
   { label: 'Templates', keywords: 'template, balasan cepat', path: '/admin/templates', sectionHint: 'Admin Panel', icon: '📝' },
-  { label: 'CSAT', keywords: 'bintang, rating, survey, kepuasan, csat', path: '/admin/csat', sectionHint: 'Admin Panel', icon: '⭐' },
+  { label: 'CSAT Survey', keywords: 'bintang, rating, survey, kepuasan, csat', path: '/admin/csat', sectionHint: 'Admin Panel', icon: '⭐', feature: 'csat' },
   { label: 'Purge', keywords: 'hapus chat, bersih-bersih, purge', path: '/admin/purge', sectionHint: 'Admin Panel', icon: '🧹' },
-  { label: 'Backup', keywords: 'backup, google drive', path: '/admin/backup', sectionHint: 'Admin Panel', icon: '☁️' },
-  { label: 'Analytics', keywords: 'performa, analitik, statistik, export, cs performance', path: '/admin/analytics', sectionHint: 'Admin Panel', icon: '📊' },
-  { label: 'Pengumuman', keywords: 'pengumuman, broadcast, announce, kabar tim', path: '/announcements', sectionHint: 'Admin Panel', icon: '📢' },
-  { label: 'Backup & Restore', keywords: 'export, import, restore, history, riwayat chat', path: '/admin/history', sectionHint: 'Admin Panel', icon: '🗂️' },
+  { label: 'Backup', keywords: 'backup, google drive', path: '/admin/backup', sectionHint: 'Admin Panel', icon: '☁️', feature: 'gdriveBackup' },
+  { label: 'Analytics', keywords: 'performa, analitik, statistik, export, cs performance', path: '/admin/analytics', sectionHint: 'Admin Panel', icon: '📊', feature: 'analytics' },
+  { label: 'Pengumuman', keywords: 'pengumuman, broadcast, announce, kabar tim', path: '/announcements', sectionHint: 'Admin Panel', icon: '📢', feature: 'blast' },
+  { label: 'Backup & Restore', keywords: 'export, import, restore, history, riwayat chat', path: '/admin/history', sectionHint: 'Admin Panel', icon: '🗂️', feature: 'historyExport' },
   { label: 'Tampilan', keywords: 'tema, warna, accent, dark mode, appearance', path: '/admin/appearance', sectionHint: 'Admin Panel', icon: '🎨' },
-  { label: 'API Keys', keywords: 'api, key, integrasi, eksternal, token, antrean, webhook', path: '/admin/api-keys', sectionHint: 'Admin Panel', icon: '🔑' },
+  { label: 'API Keys', keywords: 'api, key, integrasi, eksternal, token, antrean, webhook', path: '/admin/api-keys', sectionHint: 'Admin Panel', icon: '🔑', feature: 'apiAccess' },
   { label: 'Panduan', keywords: 'panduan, guidebook, tutorial, bantuan, cara pakai', path: '/guidebook', sectionHint: 'Dokumentasi', icon: '📖' },
 ]
 
@@ -179,6 +183,7 @@ const searchResults = computed(() => {
   if (!q) return []
   const scored = []
   for (const item of SEARCH_INDEX) {
+    if (item.feature && !hasFeature(item.feature)) continue // v4.1.6 — hasil search ikut plan gating
     const label = item.label.toLowerCase()
     const kw = item.keywords.toLowerCase()
     // skor sederhana: startsWith > contains (spec §2) — tanpa fuzzy library.
@@ -201,6 +206,13 @@ const searchResults = computed(() => {
 
 function onSearchFocus() {
   if (searchQuery.value.trim()) searchOpen.value = true
+}
+// v4.1.6 — ngetik dari input kosong kini LANGSUNG membuka dropdown (dulu cuma
+// focus-saat-sudah-berisi / ArrowDown yang buka — ketik dari blank gak nampilin
+// hasil sampai blur+refocus; ketahuan QA visual v4.1.6).
+function onSearchInput() {
+  searchOpen.value = searchQuery.value.trim().length > 0
+  searchIndex.value = 0
 }
 function onSearchBlur() {
   // delay mikro supaya click item terdaftar sebelum dropdown ditutup
