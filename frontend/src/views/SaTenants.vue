@@ -425,6 +425,8 @@ onMounted(() => {
   padding: 24px;
 }
 .sa-form {
+  /* v4.1.8 — notch label field ikut surface form (putih lowest nyolok di container high) */
+  --m3tf-notch-bg: var(--md-sys-color-surface-container-high);
   background: var(--md-sys-color-surface-container-high);
   border-radius: var(--md-sys-shape-corner-m);
   padding: 16px;

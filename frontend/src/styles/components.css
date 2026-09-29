@@ -236,9 +236,9 @@ input::placeholder, textarea::placeholder { color: var(--md-sys-color-outline); 
   position: absolute; left: 12px; top: 14px;
   font: var(--md-sys-typescale-body-large);
   color: var(--md-sys-color-on-surface-variant);
-  /* notch background = surface-container-lowest (sama dengan bg kartu/form side,
-     light & dark) — var, bukan inline style → ikut pergantian tema live */
-  background: var(--md-sys-color-surface-container-lowest);
+  /* notch = permukaan container field (card/form di mana field itu berada).
+     v4.1.8 — override per-kontainer via --m3tf-notch-bg (sama dgn m3-text-field). */
+  background: var(--m3tf-notch-bg, var(--md-sys-color-surface-container-lowest));
   padding: 0 4px; pointer-events: none;
   transition: all var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 }
@@ -285,8 +285,11 @@ input::placeholder, textarea::placeholder { color: var(--md-sys-color-outline); 
   font: var(--md-sys-typescale-body-large);
   color: var(--md-sys-color-on-surface-variant);
   /* notch = permukaan container field (card/form di mana field itu berada);
-     via var supaya ikut tema live & accent runtime */
-  background: var(--md-sys-color-surface-container-lowest);
+     via var supaya ikut tema live & accent runtime.
+     v4.1.8 — BISA di-override per-kontainer via --m3tf-notch-bg (login card
+     surface-container & drawer sa-form surface-container-high: notch putih
+     lowest nyolok di container non-putih — lapor Kanaka 11:56 2026-09-29). */
+  background: var(--m3tf-notch-bg, var(--md-sys-color-surface-container-lowest));
   padding: 0 4px; pointer-events: none;
   transition: all var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 }

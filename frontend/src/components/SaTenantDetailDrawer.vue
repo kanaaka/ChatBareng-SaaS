@@ -943,6 +943,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   bottom: 0;
   width: 540px;
   max-width: 94vw;
+  /* v4.1.8 — notch label field yang LANGSUNG di badan drawer (di luar .sa-form)
+     ikut surface drawer — var ini ditimpa .sa-form dgn high utk field di dlm form */
+  --m3tf-notch-bg: var(--md-sys-color-surface-container-low);
   background: var(--md-sys-color-surface-container-low);
   box-shadow: var(--md-sys-elevation-3);
   z-index: 61;
@@ -1000,6 +1003,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   border-top: 1px solid var(--md-sys-color-outline-variant);
 }
 .sa-form {
+  /* v4.1.8 — notch label field ikut surface form (putih lowest nyolok di container high) */
+  --m3tf-notch-bg: var(--md-sys-color-surface-container-high);
   background: var(--md-sys-color-surface-container-high);
   border-radius: var(--md-sys-shape-corner-m);
   padding: 16px;

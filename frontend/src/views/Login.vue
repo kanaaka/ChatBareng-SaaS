@@ -126,8 +126,11 @@ async function handleLogin() {
 
 <style scoped>
 /* v0.9.0-r2 (audit fix #7) — card form login:
-   surface-container (dark: terangin dari surface bg; light: putih) + radius L + elevasi halus. */
+   surface-container (dark: terangin dari surface bg; light: putih) + radius L + elevasi halus.
+   v4.1.8 — notch label M3TextField ikut warna kartu → bg putih "floating" nyata hilang
+   (lapor Kanaka 11:56 2026-09-29). */
 .m3-login-card {
+  --m3tf-notch-bg: var(--md-sys-color-surface-container);
   background: var(--md-sys-color-surface-container);
   border-radius: var(--md-sys-shape-corner-l);
   box-shadow: var(--md-sys-elevation-1);
