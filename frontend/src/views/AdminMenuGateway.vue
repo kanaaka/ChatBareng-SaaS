@@ -7,6 +7,12 @@
     v3.9.25 — + Kartu AI Hybrid Routing (Beta): toggle (disabled+upsell bila plan ✗),
     slider aiThreshold 0.50–0.95 + 3 preset + keterangan dinamis + info box + hint
     biaya aiUsage; per-opsi textarea "Deskripsi AI (opsional, ≤200)". TANPA v-html.
+    v4.2.1 — Menu Gateway PER-SLOT OVERRIDE (spec docs/spec-v4.2.1-menugateway-per-slot-override.md §3):
+    bar atas dropdown "Semua nomor (Default)" + slots (label custom + 🟣 Custom / menu badge,
+    disabled+tooltip bila slot punya AR teks aktif), mirror prefill GET ?slot=N + banner biru,
+    Save reuse PUT (scopeDefault / numberSlot), Reset ke Default (DELETE slot — modal tipis).
+    Tick-box lama DIHAPUS dari FE (BE tetap byte-compat). Master OFF toggle + flyout waiting
+    + plan-gate messaging TIDAK diubah.
   -->
   <PageShell title="Menu Gateway" back-to="/admin/autoreply">
     <header class="hidden md:flex m3-topbar px-4 py-3 items-center justify-between">
@@ -19,6 +25,42 @@
     </header>
 
     <div class="max-w-4xl mx-auto w-full p-6 space-y-4">
+      <!-- v4.2.1 — Bar atas BARU (spec §3.1): dropdown scope pengaturan.
+           "Semua nomor (Default)" + satu opsi per slot (label custom | 'Slot N')
+           + badge Custom / menu (disabled + tooltip bila slot punya AR teks aktif). -->
+      <div class="bg-white rounded-lg shadow-sm p-4">
+        <div class="flex flex-wrap items-center gap-3">
+          <span class="text-sm text-gray-600">Pengaturan untuk:</span>
+          <select
+            v-model="selectedScope"
+            :disabled="optionsLoading"
+            class="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+            style="min-height: 44px; min-width: 220px;"
+          >
+            <option value="default">Semua nomor (Default)</option>
+            <option
+              v-for="s in slotOptions"
+              :key="s.slot"
+              :value="String(s.slot)"
+              :disabled="s.arManaged"
+              :title="s.arManaged ? 'Nomor ini punya auto-reply teks aktif — matikan dulu di halaman Auto Reply' : ''"
+            >
+              {{ scopeOptionLabel(s) }}
+            </option>
+          </select>
+          <span v-if="optionsLoading" class="text-xs text-gray-400">Memuat nomor...</span>
+        </div>
+      </div>
+
+      <!-- v4.2.1 — banner "masih mengikuti Default" (spec §3.2): slot tanpa row menu sendiri.
+           Slot dgn AR teks aktif → banner amber (diprotect 409 saat enable menu slot itu). -->
+      <div v-if="isSlotScope && currentSlotInfo?.arManaged" class="bg-amber-50 rounded-lg shadow-sm p-4">
+        <p class="text-sm text-amber-800">Nomor ini punya auto-reply teks aktif — matikan dulu di halaman Auto Reply, lalu simpan menu di sini.</p>
+      </div>
+      <div v-else-if="isSlotScope && currentSlotInfo && !currentSlotInfo.custom" class="bg-blue-50 rounded-lg shadow-sm p-4">
+        <p class="text-sm text-blue-800">Nomor ini masih mengikuti Default — Simpan akan menjadikannya Custom.</p>
+      </div>
+
       <!-- Kartu 1 — Status & trigger -->
       <div class="m3-card p-6">
         <div class="flex items-center justify-between gap-4">
@@ -33,6 +75,10 @@
         <div class="mt-3">
           <span :class="['inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium', form.enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500']">
             {{ form.enabled ? '● Aktif — menu terkirim ke chat baru (jam kerja, via First-of-Day Greeting)' : '● Nonaktif — tidak ada menu terkirim' }}
+          </span>
+          <!-- v4.2.1 — badge Custom (slot dgn row menu sendiri; hilang setelah Reset) -->
+          <span v-if="isSlotScope && currentSlotInfo?.custom" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
+            🟣 Custom
           </span>
         </div>
         <p class="text-xs text-gray-400 mt-1">
@@ -330,35 +376,18 @@
         </div>
       </div>
 
-      <!-- Simpan -->
+      <!-- v4.2.1 — Simpan (spec §3.3): Save reuse PUT (scopeDefault/numberSlot);
+           slot Custom → tombol Reset ke Default (modal tipis, spec §3.4). -->
       <div class="flex justify-end items-center gap-3 flex-wrap">
-        <!-- v3.9.4 — TICK-BOX (QA #4/#5): pilih nomor mana yang kena menu ini.
-             Slot yang punya auto-reply teks aktif dilindungi (disabled + badge). -->
-        <div v-if="waSlots.length > 0" class="flex items-center gap-3 flex-wrap">
-          <span class="text-sm text-gray-600">Terapkan ke:</span>
-          <label class="flex items-center gap-1.5 text-sm" :class="!form.enabled ? 'opacity-50' : 'cursor-pointer'">
-            <input type="checkbox" :checked="applyAll" :disabled="!form.enabled" @change="toggleAll" class="w-4 h-4 accent-green-600" />
-            Semua nomor
-          </label>
-          <label
-            v-for="s in waSlots"
-            :key="s.slot"
-            class="flex items-center gap-1.5 text-sm"
-            :class="(!form.enabled || arManagedSet.has(s.slot)) ? 'opacity-50' : 'cursor-pointer'"
-            :title="arManagedSet.has(s.slot) ? 'Nomor ini punya auto-reply teks aktif — matikan dulu di halaman Auto Reply' : (!form.enabled ? 'Nyalakan saklar utama dulu' : '')"
-          >
-            <input
-              type="checkbox"
-              :checked="selectedSlots.has(s.slot)"
-              :disabled="!form.enabled || arManagedSet.has(s.slot)"
-              @change="toggleSlot(s.slot)"
-              class="w-4 h-4 accent-green-600"
-            />
-            Slot {{ s.slot }}{{ s.label ? ' · ' + s.label : '' }}
-            <span v-if="arManagedSet.has(s.slot)" class="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">auto-reply</span>
-          </label>
-        </div>
-        <p v-if="waSlots.length > 0 && !form.enabled" class="text-xs text-gray-400 w-full">Saklar utama mati — nyalakan dulu untuk memilih nomor.</p>
+        <button
+          v-if="isSlotScope && currentSlotInfo?.custom"
+          @click="showResetModal = true"
+          :disabled="saving"
+          class="px-4 py-2.5 rounded-lg text-sm font-medium border border-green-600 text-green-700 hover:bg-green-50 disabled:opacity-50"
+          style="min-height: 44px;"
+        >
+          Reset ke Default
+        </button>
         <button
           @click="save"
           :disabled="saving"
@@ -369,12 +398,32 @@
         </button>
       </div>
     </div>
+
+    <!-- v4.2.1 (spec §3.4) — modal konfirmasi Reset ke Default (tipis):
+         pengaturan menu khusus nomor ini dihapus + nomor kembali MIRROR Default +
+         pesan yang menunggu pemilihan menu di nomor ini dilepas ke antrean. -->
+    <div v-if="showResetModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="showResetModal = false">
+      <div class="bg-white rounded-lg shadow-xl max-w-sm w-full p-5">
+        <h3 class="font-semibold text-gray-900">Reset ke Default?</h3>
+        <p class="text-sm text-gray-600 mt-2">Pengaturan menu khusus nomor ini akan dihapus; nomor kembali mengikuti Default; pesan yang menunggu pemilihan menu akan dilepas ke antrean.</p>
+        <div class="flex justify-end gap-2 mt-4">
+          <button @click="showResetModal = false" class="px-4 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100">Batal</button>
+          <button
+            @click="resetSlot"
+            :disabled="resetting"
+            class="px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
+          >
+            {{ resetting ? 'Mereset...' : 'Reset' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </PageShell>
 </template>
 
 <script setup>
 import axios from 'axios'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useToastStore } from '../stores/toast'
 import PageShell from '../components/PageShell.vue'
 import M3Switch from '../components/M3Switch.vue'
@@ -419,6 +468,38 @@ const thresholdPresets = [
   { label: 'Ketat', value: 0.85, desc: 'AI cuma menyala kalau sangat yakin — lebih aman, tapi lebih banyak pesan jatuh ke antrean CS manual.' },
 ]
 const thresholdLabel = computed(() => Number(form.value.aiThreshold).toFixed(2))
+
+// ═══ v4.2.1 — view scope (spec §3): 'default' ATAU '0'..'2' (string utk <option>, path URL param) ═══
+const selectedScope = ref('default')
+const isSlotScope = computed(() => selectedScope.value !== 'default')
+const currentSlot = computed(() => (isSlotScope.value ? parseInt(selectedScope.value, 10) : null))
+if (Number.isNaN(currentSlot.value)) selectedScope.value = 'default' // guard slot ngawur (pola AR v4.2.0)
+
+// GET /options (spec §2.1): dropdown + badge Custom/menu (+ arManaged utk tooltip/disable).
+// Di-fetch ulang tiap sukses save/reset (badge hilang/muncul setelah aksi).
+const slotOptions = ref([])
+const optionsLoading = ref(false)
+const currentSlotInfo = computed(() => slotOptions.value.find((s) => s.slot === currentSlot.value) || null)
+
+function scopeOptionLabel(s) {
+  // label fallback 'Slot N' (spec §1.1) — bila TenantNumber tanpa label
+  const base = s.label || `Slot ${s.slot}`
+  if (s.menuManaged) return `${base} · 🟣 Custom · menu`
+  return s.custom ? `${base} · 🟣 Custom` : base
+}
+
+async function fetchOptions() {
+  optionsLoading.value = true
+  try {
+    const res = await axios.get(`${API}/api/menu-gateway/options`)
+    slotOptions.value = res.data.slots || []
+  } catch (e) {
+    // dropdown tetap jalan dgn slot-0 sintetis bila options gagal (GET utama tetap dicoba)
+    slotOptions.value = []
+  } finally {
+    optionsLoading.value = false
+  }
+}
 
 const timeoutHint = computed(() => {
   const u = form.value.timeoutUnit === 'seconds' ? 'detik' : 'menit'
@@ -521,14 +602,25 @@ function validateClient() {
   return null
 }
 
-async function fetchAll() {
+// v4.2.1 — normalize row opsi API → form (dipakai loadConfig + save echo)
+function normalizeOptions(list) {
+  return (list || []).map(o => ({
+    position: o.position,
+    label: o.label || '',
+    aliases: o.aliases || '',
+    replyText: o.replyText || '',
+    tagId: o.tagId ?? null,
+    aiDescription: o.aiDescription || '',
+    answerMode: (o.answerMode === 'ai_knowledge' && kbPlanOk.value) ? 'ai_knowledge' : 'text', // v4.0.0a hotfix — coerce text bila plan ✗ (PUT gak 403)
+    aiDocIds: o.aiDocIds || '',
+    aiDocIdsList: String(o.aiDocIds || '').split(',').map((s) => parseInt(s.trim(), 10)).filter(Number.isFinite),
+  }))
+}
+
+async function loadScopeConfig() {
   try {
-    const res = await axios.get(`${API}/api/menu-gateway`)
-    // v3.9 fix BUG-7 — daftar slot (untuk dropdown Terapkan ke)
-    try {
-      const st = await axios.get(`${API}/api/wa/status`)
-      waSlots.value = st.data.slots || []
-    } catch {}
+    const url = isSlotScope.value ? `${API}/api/menu-gateway?slot=${currentSlot.value}` : `${API}/api/menu-gateway`
+    const res = await axios.get(url)
     const cfg = res.data.config
     form.value.enabled = !!cfg.enabled
     form.value.introText = cfg.introText || ''
@@ -537,16 +629,11 @@ async function fetchAll() {
     form.value.timeoutValue = cfg.timeoutValue ?? 30
     form.value.timeoutUnit = cfg.timeoutUnit || 'minutes'
     form.value.repeatFrequency = cfg.repeatFrequency || 'daily'
-    // v3.9.25 — AI Hybrid state + plan gate + metering (spec §7)
     form.value.aiHybrid = !!cfg.aiHybrid
     form.value.aiThreshold = Number(cfg.aiThreshold ?? 0.70)
-    // v4.0.0a hotfix (quirk #1 + #2 QA Kanaka) — plan flag dari SERVER (pola
-    // AutoReply), BUKAN probe GET /api/ai-knowledge: probe 403 kena interceptor
-    // global v3.4 → toast "Fitur terkunci" + redirect keluar halaman gated.
-    // (Dan JANGAN shadow ref `kbPlanOk` dgn let lokal — TypeError → toast gagal memuat.)
-    const aiRoutingOk = res.data.aiUsage !== null // plan featAiRouting ✓ (toggle classifier)
+    // v4.0.0a hotfix — plan flag dari SERVER (pola AutoReply) — sama seperti loadScopeConfig
+    aiRoutingPlanOk.value = res.data.aiUsage !== null
     aiUsage.value = res.data.aiUsage || null
-    aiRoutingPlanOk.value = aiRoutingOk
     kbPlanOk.value = res.data.cbaiPlanOk !== false
     if (kbPlanOk.value) {
       try {
@@ -556,49 +643,10 @@ async function fetchAll() {
     } else {
       kbDocs.value = []
     }
-    form.value.options = (cfg.options || []).map(o => ({
-      position: o.position,
-      label: o.label || '',
-      aliases: o.aliases || '',
-      replyText: o.replyText || '',
-      tagId: o.tagId ?? null,
-      aiDescription: o.aiDescription || '',
-      answerMode: (o.answerMode === 'ai_knowledge' && kbPlanOk.value) ? 'ai_knowledge' : 'text', // v4.0.0a hotfix — coerce text bila plan ✗ (PUT gak 403)
-      aiDocIds: o.aiDocIds || '',
-      aiDocIdsList: String(o.aiDocIds || '').split(',').map((s) => parseInt(s.trim(), 10)).filter(Number.isFinite),
-    }))
+    form.value.options = normalizeOptions(cfg.options)
     if (form.value.options.length === 0) {
       // Config default baru → sediakan 2 opsi kosong sebagai titik mulai
       form.value.options = [emptyOption(1), emptyOption(2)]
-    }
-    // v3.9.4 — state tick-box dari server (persist) + slot dilindungi auto-reply
-    arManagedSet.value = new Set(res.data.arManagedSlots || [])
-    const mgSlots = (res.data.menuManagedSlots || []).map(Number)
-    if (mgSlots.length > 0) {
-      applyAll.value = false
-      selectedSlots.value = new Set(mgSlots)
-      // overlay form dari config slot tercentang pertama (scoped yang AKTIF)
-      try {
-        const sc = await axios.get(`${API}/api/menu-gateway?slot=${mgSlots[0]}`)
-        const sCfg = sc.data.config
-        form.value.enabled = !!sCfg.enabled
-        if (sCfg.introText) form.value.introText = sCfg.introText
-        if (sCfg.fallbackText) form.value.fallbackText = sCfg.fallbackText
-        form.value.fallbackTagId = sCfg.fallbackTagId ?? form.value.fallbackTagId
-        form.value.timeoutValue = sCfg.timeoutValue ?? form.value.timeoutValue
-        form.value.timeoutUnit = sCfg.timeoutUnit || form.value.timeoutUnit
-        form.value.repeatFrequency = sCfg.repeatFrequency || form.value.repeatFrequency
-        if ((sCfg.options || []).length > 0) {
-          form.value.options = sCfg.options.map(o => ({
-            position: o.position, label: o.label || '', aliases: o.aliases || '', replyText: o.replyText || '', tagId: o.tagId ?? null, aiDescription: o.aiDescription || '',
-            answerMode: (o.answerMode === 'ai_knowledge' && kbPlanOk.value) ? 'ai_knowledge' : 'text', aiDocIds: o.aiDocIds || '',
-            aiDocIdsList: String(o.aiDocIds || '').split(',').map((s) => parseInt(s.trim(), 10)).filter(Number.isFinite),
-          }))
-        }
-      } catch {}
-    } else {
-      applyAll.value = true
-      selectedSlots.value = new Set()
     }
   } catch (e) {
     toast.show({ icon: '⚠️', title: 'Gagal memuat', message: e.response?.data?.error || 'Config tidak bisa dimuat' })
@@ -610,15 +658,14 @@ async function fetchAll() {
 }
 
 async function save() {
-  // v3.9.5 fix audit MEDIUM-2 — guard sama dgn AutoReply: uncheck semua = tolak dini
-  // (hanya saat master ON — toggle OFF = full-off, tick-box tidak dipaksa)
-  if (form.value.enabled && waSlots.value.length > 0 && !applyAll.value && selectedSlots.value.size === 0) {
-    toast.show({ icon: '⚠️', title: 'Belum ada nomor dipilih', message: 'Centang minimal satu nomor (atau Semua nomor).' })
-    return
-  }
   const err = validateClient()
   if (err) {
     toast.show({ icon: '⚠️', title: 'Belum valid', message: err })
+    return
+  }
+  // v4.2.1 — slot dgn AR teks aktif: enable menu slot itu akan 409 (proteksi v3.9.4)
+  if (isSlotScope.value && form.value.enabled && currentSlotInfo.value?.arManaged) {
+    toast.show({ icon: '⚠️', title: 'Nomor punya auto-reply teks aktif', message: 'Matikan dulu trigger teksnya di halaman Auto Reply, lalu simpan menu di sini.' })
     return
   }
   saving.value = true
@@ -631,8 +678,10 @@ async function save() {
       timeoutValue: form.value.timeoutValue,
       timeoutUnit: form.value.timeoutUnit,
       repeatFrequency: form.value.repeatFrequency,
-      // v3.9.4 — tick-box scope (legacy numberSlot tetap didukung backend)
-      numberSlots: applyAll.value ? null : [...selectedSlots.value],
+      // v4.2.1 (spec §2) — scope: Default view (scopeDefault=true → tulis SHARED row SAJA)
+      // vs Slot view (numberSlot=N → path tick-box tunggal lama, netralisasi SUDAH BENAR).
+      // TANPA numberSlots lagi — FE baru tidak pernah memakai tick-box (BE tetap byte-compat).
+      ...(isSlotScope.value ? { numberSlot: currentSlot.value } : { scopeDefault: true }),
       aiHybrid: form.value.aiHybrid,
       aiThreshold: form.value.aiThreshold,
       options: form.value.options.map(o => ({
@@ -648,30 +697,32 @@ async function save() {
       })),
     }
     const res = await axios.put(`${API}/api/menu-gateway`, payload)
-    const cfg = res.data.config
+    const cfg = res.data.config || {}
     // v0.13.2 — info sinkron: radio greeting di Auto Reply ikut status saklar ini
     if (res.data.greetMode === 'menu') {
       toast.show({ icon: '🔗', title: 'Tersimpan + sinkron', message: 'Radio "Mode greeting" di Auto Reply sekarang = Menu gateway' })
     } else if (res.data.greetMode === 'text') {
       toast.show({ icon: '🔗', title: 'Tersimpan + sinkron', message: 'Radio "Mode greeting" di Auto Reply kembali = Teks biasa' })
     }
-    form.value.options = (cfg.options || []).map(o => ({
-      position: o.position,
-      label: o.label || '',
-      aliases: o.aliases || '',
-      replyText: o.replyText || '',
-      tagId: o.tagId ?? null,
-      aiDescription: o.aiDescription || '',
-      answerMode: o.answerMode || 'text',
-      aiDocIds: o.aiDocIds || '',
-      aiDocIdsList: String(o.aiDocIds || '').split(',').map((s) => parseInt(s.trim(), 10)).filter(Number.isFinite),
-    }))
+    // v4.2.1 — echo config (normalize + guard bila BE tidak echo config)
+    if (cfg.options) {
+      form.value.options = normalizeOptions(cfg.options)
+      if (form.value.options.length === 0) form.value.options = [emptyOption(1), emptyOption(2)]
+    }
     // v3.9.25 — refresh state AI setelah save (metering + echo server)
     form.value.aiHybrid = !!cfg.aiHybrid
     form.value.aiThreshold = Number(cfg.aiThreshold ?? form.value.aiThreshold)
-    toast.show({ icon: '✅', title: 'Tersimpan', message: 'Config Menu Gateway berhasil disimpan' })
+    toast.show({
+      icon: '✅',
+      title: 'Tersimpan',
+      message: isSlotScope.value
+        ? `Menu slot ${currentSlot.value} disimpan (Custom — bebas dari Default)`
+        : 'Config Menu Gateway Default berhasil disimpan',
+    })
+    // v4.2.1 — refresh badge scope (slot bisa jadi Custom / menu badge)
+    await fetchOptions()
   } catch (e) {
-    // v3.9.4 — 409 = slot dilindungi Auto Reply (proteksi hybrid dua arah)
+    // v3.9.4 — 409 = slot dilindungi Auto Reply / shared AR aktif (proteksi hybrid dua arah)
     // v3.9.25 — 403 = plan ✗ (AI Hybrid Routing gate — upsell ramah)
     toast.show({
       icon: '⚠️',
@@ -683,28 +734,40 @@ async function save() {
   }
 }
 
-// v3.9.4 — TICK-BOX scope (QA #4/#5): applyAll = 'Semua nomor'; selectedSlots =
-// slot tercentang (persist via numberSlot config — pilihan tidak hilang lagi).
-// arManagedSet = slot dgn auto-reply teks aktif → dilindungi dari save menu.
-const waSlots = ref([])
-const applyAll = ref(true)
-const selectedSlots = ref(new Set())
-const arManagedSet = ref(new Set())
+// ═══ v4.2.1 (spec §3.3) — Reset ke Default: DELETE row menu slot → nomor kembali MIRROR
+// Default (BE juga menghapus row AR 'menu' slot itu + melepas awaiting milik slot itu).
+const showResetModal = ref(false)
+const resetting = ref(false)
 
-function toggleAll() {
-  applyAll.value = !applyAll.value
-  if (applyAll.value) selectedSlots.value = new Set()
-}
-function toggleSlot(slot) {
-  const next = new Set(selectedSlots.value)
-  if (next.has(slot)) {
-    next.delete(slot)
-  } else {
-    next.add(slot)
-    applyAll.value = false
+async function resetSlot() {
+  resetting.value = true
+  try {
+    await axios.delete(`${API}/api/menu-gateway/slot/${currentSlot.value}`)
+    showResetModal.value = false
+    toast.show({ icon: '✅', title: 'Di-reset ke Default', message: `Menu nomor slot ${currentSlot.value} kembali mengikuti Default.` })
+    // badge Custom hilang + form kembali ke nilai EFEKTIF (mirror Default)
+    await fetchOptions()
+    await loadScopeConfig()
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal reset', message: e.response?.data?.error || 'Terjadi kesalahan' })
+  } finally {
+    resetting.value = false
   }
-  selectedSlots.value = next
 }
 
-onMounted(fetchAll)
+// pindah dropdown → reload form utk scope baru (watch, bukan handler terpisah — pola AR v4.2.0)
+watch(selectedScope, () => {
+  loadScopeConfig()
+})
+
+onMounted(async () => {
+  // R2-fix Kimi: fetchAll () di-rename ke loadScopeConfig, + fetchOptions diperlukannya
+  // utk prefill dropdown (dulu gak pernah dipanggil di mount — dropdown kosong)
+  await fetchOptions()
+  await loadScopeConfig()
+  try {
+    const res = await axios.get(`${API}/api/tags`)
+    tags.value = res.data.tags || []
+  } catch (e) { console.error('Fetch tags error:', e) }
+})
 </script>

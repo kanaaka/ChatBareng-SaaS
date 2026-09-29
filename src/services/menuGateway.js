@@ -679,6 +679,33 @@ async function countWaiting(tenantId) {
   return prisma.chat.count({ where: { tenantId, menuState: 'awaiting' } })
 }
 
+// ═══ v4.2.1 — Menu Gateway PER-SLOT OVERRIDE (spec §1.1) — helper ADDITIVE ═══
+/**
+ * getSlotScopeInfo(tenantId) → { customMap, arSet, defaultExists } utk GET /options:
+ * - customMap: Map slot → enabled boolean — ada row MenuGatewayConfig {tenantId,
+ *   numberSlot: slot} = CUSTOM (enabled true/false sama saja — row = custom; mirror
+ *   Default berarti TANPA row). menuManaged = customMap.get(slot) === true.
+ * - arSet: Set slot dgn AutoReplyConfig teks/outside AKTIF (greetMode ≠ 'menu') —
+ *   dilindungi 409 saat enable menu slot itu (re-use query tick-box GET / v3.9.4).
+ * - defaultExists: row MenuGatewayConfig shared (numberSlot null) ada.
+ * DB queries SAJA — tanpa require wa/pool (route tetap pegang listTenantNumbers,
+ * pola autoreply/options v4.2.0 — hindari risiko circular-require di module scope).
+ */
+async function getSlotScopeInfo(tenantId) {
+  const tid = Number(tenantId)
+  const [rows, arRows] = await Promise.all([
+    prisma.menuGatewayConfig.findMany({ where: { tenantId: tid, numberSlot: { not: null } }, select: { numberSlot: true, enabled: true } }),
+    prisma.autoReplyConfig.findMany({
+      where: { tenantId: tid, numberSlot: { not: null }, greetMode: { not: 'menu' }, OR: [{ greetEnabled: true }, { outsideHoursEnabled: true }] },
+      select: { numberSlot: true },
+    }),
+  ])
+  const customMap = new Map(rows.map((r) => [Number(r.numberSlot) || 0, r.enabled === true]))
+  const arSet = new Set(arRows.map((r) => Number(r.numberSlot) || 0))
+  const shared = await prisma.menuGatewayConfig.findFirst({ where: { tenantId: tid, numberSlot: null }, select: { id: true } })
+  return { customMap, arSet, defaultExists: !!shared }
+}
+
 async function listWaiting(tenantId) {
   const chats = await prisma.chat.findMany({
     where: { tenantId, menuState: 'awaiting' },
@@ -875,6 +902,7 @@ module.exports = {
   releaseAwaiting,
   countWaiting,
   listWaiting,
+  getSlotScopeInfo, // v4.2.1 — additive: metadata scope utk GET /options (dropdown FE)
   sweepOnce,
   initMenuGatewaySweep,
   stopMenuGatewaySweep,
