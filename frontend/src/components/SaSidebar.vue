@@ -289,7 +289,13 @@ loadBrand()
     z-index: 39;
   }
   .sa-sidebar__foot {
-    display: none; /* logout ada di Overview mobile actions */
+    /* v4.1.7 — foot TAMPIL lagi di drawer mobile (bug lapor Kanaka 10:26:
+       display:none + comment "logout ada di Overview mobile actions" = referensi
+       layout lama yang sudah tidak ada sejak v3.9.19 → logout SA unreachable
+       di mobile). Foot = bagian dalam drawer, selalu ikut saat terbuka. */
+    display: block;
+    padding: 12px 16px;
+    border-top: 1px solid var(--md-sys-color-outline-variant);
   }
 }
 </style>
