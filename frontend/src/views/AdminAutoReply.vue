@@ -10,11 +10,50 @@
     </header>
 
     <div class="max-w-4xl mx-auto w-full p-6 space-y-4">
+      <!-- v4.2.0 — Bar atas BARU (spec §3.1): dropdown scope pengaturan.
+           "Default (Semua nomor)" + satu opsi per slot (label custom | 'Slot N')
+           + badge Custom / ikut-Default / menu (disabled + tooltip). -->
+      <div class="bg-white rounded-lg shadow-sm p-4">
+        <div class="flex flex-wrap items-center gap-3">
+          <span class="text-sm text-gray-600">Pengaturan untuk:</span>
+          <select
+            v-model="selectedScope"
+            :disabled="optionsLoading"
+            class="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+            style="min-height: 44px; min-width: 220px;"
+          >
+            <option value="default">Default (Semua nomor)</option>
+            <option v-for="s in slotOptions" :key="s.slot" :value="String(s.slot)" :disabled="s.menuManaged">
+              {{ scopeOptionLabel(s) }}
+            </option>
+          </select>
+          <span v-if="optionsLoading" class="text-xs text-gray-400">Memuat nomor...</span>
+        </div>
+      </div>
+
+      <!-- v4.2.0 — banner "masih mengikuti Default" (spec §3.2): slot tanpa row sendiri.
+           Badge "menu" utk slot menu-managed (dilindungi — dikelola Menu Gateway). -->
+      <div v-if="isSlotScope && currentSlotInfo?.menuManaged" class="bg-purple-50 rounded-lg shadow-sm p-4">
+        <p class="text-sm text-purple-800">
+          Nomor ini sedang dikelola Menu Gateway — matikan menu untuk slot itu di halaman Menu Gateway dulu, lalu simpan ulang di sini.
+          <router-link to="/admin/menu-gateway" class="underline font-medium">Buka Menu Gateway →</router-link>
+        </p>
+      </div>
+      <div v-else-if="isSlotScope && !currentSlotInfo?.custom" class="bg-blue-50 rounded-lg shadow-sm p-4">
+        <p class="text-sm text-blue-800">Nomor ini masih mengikuti Default — menekan Simpan akan membuatnya Custom.</p>
+      </div>
+
       <!-- Badge status ringkas -->
       <div class="bg-white rounded-lg shadow-sm p-4">
-        <span :class="['inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium', statusBadge.class]">
-          {{ statusBadge.text }}
-        </span>
+        <div class="flex flex-wrap items-center gap-2">
+          <span :class="['inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium', statusBadge.class]">
+            {{ statusBadge.text }}
+          </span>
+          <!-- v4.2.0 — badge Custom (slot dgn row sendiri; hilang setelah reset) -->
+          <span v-if="isSlotScope && currentSlotInfo?.custom" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
+            🟣 Custom
+          </span>
+        </div>
         <p class="text-xs text-gray-400 mt-2">Auto message 1×/hari per pelanggan · tidak mengubah antrean · tidak dihitung sebagai first-response CS</p>
       </div>
 
@@ -78,30 +117,42 @@
           <!-- v0.13.0 — mode greeting (D9): teks biasa / menu gateway; v4.0.0 (D4): + CB-AI -->
           <div class="flex flex-wrap items-center gap-4 mb-2">
             <span class="text-xs text-gray-600">Mode greeting:</span>
-            <label class="flex items-center gap-1.5 text-sm text-gray-800 cursor-pointer" style="min-height: 36px;">
-              <input v-model="form.greetMode" type="radio" value="text" class="w-4 h-4 accent-green-600" />
+            <!-- v4.2.0 (Audit R3 N5) — form echo mode menu (shared/slot menu-managed):
+                 radio text/cbai JUGA di-disable — takeover greeting hanya lewat Menu
+                 Gateway (BE: PUT /default dgn greet* → 409 dgn pesan yang sama). -->
+            <label class="flex items-center gap-1.5 text-sm text-gray-800 cursor-pointer" :class="menuManagedEcho ? 'opacity-50 cursor-not-allowed' : ''" style="min-height: 36px;" :title="menuManagedEcho ? menuRadioTitle : ''">
+              <input v-model="form.greetMode" type="radio" value="text" :disabled="menuManagedEcho" class="w-4 h-4 accent-green-600" />
               Teks biasa
             </label>
             <label
               class="flex items-center gap-1.5 cursor-pointer"
               style="min-height: 36px;"
-              :class="!aiPlanOk ? 'opacity-50' : ''"
+              :class="(!aiPlanOk || menuManagedEcho) ? 'opacity-50' : ''"
+              :title="menuManagedEcho ? menuRadioTitle : (aiPlanOk ? '' : 'AI menjawab dari dokumen yang kamu ajarkan di menu ChatBareng AI')"
             >
-              <input v-model="form.greetMode" type="radio" value="cbai" :disabled="!aiPlanOk" class="w-4 h-4 accent-green-600" />
+              <input v-model="form.greetMode" type="radio" value="cbai" :disabled="!aiPlanOk || menuManagedEcho" class="w-4 h-4 accent-green-600" />
               <span class="text-sm text-gray-800">ChatBareng AI (dari KB)</span>
             </label>
-            <label class="flex items-center gap-1.5 cursor-pointer" style="min-height: 36px;">
-              <input v-model="form.greetMode" type="radio" value="menu" class="w-4 h-4 accent-green-600" />
+            <label
+              class="flex items-center gap-1.5 cursor-not-allowed opacity-50"
+              style="min-height: 36px;"
+              :title="menuRadioTitle"
+            >
+              <!-- v4.2.0 (Audit Kimi K3 BUG#1 opsi A): mode menu = milik halaman Menu
+                   Gateway — radio legacy DINONAKTIFKAN (menu → 400 dari endpoint baru;
+                   konfigurasi menu lewat halaman Menu Gateway) -->
+              <input v-model="form.greetMode" type="radio" value="menu" disabled class="w-4 h-4 accent-green-600" />
               <span class="text-sm text-gray-800">Menu gateway (pilihan topik)</span>
-              <router-link to="/admin/menu-gateway" class="text-xs text-green-700 hover:underline">→ atur menu</router-link>
+              <router-link to="/admin/menu-gateway" class="text-xs text-green-700 hover:underline" @click.stop>→ Buka Menu Gateway</router-link>
             </label>
           </div>
           <p v-if="!aiPlanOk && form.greetMode !== 'menu'" class="text-xs px-3 py-2 rounded-lg bg-amber-50 text-amber-700">
             ChatBareng AI belum tersedia di paket kamu — hubungi admin platform untuk upgrade.
           </p>
           <p v-if="form.greetMode === 'menu'" class="text-xs text-amber-600">
-            Teks greeting di bawah TIDAK terkirim — pelanggan menerima intro dari Menu Gateway
-            (yang otomatis menyala saat mode ini disimpan; mati lagi kalau radio kembali ke Teks biasa).
+            Greeting dikelola oleh Menu Gateway — matikan menunya dulu di halaman Menu Gateway
+            untuk mengambil alih greeting di sini.
+            <router-link to="/admin/menu-gateway" class="underline">Buka Menu Gateway</router-link>
           </p>
           <p v-else-if="form.greetMode === 'cbai'" class="text-xs text-gray-500">
             Siang dijaga AI dari dokumen KB (menu ChatBareng AI). Tidak tercakup → greeting text
@@ -120,11 +171,9 @@
         </div>
       </div>
 
-      <!-- v4.0.0 — Kartu Pengaturan CB-AI (limit slider + jendela 24 jam + footer + hint biaya).
-           v4.0.0b hotfix (QA Kanaka 09:15) — dropdown Frekuensi greeting KELUAR dari kartu ini
-           (misleading — dugaan Kanaka wajar); pindah ke kartu Greeting di atas (tetap halaman
-           Auto Reply sesuai D10, tapi berdiri sendiri karena ini aturan greeting, bukan CB-AI). -->
-      <div class="bg-white rounded-lg shadow-sm p-6">
+      <!-- v4.2.0 (spec §3.4) — Kartu CB-AI HANYA di view Default.
+           Di view slot: panel ringkas read-only + tombol link "Buka Default". -->
+      <div v-if="!isSlotScope" class="bg-white rounded-lg shadow-sm p-6">
         <div class="flex items-center justify-between gap-2">
           <h2 class="font-semibold text-gray-900">Pengaturan ChatBareng AI</h2>
           <span v-if="aiUsage" class="text-xs text-gray-400">≈ Rp {{ (aiUsage.costRp || 0).toLocaleString('id-ID') }} bulan ini ({{ aiUsage.calls || 0 }} call)</span>
@@ -149,6 +198,20 @@
           </div>
           <M3Switch v-model="form.cbaiInfoFooter" :disabled="!aiPlanOk || saving" />
         </label>
+      </div>
+      <div v-else class="bg-white rounded-lg shadow-sm p-6">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="font-semibold text-gray-900">🧠 Pengaturan AI (KB, persona, batas)</h2>
+            <p class="text-xs text-gray-500 mt-1">Diatur di Default — sama untuk semua nomor.</p>
+          </div>
+          <button
+            @click="selectedScope = 'default'"
+            class="px-4 py-2 rounded-lg text-sm font-medium border border-green-600 text-green-700 hover:bg-green-50"
+          >
+            Buka Default
+          </button>
+        </div>
       </div>
 
       <!-- v4.0.0b hotfix — Frekuensi greeting: kartu sendiri (aturan greeting, BUKAN bagian CB-AI) -->
@@ -188,34 +251,16 @@
         </div>
       </div>
 
-      <!-- Save -->
+      <!-- Save bar (v4.2.0 — spec §3.3): Simpan; slot Custom → tombol Reset ke Default (modal tipis). -->
       <div class="flex justify-end items-center gap-3 flex-wrap">
-        <!-- v3.9.4 — TICK-BOX (QA #4/#5): pilih nomor mana yang kena rules ini.
-             'Semua nomor' + slot tick-box; slot menu-managed dilindungi (disabled + badge). -->
-        <div v-if="waSlots.length > 0" class="flex items-center gap-3 flex-wrap">
-          <span class="text-sm text-gray-600">Terapkan ke:</span>
-          <label class="flex items-center gap-1.5 text-sm cursor-pointer">
-            <input type="checkbox" :checked="applyAll" @change="toggleAll" class="w-4 h-4 accent-green-600" />
-            Semua nomor
-          </label>
-          <label
-            v-for="s in waSlots"
-            :key="s.slot"
-            class="flex items-center gap-1.5 text-sm"
-            :class="menuManagedSet.has(s.slot) ? 'opacity-50' : 'cursor-pointer'"
-            :title="menuManagedSet.has(s.slot) ? 'Nomor ini dikelola Menu Gateway — matikan menunya dulu di halaman Menu Gateway' : ''"
-          >
-            <input
-              type="checkbox"
-              :checked="selectedSlots.has(s.slot)"
-              :disabled="menuManagedSet.has(s.slot)"
-              @change="toggleSlot(s.slot)"
-              class="w-4 h-4 accent-green-600"
-            />
-            Slot {{ s.slot }}{{ s.label ? ' · ' + s.label : '' }}
-            <span v-if="menuManagedSet.has(s.slot)" class="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700">menu</span>
-          </label>
-        </div>
+        <button
+          v-if="isSlotScope && currentSlotInfo?.custom"
+          @click="showResetModal = true"
+          :disabled="saving"
+          class="px-4 py-2.5 rounded-lg text-sm font-medium border border-green-600 text-green-700 hover:bg-green-50 disabled:opacity-50"
+        >
+          Reset ke Default
+        </button>
         <button
           @click="save"
           :disabled="saving"
@@ -225,12 +270,30 @@
         </button>
       </div>
     </div>
+
+    <!-- v4.2.0 (spec §3.3) — modal konfirmasi Reset ke Default (tipis) -->
+    <div v-if="showResetModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="showResetModal = false">
+      <div class="bg-white rounded-lg shadow-xl max-w-sm w-full p-5">
+        <h3 class="font-semibold text-gray-900">Reset ke Default?</h3>
+        <p class="text-sm text-gray-600 mt-2">Kembalikan pengaturan nomor ini ke Default? Pengaturan khususnya akan dihapus.</p>
+        <div class="flex justify-end gap-2 mt-4">
+          <button @click="showResetModal = false" class="px-4 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100">Batal</button>
+          <button
+            @click="resetSlot"
+            :disabled="resetting"
+            class="px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
+          >
+            {{ resetting ? 'Mereset...' : 'Reset' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </PageShell>
 </template>
 
 <script setup>
 import axios from 'axios'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useToastStore } from '../stores/toast'
 import PageShell from '../components/PageShell.vue'
@@ -269,30 +332,81 @@ const form = ref({
 const aiPlanOk = ref(true)
 const aiUsage = ref(null)
 
-// v3.9.4 — TICK-BOX scope (QA #4/#5): applyAll = 'Semua nomor'; selectedSlots =
-// slot tercentang. Persist via GET numberSlots/menuManagedSlots — pilihan tidak
-// hilang lagi saat reload (bug lama: dropdown reset + save per-slot 400 diam).
-const waSlots = ref([])
-const applyAll = ref(true)
-const selectedSlots = ref(new Set())
-const menuManagedSet = ref(new Set())
+// ═══ v4.2.0 — view scope (spec §3): 'default' ATAU '0'..'2' (string utk <option>, path URL param)
+const selectedScope = ref('default')
+const isSlotScope = computed(() => selectedScope.value !== 'default')
+const currentSlot = computed(() => (isSlotScope.value ? parseInt(selectedScope.value, 10) : null))
+// validasi client: scope harus 0..2 (slot ngawur → kembali ke Default) — backend tetap 400
+if (Number.isNaN(currentSlot.value)) selectedScope.value = 'default'
 
-function toggleAll() {
-  applyAll.value = !applyAll.value
-  if (applyAll.value) selectedSlots.value = new Set()
+// v4.2.0 — GET /options (spec §2.1): dropdown + badge Custom/menu-managed.
+// Di-fetch ulang tiap sukses save/reset (badge hilang/muncul setelah aksi).
+const slotOptions = ref([])
+const optionsLoading = ref(false)
+const currentSlotInfo = computed(() => slotOptions.value.find((s) => s.slot === currentSlot.value) || null)
+
+function scopeOptionLabel(s) {
+  if (s.menuManaged) return `Slot ${s.slot} · menu`
+  const base = s.label || `Slot ${s.slot}`
+  return s.custom ? `${base} · Custom` : base
 }
-function toggleSlot(slot) {
-  const next = new Set(selectedSlots.value)
-  if (next.has(slot)) {
-    next.delete(slot)
-  } else {
-    next.add(slot)
-    applyAll.value = false
+
+async function fetchOptions() {
+  optionsLoading.value = true
+  try {
+    const res = await axios.get(`${API}/api/autoreply/options`)
+    slotOptions.value = res.data.slots || []
+  } catch (e) {
+    // dropdown tetap jalan dgn slot-0 sintetis bila options gagal (GET utama tetap dicoba)
+    slotOptions.value = []
+  } finally {
+    optionsLoading.value = false
   }
-  selectedSlots.value = next
 }
 
-// Badge status ringkas di atas
+// v4.2.0 — pindah scope → form diisi nilai EFEKTIF view itu (spec §3.2):
+// Default → GET /api/autoreply (shared); Slot N → GET /api/autoreply?slot=N
+// (merge fallback shared + overlay CB-AI di backend).
+async function loadScopeConfig() {
+  try {
+    const url = isSlotScope.value ? `${API}/api/autoreply?slot=${currentSlot.value}` : `${API}/api/autoreply`
+    const res = await axios.get(url)
+    const cfg = res.data.config
+    for (const key of Object.keys(form.value)) {
+      if (cfg[key] !== undefined) form.value[key] = cfg[key]
+    }
+    // v0.13.0 — greetMode default "text" bila backend belum punya kolom
+    if (!form.value.greetMode) form.value.greetMode = 'text'
+    // v4.0.0 — CB-AI fields default aman bila backend belum punya kolom
+    if (!form.value.outsideHoursMode) form.value.outsideHoursMode = 'text'
+    if (!form.value.cbaiLimit) form.value.cbaiLimit = 3
+    form.value.cbaiInfoFooter = form.value.cbaiInfoFooter !== false
+    // CB-AI shared: echo kartu CB-AI (pola v4.0.0) — hanya relevan di view Default
+    try {
+      const kb = await axios.get(`${API}/api/ai-knowledge`)
+      aiPlanOk.value = true
+      aiUsage.value = kb.data?.aiUsage || null
+      if (kb.data?.config) {
+        form.value.cbaiLimit = kb.data.config.cbaiLimit ?? 3
+        form.value.cbaiInfoFooter = kb.data.config.cbaiInfoFooter !== false
+      }
+    } catch (kbErr) {
+      if (kbErr?.response?.status === 403) aiPlanOk.value = false
+      // 401 → biarkan fetch utama yang melempar error auth
+    }
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal memuat', message: e.response?.data?.error || 'Config tidak bisa dimuat' })
+  }
+}
+
+// pindah dropdown → reload form utk scope baru (watch, bukan handler terpisah).
+// v4.2.0 (Kimi K3 R1 N2) — form dirty dibuang TANPA konfirmasi (keputusan UX sadar;
+// konsisten dgn halaman config lain di aplikasi — spec §3 tidak mewajibkan confirm).
+watch(selectedScope, () => {
+  loadScopeConfig()
+})
+
+// Badge status ringkas di atas (v4.2.0 — tanpa tick-box; view-scope aktif saja)
 const statusBadge = computed(() => {
   const f = form.value
   if (!f.outsideHoursEnabled && !f.greetEnabled) {
@@ -314,69 +428,33 @@ function preview(text) {
   return (text || '').replace(/\{name\}/g, 'Kakak')
 }
 
-async function fetchConfig() {
-  try {
-    const res = await axios.get(`${API}/api/autoreply`)
-    const cfg = res.data.config
-    for (const key of Object.keys(form.value)) {
-      if (cfg[key] !== undefined) form.value[key] = cfg[key]
-    }
-    // v0.13.0 — greetMode default "text" bila backend belum punya kolom
-    if (!form.value.greetMode) form.value.greetMode = 'text'
-    // v4.0.0 — CB-AI fields default aman bila backend belum punya kolom
-    if (!form.value.outsideHoursMode) form.value.outsideHoursMode = 'text'
-    if (!form.value.cbaiLimit) form.value.cbaiLimit = 3
-    form.value.cbaiInfoFooter = form.value.cbaiInfoFooter !== false
-    // v3.9.4 — daftar slot + state tick-box dari server (persist!)
-    const st = await axios.get(`${API}/api/wa/status`)
-    waSlots.value = st.data.slots || []
-    const scoped = res.data.numberSlots || []
-    menuManagedSet.value = new Set(res.data.menuManagedSlots || [])
-    if (scoped.length > 0) {
-      applyAll.value = false
-      selectedSlots.value = new Set(scoped)
-      // v3.9.4 — form menampilkan rules scoped yang AKTIF (ambil dari slot pertama
-      // tercentang — baseline shared sengaja dinetralkan server saat mode per-slot)
-      try {
-        const sc = await axios.get(`${API}/api/autoreply?slot=${scoped[0]}`)
-        for (const key of Object.keys(form.value)) {
-          if (sc.data.config[key] !== undefined) form.value[key] = sc.data.config[key]
-        }
-      } catch {}
-    } else {
-      applyAll.value = true
-      selectedSlots.value = new Set()
-    }
-    // v4.0.0 — plan gate CB-AI: GET /api/ai-knowledge 403 = plan ✗ (upsell banner);
-    // 200 → config + aiUsage utk kartu Pengaturan CB-AI
-    try {
-      const kb = await axios.get(`${API}/api/ai-knowledge`)
-      aiPlanOk.value = true
-      aiUsage.value = kb.data?.aiUsage || null
-      if (kb.data?.config) {
-        form.value.cbaiLimit = kb.data.config.cbaiLimit ?? 3
-        form.value.cbaiInfoFooter = kb.data.config.cbaiInfoFooter !== false
-      }
-    } catch (kbErr) {
-      if (kbErr?.response?.status === 403) aiPlanOk.value = false
-      else if (kbErr?.response?.status === 401) throw kbErr // auth error → toast utama
-    }
-  } catch (e) {
-    toast.show({ icon: '⚠️', title: 'Gagal memuat', message: e.response?.data?.error || 'Config tidak bisa dimuat' })
-  } finally {
-    loading.value = false
-  }
-}
+// v4.2.0 (Audit BUG#1 opsi A) — tooltip radio menu (dinonaktifkan): menu dikelola Menu Gateway
+const menuRadioTitle = 'Greeting dikelola Menu Gateway — matikan menunya dulu di halaman Menu Gateway untuk mengambil alih greeting di sini'
+// v4.2.0 (Audit R3 N5) — form sedang MENG-ECHO baris menu-managed (greetMode 'menu'
+// dari Menu Gateway legacy link-all / slot menu): radio text/cbai ikut disabled selama
+// tampilan ini menampilkan greeting milik Menu Gateway.
+const menuManagedEcho = computed(() => form.value.greetMode === 'menu')
 
 async function save() {
-  // v3.9.4 — guard: mode per-slot tanpa satu pun centangan → tolak (jangan kirim 400)
-  if (waSlots.value.length > 0 && !applyAll.value && selectedSlots.value.size === 0) {
-    toast.show({ icon: '⚠️', title: 'Belum ada nomor dipilih', message: 'Centang minimal satu nomor (atau Semua nomor).' })
-    return
-  }
-  // v4.0.0 — guard plan client: radio CB-AI hanya boleh dikirim bila plan ✓
+  // v4.2.0 — guard plan client: radio CB-AI hanya boleh dikirim bila plan ✓
   if (!aiPlanOk.value && (form.value.greetMode === 'cbai' || form.value.outsideHoursMode === 'cbai')) {
     toast.show({ icon: '⚠️', title: 'Fitur belum tersedia', message: 'ChatBareng AI tidak tersedia di paket kamu — hubungi admin platform untuk upgrade.' })
+    return
+  }
+  // v4.2.0 (Audit BUG#1) — radio menu disabled; kalau masih ada greetMode 'menu'
+  // (mis. slot menu-managed → form echo mode menu), JANGAN kirim greetMode ke endpoint
+  // baru (500 → 400); FE menampilkan banner proteksi di atas.
+  const body = { ...form.value }
+  if (body.greetMode === 'menu') delete body.greetMode
+  // guard slot menu-managed: server akan 409; cegah save useless + toast jelas
+  if (isSlotScope.value && currentSlotInfo.value?.menuManaged) {
+    toast.show({ icon: '⚠️', title: 'Slot dikelola Menu Gateway', message: 'Matikan menu untuk slot itu di halaman Menu Gateway dulu, lalu simpan ulang di sini.' })
+    return
+  }
+  // v4.2.0 (Audit R3 N5) — view Default menu-managed: field greet* DILARANG (server
+  // 409 "Greeting dikelola Menu Gateway…"); FE cegah save useless + pesan jelas.
+  if (!isSlotScope.value && form.value.greetMode === 'menu') {
+    toast.show({ icon: '⚠️', title: 'Greeting dikelola Menu Gateway', message: 'Matikan menunya di halaman Menu Gateway dulu, lalu simpan ulang di sini.' })
     return
   }
   // Validasi ringan di client sebelum PUT
@@ -388,9 +466,11 @@ async function save() {
   }
   saving.value = true
   try {
-    // v3.9.4 — numberAll + numberSlots (tick-box); legacy numberSlot tidak lagi
-    // dikirim dari UI baru
-    const body = { ...form.value }
+    // v4.2.0 (spec §3.4) — CB-AI + scope-fields TIDAK PERNAH dikirim dari view slot;
+    // CB-AI hanya di PUT /default (shared = pemilik KB & persona).
+    if (isSlotScope.value) {
+      for (const k of ['cbaiLimit', 'cbaiInfoFooter']) delete body[k]
+    }
     // v4.0.0 — plan ✗ → JANGAN kirim nilai cbai (biar 403 tidak menyala gara-gara pre-set)
     if (!aiPlanOk.value) {
       if (body.greetMode === 'cbai') body.greetMode = 'text'
@@ -398,26 +478,22 @@ async function save() {
       delete body.cbaiLimit
       delete body.cbaiInfoFooter
     }
-    if (waSlots.value.length > 0) {
-      if (applyAll.value) {
-        body.numberAll = true
-        body.numberSlots = null
-      } else {
-        body.numberAll = false
-        body.numberSlots = [...selectedSlots.value]
-      }
-    }
-    const res = await axios.put(`${API}/api/autoreply`, body)
+    const res = isSlotScope.value
+      ? await axios.put(`${API}/api/autoreply/slot/${currentSlot.value}`, body)
+      : await axios.put(`${API}/api/autoreply/default`, body)
     const cfg = res.data.config
-    // v0.13.2 — sinkron otomatis: mode menu → gateway ON; mode text → gateway OFF
-    if (res.data.menuGatewayEnabled === true) {
-      toast.show({ icon: '🔗', title: 'Menu Gateway aktif', message: 'Saklar di halaman Menu Gateway ikut menyala otomatis' })
-    }
     for (const key of Object.keys(form.value)) {
       if (cfg[key] !== undefined) form.value[key] = cfg[key]
     }
-    toast.show({ icon: '✅', title: 'Tersimpan', message: 'Config Auto Reply berhasil disimpan' })
-    // v4.0.0 — refresh plan gate (plan bisa berubah; GET ikutkan cbai echo)
+    toast.show({
+      icon: '✅',
+      title: 'Tersimpan',
+      message: isSlotScope.value
+        ? `Pengaturan slot ${currentSlot.value} disimpan (Custom — bebas dari Default)`
+        : 'Pengaturan Default berhasil disimpan',
+    })
+    // v4.2.0 — refresh badge scope (slot bisa jadi Custom) + plan gate (plan bisa berubah)
+    fetchOptions()
     try {
       const cfg2 = await axios.get(`${API}/api/ai-knowledge`)
       if (cfg2.data?.config) {
@@ -428,10 +504,30 @@ async function save() {
       aiPlanOk.value = !!cfg2.data?.aiUsage
     } catch {}
   } catch (e) {
-    // v3.9.4 — 409 = slot dilindungi Menu Gateway (proteksi hybrid)
+    // v3.9.4/v4.2.0 — 409 = slot dilindungi Menu Gateway (proteksi hybrid)
     toast.show({ icon: '⚠️', title: e?.response?.status === 409 ? 'Slot dikelola Menu Gateway' : 'Gagal simpan', message: e.response?.data?.error || 'Terjadi kesalahan' })
   } finally {
     saving.value = false
+  }
+}
+
+// v4.2.0 (spec §3.3) — Reset ke Default: DELETE row slot (modal konfirmasi di atas)
+const showResetModal = ref(false)
+const resetting = ref(false)
+
+async function resetSlot() {
+  resetting.value = true
+  try {
+    await axios.delete(`${API}/api/autoreply/slot/${currentSlot.value}`)
+    showResetModal.value = false
+    toast.show({ icon: '✅', title: 'Di-reset ke Default', message: `Nomor slot ${currentSlot.value} kembali mengikuti Default.` })
+    // badge Custom hilang + form kembali ke nilai EFEKTIF (mirror Default)
+    await fetchOptions()
+    await loadScopeConfig()
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: e?.response?.status === 409 ? 'Slot dikelola Menu Gateway' : 'Gagal reset', message: e.response?.data?.error || 'Terjadi kesalahan' })
+  } finally {
+    resetting.value = false
   }
 }
 
@@ -440,5 +536,9 @@ function handleLogout() {
   window.location.href = '/login'
 }
 
-onMounted(fetchConfig)
+onMounted(async () => {
+  await fetchOptions()
+  await loadScopeConfig()
+  loading.value = false
+})
 </script>

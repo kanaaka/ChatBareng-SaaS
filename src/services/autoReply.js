@@ -128,6 +128,16 @@ async function listSlotsWithConfig(tenantId) {
   }
 }
 
+/**
+ * v4.2.0 — helper ADDITIVE (tanpa perubahan perilaku existing): slot yang PUNYA row
+ * per-slot non-menu ("Custom" — dikelola halaman Auto Reply, bukan Menu Gateway).
+ * Dipakai E2E/debug; pemetaan scoped di listSlotsWithConfig tidak disentuh.
+ */
+async function listCustomSlots(tenantId) {
+  const { scoped } = await listSlotsWithConfig(tenantId)
+  return scoped
+}
+
 function invalidateConfig(tenantId) {
   // v3.9 — cache key kini bisa tenantId ATAU "tenantId:slot" → clear semua
   // (jumlah entry kecil; paling aman untuk kedua bentuk key).
@@ -953,7 +963,9 @@ async function disableGreetForScope(tenantId, slots, userId = null) {
 module.exports = {
   getConfig,
   getConfigForSlot, // v3.9.2 K1-A — dipakai menuGateway.startFlow (resolve per-slot)
+  CBAI_SHARED_FIELDS, // v4.2.0 — spec per-slot override (shared MENANG utk field ini)
   listSlotsWithConfig, // v3.9.4 — UI tick-box
+  listCustomSlots, // v4.2.0 — E2E/debug: slot yang PUNYA row non-menu
   enableGreetForScope, // v3.9.4 — sync saklar scoped
   disableGreetForScope, // v3.9.4 — sync saklar scoped
   invalidateConfig,

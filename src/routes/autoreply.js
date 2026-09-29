@@ -15,10 +15,11 @@ const rt = [requireAuth, requireTenant, requireAdmin]  // requireTenant dulu —
 const {
   getConfig,
   invalidateConfig,
-  listSlotsWithConfig, // v3.9.4 — info tick-box (scoped vs menu-managed)
+  listSlotsWithConfig, // v3.9.4 — info tick-box (scoped vs menu-managed); v4.2.0 dipakai /options + GET ?slot
   stripUnknownPlaceholders,
   TIME_RE,
   MAX_TEXT_LEN,
+  CBAI_SHARED_FIELDS, // v4.2.0 — single-source-of-truth (spec §0) dari service
 } = require('../services/autoReply')
 
 // Validasi pasangan jam kerja per tipe hari
@@ -83,9 +84,14 @@ router.get('/', ...rt, async (req, res) => {
       if (!Number.isFinite(s) || s < 0 || s > 2) return res.status(400).json({ error: 'Slot tidak valid (0..2)' })
       const svc = require('../services/autoReply')
       const cfg = await svc.getConfigForSlot(req.tenantId, s)
+      // v4.2.0 — additive 2 field (spec §2.5): custom (row per-slot non-menu) +
+      // menuManaged (greetMode 'menu') — bentuk existing TIDAK diubah.
+      const scope2 = await listSlotsWithConfig(req.tenantId)
+      const customFlag = scope2.scoped.includes(s)
+      const menuFlag = scope2.menuManaged.includes(s)
       // v4.0.0b hotfix — echo repeatFrequency efektif (AR ?? MG ?? 'daily')
       const mg = await require('../services/menuGateway').getConfigForSlot(req.tenantId, s).catch(() => null)
-      return res.json({ config: { ...cfg, repeatFrequency: cfg.repeatFrequency ?? mg?.repeatFrequency ?? 'daily' }, numberSlot: cfg.numberSlot ?? null })
+      return res.json({ config: { ...cfg, repeatFrequency: cfg.repeatFrequency ?? mg?.repeatFrequency ?? 'daily' }, numberSlot: cfg.numberSlot ?? null, custom: customFlag, menuManaged: menuFlag })
     }
     const cfg = await getConfig(req.tenantId)
     // v3.9.4 — info tick-box utk UI: slot dgn row sendiri mode text (dikelola halaman
@@ -100,7 +106,332 @@ router.get('/', ...rt, async (req, res) => {
   }
 })
 
-// PUT /api/autoreply (admin only)
+// ═════════════════════════════════════════════════════════════════════════
+// v4.2.0 — AUTO REPLY PER-SLOT OVERRIDE (spec docs/spec-v4.2.0-autoreply-per-slot-override.md)
+// Shared row (numberSlot=null) = "Default" (baseline SEMUA slot tanpa row sendiri);
+// slot dgn row sendiri = "Custom". Save Default → HANYA shared row (ZERO cascade,
+// TANPA netralisasi, TANPA delete row slot). Save Slot N → upsert row slot itu saja.
+// Reset Slot N → DELETE row slot (kembali mirror Default). Menu-managed (greetMode
+// 'menu') dilindungi 409 (teks persis blok v3.9.4 di atas). CB-AI SHARED fields
+// (CBAI_SHARED_FIELDS — spec §0) hanya boleh di PUT /default; di PUT /slot → 400.
+// Semua endpoint: validasi-first ketat (field asing → 400, pola ALLOWED v4.0.0),
+// plan-gate cbai 403 (pola existing), invalidateConfig + updatedById di SEMUA write.
+// Legacy GET / + PUT / (tick-box numberAll/numberSlots + netralisasi + cascade) —
+// TIDAK diubah perilakunya (byte-compat untuk FE/API lama — regression e2e-v4121).
+// ═════════════════════════════════════════════════════════════════════════
+// ⚙️ v4.2.0 — validasi SHARED utk PUT /default + PUT /slot/:slot (pola validasi-first
+// PUT legacy: field asing sudah difilter caller; sini validasi nilai PERSIS pola
+// existing — enum modes, persona/upseil/doc, cbaiEndText, jam TIME_RE, teks ≤1000).
+// Plan-gate cbai 403 (pola existing — berlaku admin & SA via ?tenant=). Return
+// { errors: string[], data: object } — data siap ditulis ke row target.
+// context: 'default' (semua field OK — shared = pemilik CB-AI) | 'slot' (guard
+// belt-and-braces menolak CB-AI — caller juga sudah difilter DENIED_CBAI).
+async function validateAutoreplyBody(body, req, context = 'default') {
+  const errors = []
+  const data = {}
+  // v4.2.0 AUDIT N3 — gunakan context: 'slot' TIDAK boleh menyentuh field CB-AI
+  // (sudah difilter caller DENIED_CBAI sebelum validator) — guard dua lapis di sini:
+  if (context === 'slot') {
+    for (const f of CBAI_SHARED_FIELDS) {
+      if (body[f] !== undefined) return { errors: [`${f} diatur di Default (Semua nomor) — KB & persona tetap tenant-wide`], data }
+    }
+  }
+
+  // Modes (persis pola existing — menu/cbai memaksa greetEnabled=true).
+  // v4.2.0 AUDIT fix (Kimi K3 R1 BUG#1 — opsi A): greetMode='menu' DITOLAK di kedua
+  // endpoint baru (400) — mode menu milik halaman Menu Gateway (komentar legacy
+  // "mode menu kini dimiliki halaman Menu Gateway"). Sinkron MG (enable/disable scoped
+  // + releaseAwaiting) HANYA ada di jalur legacy — menerima 'menu' di sini akan membuat
+  // row menu-ORPHAN: greeting senyap total (AR menu + MG enabled=false di runtime
+  // autoReply: menu hanya jalan bila menuGW.enabled) DAN soft-lock 409 selamanya
+  // (listSlotsWithConfig menandai menuManaged; sync menuGateway.js hanya menyentuh
+  // row shared). Radio menu di FE baru juga di-disable — menu dikelola halaman
+  // Menu Gateway, bukan dari sini.
+  if (body.greetMode !== undefined) {
+    if (body.greetMode === 'menu') {
+      return { errors: ['Mode menu diatur di halaman Menu Gateway — pilih Teks biasa atau ChatBareng AI di sini'], data }
+    }
+    if (typeof body.greetMode !== 'string' || !GREET_MODES.includes(body.greetMode)) {
+      return { errors: [`greetMode harus "text", "menu", atau "cbai"`], data }
+    }
+    data.greetMode = body.greetMode
+    if (body.greetMode === 'menu' || body.greetMode === 'cbai') data.greetEnabled = true
+  }
+  if (body.outsideHoursMode !== undefined) {
+    if (typeof body.outsideHoursMode !== 'string' || !OUTSIDE_MODES.includes(body.outsideHoursMode)) {
+      return { errors: ['outsideHoursMode harus "text" atau "cbai"'], data }
+    }
+    data.outsideHoursMode = body.outsideHoursMode
+  }
+  if (body.cbaiLimit !== undefined) {
+    if (!Number.isInteger(body.cbaiLimit) || body.cbaiLimit < 1 || body.cbaiLimit > 10) {
+      return { errors: ['cbaiLimit harus integer 1..10'], data }
+    }
+    data.cbaiLimit = body.cbaiLimit
+  }
+  if (body.cbaiInfoFooter !== undefined) {
+    if (typeof body.cbaiInfoFooter !== 'boolean') return { errors: ['cbaiInfoFooter harus boolean'], data }
+    data.cbaiInfoFooter = body.cbaiInfoFooter
+  }
+  // persona (pola v4.1.1: string STRICT, trim, cap 120; '' = reset)
+  for (const pf of ['cbaiBotName', 'cbaiBotRole', 'cbaiHumanAgentLabel']) {
+    if (body[pf] !== undefined) {
+      if (typeof body[pf] !== 'string') return { errors: [`${pf} harus berupa teks`], data }
+      const v = body[pf].trim()
+      if (v.length > 120) return { errors: [`${pf} maksimal 120 karakter`], data }
+      data[pf] = v
+    }
+  }
+  // upselling + disclaimer (pola v4.1.2: boolean STRICT — pola persona)
+  for (const bf of ['cbaiUpsellEnabled', 'cbaiDisclaimer']) {
+    if (body[bf] !== undefined) {
+      if (typeof body[bf] !== 'boolean') return { errors: [`${bf} harus boolean`], data }
+      data[bf] = body[bf]
+    }
+  }
+  // cbaiUpsellDocId: null ATAU integer positif; doc milik tenant (pola existing)
+  if (body.cbaiUpsellDocId !== undefined) {
+    if (body.cbaiUpsellDocId === null) {
+      data.cbaiUpsellDocId = null
+    } else if (!Number.isInteger(body.cbaiUpsellDocId) || body.cbaiUpsellDocId <= 0) {
+      return { errors: ['cbaiUpsellDocId harus null atau integer positif'], data }
+    } else {
+      const doc = await prisma.aiKnowledgeDoc.findFirst({ where: { id: body.cbaiUpsellDocId, tenantId: req.tenantId }, select: { id: true } })
+      if (!doc) return { errors: ['cbaiUpsellDocId tidak valid — dokumen tidak ditemukan di tenant ini'], data }
+      data.cbaiUpsellDocId = body.cbaiUpsellDocId
+    }
+  }
+  // v4.2.0 — cbaiEndText (pola aiKnowledge: null/kosong→null, trim, cap 500)
+  if (body.cbaiEndText !== undefined) {
+    if (body.cbaiEndText === null) {
+      data.cbaiEndText = null
+    } else if (typeof body.cbaiEndText !== 'string') {
+      return { errors: ['cbaiEndText harus berupa teks atau null'], data }
+    } else {
+      const v = body.cbaiEndText.trim()
+      // v4.2.0 — konsisten kartu CB-AI: kosong → null (template bawaan).
+      if (v === '') data.cbaiEndText = null
+      else if (v.length > 500) return { errors: ['cbaiEndText maksimal 500 karakter'], data }
+      else data.cbaiEndText = v
+    }
+  }
+  // repeatFrequency (pola existing — enum persis)
+  if (body.repeatFrequency !== undefined) {
+    if (typeof body.repeatFrequency !== 'string' || !['per_chat', 'daily', 'weekly'].includes(body.repeatFrequency)) {
+      return { errors: ['repeatFrequency harus "per_chat", "daily", atau "weekly"'], data }
+    }
+    data.repeatFrequency = body.repeatFrequency
+  }
+
+  // Toggle fitur
+  if (body.outsideHoursEnabled !== undefined) data.outsideHoursEnabled = !!body.outsideHoursEnabled
+  if (body.greetEnabled !== undefined) data.greetEnabled = !!body.greetEnabled
+
+  // Teks (≤1000 char, placeholder hanya {name} — helper existing)
+  const ohText = validateTextField(body, 'outsideHoursText', 'Teks Outside Hours', errors)
+  if (ohText) Object.assign(data, ohText)
+  const greetText = validateTextField(body, 'greetText', 'Teks Greeting', errors)
+  if (greetText) Object.assign(data, greetText)
+
+  // Jam operasional 3 tipe hari (helper existing)
+  for (const prefix of ['monFri', 'sat', 'sun']) {
+    const hours = validateHours(body, prefix, errors)
+    if (hours) Object.assign(data, hours)
+  }
+  if (errors.length > 0) return { errors, data }
+
+  // Plan gate CB-AI (persis pola existing — 403 upsell ramah, ALL actors)
+  if (data.greetMode === 'cbai' || data.outsideHoursMode === 'cbai') {
+    const plan = await plans.getPlan(req.tenantId)
+    if (!plan || plan.featAiKnowledge === false) {
+      return { errors: [{ planGate: true, status: 403, body: { error: 'ChatBareng AI (Auto Reply) tidak tersedia di paket Anda. Hubungi admin platform untuk upgrade.', feature: 'featAiKnowledge' } }], data }
+    }
+  }
+  return { errors: [], data }
+}
+
+// GET /api/autoreply/options (BARU v4.2.0) — data dropdown FE:
+// slots[] = {slot, label(custom TenantNumber / null utk synthetic 0), custom(row per-slot
+// non-menu), menuManaged(row greetMode 'menu')} + defaultExists (row shared ada).
+// Sumber slot+label: wa.listTenantNumbers (pola persis GET /api/wa/status — slot-0
+// disintesis bila belum ada baris). Gagal → 200 dgn array kosong-bijak (bukan 500 liar).
+router.get('/options', ...rt, async (req, res) => {
+  try {
+    const tid = req.tenantId
+    const { scoped, menuManaged } = await listSlotsWithConfig(tid)
+    const scopedSet = new Set(scoped)
+    const menuSet = new Set(menuManaged)
+    let slots = []
+    try {
+      const waSvc = require('../wa/pool')
+      const numbers = await waSvc.listTenantNumbers(tid)
+      // v4.2.0 AUDIT N1 (Kimi K3 R1) — slot-0 implisit PERSIS pola GET /api/wa/status
+      // (src/routes/wa.js): bila TenantNumber punya baris slot 1/2 TAPI tanpa slot-0,
+      // unshift slot-0 sintetis (label null) — dropdown tidak boleh kehilangan slot-0.
+      const seen = new Set(numbers.map((n) => Number(n.slot) || 0))
+      slots = numbers.map((n) => ({
+        slot: Number(n.slot) || 0,
+        label: n.label || null, // synthetic slot-0 → label null (pola /wa/status)
+        custom: scopedSet.has(Number(n.slot) || 0),
+        menuManaged: menuSet.has(Number(n.slot) || 0),
+      }))
+      if (!seen.has(0)) {
+        slots.unshift({ slot: 0, label: null, custom: scopedSet.has(0), menuManaged: menuSet.has(0) })
+      }
+    } catch (e) {
+      // listTenantNumbers gagal → fallback minimal slot-0 sintetis (200 bijak, bukan 500)
+      console.error('AutoReply options listTenantNumbers error (non-fatal):', e.message)
+      slots = [{ slot: 0, label: null, custom: scopedSet.has(0), menuManaged: menuSet.has(0) }]
+    }
+    let defaultExists = true
+    try {
+      const shared = await prisma.autoReplyConfig.findFirst({ where: { tenantId: tid, numberSlot: null }, select: { id: true } })
+      defaultExists = !!shared
+    } catch {}
+    res.json({ slots, defaultExists })
+  } catch (e) {
+    console.error('AutoReply options error:', e)
+    res.status(200).json({ slots: [], defaultExists: false }) // spec §2.1: gagal → 200 array kosong-bijak
+  }
+})
+
+// PUT /api/autoreply/default (BARU v4.2.0) — simpan baseline "Default (Semua nomor)":
+// HANYA update shared row — ZERO cascade (tanpa netralisasi, tanpa hapus row slot).
+router.put('/default', ...rt, async (req, res) => {
+  try {
+    const body = req.body || {}
+    // Whitelist = semua field kecuali scope-fields (numberAll/numberSlot/numberSlots);
+    // CB-AI shared fields TANPA pengharaman di sini (spec §2.2: boleh di Default).
+    const ALLOWED_FIELDS = new Set([
+      'outsideHoursEnabled', 'outsideHoursText', 'outsideHoursMode',
+      'greetEnabled', 'greetMode', 'greetText',
+      ...CBAI_SHARED_FIELDS,
+      'repeatFrequency',
+      'monFriEnabled', 'monFriStart', 'monFriEnd',
+      'satEnabled', 'satStart', 'satEnd',
+      'sunEnabled', 'sunStart', 'sunEnd',
+    ])
+    for (const key of Object.keys(body)) {
+      if (!ALLOWED_FIELDS.has(key)) return res.status(400).json({ error: `Field tidak dikenal: ${key}` })
+    }
+    const { errors, data } = await validateAutoreplyBody(body, req, 'default')
+    if (errors.length > 0) {
+      if (errors.length === 1 && errors[0]?.planGate) return res.status(errors[0].status).json(errors[0].body)
+      return res.status(400).json({ error: errors[0], errors })
+    }
+    // v4.2.0 AUDIT R3 N5 (Kimi K3) — shared menu-managed: FIELD GREET* DILARANG
+    // (greetEnabled/greetMode/greetText → 409 "Greeting dikelola Menu Gateway…").
+    // Greeting milik halaman Menu Gateway sampai menu-nya dimatikan di sana (atau via
+    // jalur legacy PUT yang sync MG lengkap + releaseAwaiting) — tanpa ini AR shared
+    // jadi text tapi MenuGatewayConfig tetap enabled → hybrid tak-terlihat (chat
+    // awaiting tetap dirouting menu; sync MG bisa flip balik AR ke 'menu').
+    // Field NON-greet (outsideHours*/jam/repeatFrequency/cbai*) TETAP 200 — independent.
+    if (body.greetEnabled !== undefined || body.greetMode !== undefined || body.greetText !== undefined) {
+      const menuShared = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null, greetMode: 'menu' }, select: { id: true } })
+      if (menuShared) {
+        return res.status(409).json({
+          error: 'Greeting dikelola Menu Gateway — matikan menunya di halaman Menu Gateway dulu, lalu simpan ulang di sini.',
+          slots: ['default'],
+        })
+      }
+    }
+
+    await getConfig(req.tenantId) // pastikan shared row ter-seed (pola existing)
+    const shared = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
+    const cfg = await prisma.autoReplyConfig.update({ where: { id: shared?.id }, data: { ...data, updatedById: req.user.id } })
+    invalidateConfig(req.tenantId) // cache service invalid → config baru aktif
+    // echo repeatFrequency efektif (AR ?? MG ?? 'daily') — pola hotfix v4.0.0b
+    const mgEcho = await require('../services/menuGateway').getConfig(req.tenantId).catch(() => null)
+    res.json({ config: { ...cfg, repeatFrequency: cfg.repeatFrequency ?? mgEcho?.repeatFrequency ?? 'daily' } })
+  } catch (e) {
+    console.error('AutoReply PUT default error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// PUT /api/autoreply/slot/:slot (BARU v4.2.0) — simpan override slot ("Custom"):
+// upsert row {tenantId, numberSlot} — TIDAK menyentuh shared row ataupun row slot lain;
+// CB-AI SHARED fields DITOLAK 400 (diatur di Default); 409 bila row slot menu-managed.
+router.put('/slot/:slot', ...rt, async (req, res) => {
+  try {
+    const s = parseInt(req.params.slot, 10)
+    if (!Number.isFinite(s) || s < 0 || s > 2) return res.status(400).json({ error: 'Slot tidak valid (0..2)' })
+    const body = req.body || {}
+    // Whitelist = trigger fields SAJA — CB-AI shared fields eksplisit DITOLAK 400 dgn
+    // error eksplisit (spec §2.3 — hindari jebakan overlay shared-menang). Scope-fields
+    // (numberAll/numberSlot/numberSlots) juga di luar whitelist (field asing → 400).
+    const DENIED_CBAI = ['cbaiLimit', 'cbaiInfoFooter', 'cbaiBotName', 'cbaiBotRole', 'cbaiHumanAgentLabel', 'cbaiDisclaimer', 'cbaiUpsellEnabled', 'cbaiUpsellDocId', 'cbaiEndText']
+    for (const f of DENIED_CBAI) {
+      if (body[f] !== undefined) {
+        return res.status(400).json({ error: `${f} diatur di Default (Semua nomor) — KB & persona tetap tenant-wide` })
+      }
+    }
+    const ALLOWED_FIELDS = new Set([
+      'outsideHoursEnabled', 'outsideHoursText', 'outsideHoursMode',
+      'greetEnabled', 'greetMode', 'greetText',
+      'repeatFrequency',
+      'monFriEnabled', 'monFriStart', 'monFriEnd',
+      'satEnabled', 'satStart', 'satEnd',
+      'sunEnabled', 'sunStart', 'sunEnd',
+    ])
+    for (const key of Object.keys(body)) {
+      if (!ALLOWED_FIELDS.has(key)) return res.status(400).json({ error: `Field tidak dikenal: ${key}` })
+    }
+    const { errors, data } = await validateAutoreplyBody(body, req, 'slot')
+    if (errors.length > 0) {
+      if (errors.length === 1 && errors[0]?.planGate) return res.status(errors[0].status).json(errors[0].body)
+      return res.status(400).json({ error: errors[0], errors })
+    }
+    // PROTEKSI menu-managed (teks persis pola existing v3.9.4 — spec §2.3)
+    const menuRow = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: s, greetMode: 'menu' }, select: { id: true } })
+    if (menuRow) {
+      return res.status(409).json({
+        error: `Slot ${s} sedang dikelola Menu Gateway — matikan menu untuk slot itu di halaman Menu Gateway dulu, lalu simpan ulang di sini.`,
+        slots: [s],
+      })
+    }
+    // Upsert row slot ini SAJA (tidak shared, tidak slot lain) + P2002-safe (pola existing)
+    const cfg = await prisma.autoReplyConfig.upsert({
+      where: { tenantId_numberSlot: { tenantId: req.tenantId, numberSlot: s } },
+      update: { ...data, updatedById: req.user.id },
+      create: { tenantId: req.tenantId, numberSlot: s, ...data, updatedById: req.user.id },
+    })
+    invalidateConfig(req.tenantId) // cache service invalid → config baru aktif
+    // echo repeatFrequency efektif (AR ?? MG ?? 'daily') — pola hotfix v4.0.0b
+    const mgEcho = await require('../services/menuGateway').getConfigForSlot(req.tenantId, s).catch(() => null)
+    res.json({ config: { ...cfg, repeatFrequency: cfg.repeatFrequency ?? mgEcho?.repeatFrequency ?? 'daily' }, custom: true })
+  } catch (e) {
+    console.error('AutoReply PUT slot error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// DELETE /api/autoreply/slot/:slot (BARU v4.2.0) — "Reset ke Default": hapus row
+// per-slot (slot kembali MIRROR Default). 409 bila menu-managed; 404/200 idempoten
+// bila row memang belum ada (keputusan: 200 — reset idempoten, hasil = sudah default).
+router.delete('/slot/:slot', ...rt, async (req, res) => {
+  try {
+    const s = parseInt(req.params.slot, 10)
+    if (!Number.isFinite(s) || s < 0 || s > 2) return res.status(400).json({ error: 'Slot tidak valid (0..2)' })    // PROTEKSI menu-managed (teks persis pola existing v3.9.4 — spec §2.4)
+    const menuRow = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: s, greetMode: 'menu' }, select: { id: true } })
+    if (menuRow) {
+      return res.status(409).json({
+        error: `Slot ${s} sedang dikelola Menu Gateway — matikan menu untuk slot itu di halaman Menu Gateway dulu, lalu simpan ulang di sini.`,
+        slots: [s],
+      })
+    }
+    // P2002-safe delete (pola existing deleteMany by where — compound key dgn slot)
+    const del = await prisma.autoReplyConfig.deleteMany({ where: { tenantId: req.tenantId, numberSlot: s, NOT: { greetMode: 'menu' } } })
+    invalidateConfig(req.tenantId) // cache service invalid → slot kembali mirror shared
+    res.json({ ok: true, slot: s, deleted: del.count })
+  } catch (e) {
+    console.error('AutoReply DELETE slot error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// PUT /api/autoreply (admin only) — LEGACY tick-box endpoint (TIDAK diubah v4.2.0 —
+// byte-compat; FE baru tidak pernah memakainya — spec §1.4)
 router.put('/', ...rt, async (req, res) => {
   try {
     const body = req.body || {}
