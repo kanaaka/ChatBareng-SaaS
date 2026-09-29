@@ -86,6 +86,7 @@ function chatInclude() {
   return {
     select: {
       id: true,
+      numberSlot: true, // v4.1.12 — nomor WA asal (0..2) utk display + filter slot
       status: true,
       lastMessageAt: true,
       unreadCount: true,
@@ -143,6 +144,7 @@ function contactToJson(contact) {
     chat: contact.chat
       ? {
           id: contact.chat.id,
+          numberSlot: contact.chat.numberSlot ?? 0, // v4.1.12
           status: contact.chat.status,
           lastMessageAt: contact.chat.lastMessageAt,
           unreadCount: contact.chat.unreadCount,
@@ -248,6 +250,17 @@ router.get('/', ...rt, async (req, res) => {
         { note: { contains: q } },
         { note: { contains: qLower } },
       ]
+    }
+    // v4.1.12 — filter nomor WA asal kontak: ?numberSlot=N (0..2) | 'all' (default).
+    // Kontak 1-1 dgn chat (chatId unique) → filter via chat.numberSlot. 'all' = tanpa filter
+    // (kontak tanpa chat — import/manual — tetap tampil). Param selain all/int 0..2 → 400.
+    const slotParam = req.query.numberSlot
+    if (slotParam !== undefined && slotParam !== '' && slotParam !== 'all') {
+      const slotNum = parseInt(slotParam, 10)
+      if (!Number.isInteger(slotNum) || slotNum < 0 || slotNum > 2) {
+        return res.status(400).json({ error: 'numberSlot tidak valid (0..2)' })
+      }
+      where.chat = { numberSlot: slotNum }
     }
 
     const [contacts, total] = await Promise.all([

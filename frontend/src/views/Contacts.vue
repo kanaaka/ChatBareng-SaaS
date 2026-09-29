@@ -91,53 +91,67 @@
         </button>
         <div v-if="showTagPanel" class="px-4 pb-4 space-y-3">
           <!-- Form tambah tag baru -->
-          <div class="flex items-center gap-2">
+          <!-- v4.1.12 — form tambah: input flex-1 dgn min-width + group select/tombol → di mobile
+               gak ada lagi tombol +/terpotong (wrap ke baris kedua utuh) -->
+          <div class="flex flex-wrap items-center gap-2">
             <input
               v-model="newTagName"
               type="text"
               maxlength="40"
               placeholder="Nama tag baru"
-              class="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-wa-green"
+              class="flex-1 min-w-[140px] px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-wa-green"
               @keydown.enter="createTag"
             />
-            <select v-model="newTagColor" class="px-2 py-2 text-sm border border-gray-300 rounded-lg bg-white">
-              <option v-for="c in TAG_COLORS" :key="c.value" :value="c.value">{{ c.label }}</option>
-            </select>
-            <button
-              @click="createTag"
-              :disabled="!newTagName.trim() || tagBusy"
-              class="px-4 py-2 text-sm font-medium rounded-lg bg-wa-green text-white hover:bg-green-600 disabled:opacity-50 whitespace-nowrap"
-            >+ Tambah</button>
+            <div class="flex items-center gap-2 flex-shrink-0">
+              <select v-model="newTagColor" class="px-2 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+                <option v-for="c in TAG_COLORS" :key="c.value" :value="c.value">{{ c.label }}</option>
+              </select>
+              <button
+                @click="createTag"
+                :disabled="!newTagName.trim() || tagBusy"
+                class="px-4 py-2 text-sm font-medium rounded-lg bg-wa-green text-white hover:bg-green-600 disabled:opacity-50 whitespace-nowrap"
+              >+ Tambah</button>
+            </div>
           </div>
           <!-- Daftar tag -->
           <div class="space-y-1">
             <div v-if="tags.length === 0" class="text-sm text-gray-400 py-2">Belum ada tag</div>
             <!-- v4.1.4 — row edit inline: form ganti nama + warna (menggantikan tampilan row) -->
+            <!-- v4.1.12 — row: COLON di mobile (nama FULL terbaca di baris sendiri,
+                 tombol di baris bawah) / baris tunggal di sm+ (kembali layout lama).
+                 Sebelumnya flex justify-between: 4 tombol flex-shrink-0 menggencet nama
+                 sampai TIDAK TERBACA (lapor Kanaka 13:53 dgn screenshot). -->
             <div
               v-for="t in tags"
               :key="t.id"
-              class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-gray-100"
+              class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-2 px-3 py-2 rounded-lg border border-gray-100"
             >
               <template v-if="editingTagId === t.id">
-                <div class="flex items-center gap-2 flex-1 min-w-0">
-                  <input
-                    ref="editTagInput"
-                    v-model="editTagName"
-                    type="text"
-                    maxlength="40"
-                    class="flex-1 min-w-0 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-wa-green"
-                    @keydown.enter="saveTagEdit"
-                    @keydown.esc="cancelTagEdit"
-                  />
-                  <select v-model="editTagColor" class="px-2 py-1.5 text-sm border border-gray-300 rounded-lg bg-white">
-                    <option v-for="c in TAG_COLORS" :key="c.value" :value="c.value">{{ c.label }}</option>
-                  </select>
-                  <button
-                    @click="saveTagEdit"
-                    :disabled="!hasTagEditChanges || tagBusy"
-                    class="text-xs px-2 py-1 rounded bg-wa-green text-white hover:bg-green-600 disabled:opacity-50 whitespace-nowrap"
-                  >Simpan</button>
-                  <button @click="cancelTagEdit" class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200 whitespace-nowrap">Batal</button>
+                <!-- v4.1.12 — edit-state: 2 baris di mobile (input+select / Simpan+Batal),
+                     1 baris flex di sm+ -->
+                <div class="flex flex-col sm:flex-row sm:items-center gap-2 flex-1 min-w-0">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <input
+                      ref="editTagInput"
+                      v-model="editTagName"
+                      type="text"
+                      maxlength="40"
+                      class="flex-1 min-w-0 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-wa-green"
+                      @keydown.enter="saveTagEdit"
+                      @keydown.esc="cancelTagEdit"
+                    />
+                    <select v-model="editTagColor" class="flex-shrink-0 px-2 py-1.5 text-sm border border-gray-300 rounded-lg bg-white">
+                      <option v-for="c in TAG_COLORS" :key="c.value" :value="c.value">{{ c.label }}</option>
+                    </select>
+                  </div>
+                  <div class="flex items-center gap-1.5 flex-shrink-0 sm:ml-auto">
+                    <button
+                      @click="saveTagEdit"
+                      :disabled="!hasTagEditChanges || tagBusy"
+                      class="text-xs px-2 py-1 rounded bg-wa-green text-white hover:bg-green-600 disabled:opacity-50 whitespace-nowrap"
+                    >Simpan</button>
+                    <button @click="cancelTagEdit" class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200 whitespace-nowrap">Batal</button>
+                  </div>
                 </div>
               </template>
               <template v-else>
@@ -146,7 +160,7 @@
                   <span class="text-sm font-medium truncate">{{ t.name }}</span>
                   <span class="text-xs text-gray-400 whitespace-nowrap">{{ t.contactCount ?? 0 }} kontak</span>
                 </div>
-                <div class="flex items-center gap-1.5 flex-shrink-0">
+                <div class="flex items-center gap-1.5 flex-wrap sm:flex-nowrap sm:flex-shrink-0">
                   <button @click="selectTag(t.id)" class="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200">Lihat kontak</button>
                   <!-- v4.1.4 — Edit tag (rename + ganti warna), admin only -->
                   <button v-if="auth.isAdmin" @click="startTagEdit(t)" class="text-xs px-2 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200">Edit</button>
@@ -179,6 +193,27 @@
         </button>
       </div>
 
+      <!-- v4.1.12 — Filter nomor WA asal kontak (slot) — nama = CUSTOM LABEL nomor
+           (fallback "Slot N"); tampil hanya bila tenant punya >1 nomor; +1 row bila
+           slot gak ke-load (fail-safe gak jadi dead filter) -->
+      <div v-if="waSlots.length > 1" class="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+        <button
+          @click="selectSlot('all')"
+          :class="['px-3 py-1.5 text-xs font-medium rounded-full border whitespace-nowrap flex-shrink-0', selectedSlot === 'all' ? 'bg-wa-dark text-white border-wa-dark' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50']"
+        >
+          📱 Semua nomor
+        </button>
+        <button
+          v-for="s in waSlots"
+          :key="s.slot"
+          @click="selectSlot(s.slot)"
+          :class="['px-3 py-1.5 text-xs font-medium rounded-full border whitespace-nowrap flex-shrink-0 flex items-center gap-1.5', selectedSlot === s.slot ? 'bg-wa-dark text-white border-wa-dark' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50']"
+        >
+          {{ s.label || ('Slot ' + s.slot) }}
+          <span :class="['text-[10px] rounded-full px-1.5', selectedSlot === s.slot ? 'bg-white/20' : 'bg-gray-100']">{{ s.chatCount ?? 0 }}</span>
+        </button>
+      </div>
+
       <!-- Results count -->
       <div class="flex items-center justify-between">
         <p class="text-sm text-gray-600">{{ total }} kontak ditemukan</p>
@@ -204,6 +239,8 @@
               </div>
             </div>
             <div class="flex flex-col items-end gap-1 flex-shrink-0">
+              <!-- v4.1.12 — badge nomor asal (custom label per slot): jawab "kontak dari nomor mana?" -->
+              <span v-if="contact.chat && waSlots.length" class="sa-slot-badge text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-100 text-gray-600 max-w-[150px] truncate">{{ numberLabel(contact.chat.numberSlot ?? 0) }}</span>
               <span :class="['text-[10px] px-2 py-0.5 rounded-full font-medium uppercase', sourceClass(contact.source)]">{{ contact.source }}</span>
               <span v-if="contact.chat" :class="['text-[10px] px-2 py-0.5 rounded-full font-medium', contact.chat.status === 'open' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700']">{{ contact.chat.status }}</span>
             </div>
@@ -238,6 +275,7 @@
                 </td>
                 <td class="px-4 py-3 text-sm text-gray-700">
                   {{ contact.phone || '—' }}
+                  <div v-if="contact.chat && waSlots.length" class="sa-slot-badge text-xs text-gray-400 mt-0.5">{{ numberLabel(contact.chat.numberSlot ?? 0) }}</div>
                 </td>
                 <td class="px-4 py-3 text-xs text-gray-600">
                   <div v-if="contact.birthDate || contact.gender">
@@ -495,6 +533,10 @@ const TAG_COLORS = [
 ]
 const tags = ref([])
 const selectedTagId = ref(null)
+// v4.1.12 — filter nomor WA asal kontak: daftar slot (dgn CUSTOM LABEL nomor) dari
+// GET /api/wa/status; selectedSlot 'all' | 0 | 1 | 2. Tampil hanya bila >1 slot.
+const waSlots = ref([])
+const selectedSlot = ref('all')
 const showTagPanel = ref(false)
 const newTagName = ref('')
 const newTagColor = ref('blue')
@@ -530,6 +572,30 @@ function selectTag(tagId) {
   selectedTagId.value = tagId
   page.value = 1
   fetchContacts()
+}
+
+// v4.1.12 — pilih nomor asal kontak ('all' | slot number) — pattern sama dgn selectTag
+function selectSlot(slot) {
+  selectedSlot.value = slot
+  page.value = 1
+  fetchContacts()
+}
+
+// v4.1.12 — label nomor slot: custom label tenant, fallback "Slot N"
+function numberLabel(slot) {
+  const s = waSlots.value.find((x) => Number(x.slot) === Number(slot))
+  return s?.label || 'Slot ' + slot
+}
+
+// v4.1.12 — load daftar nomor tenant (label custom per-slot; fail-safe: gagal →
+// waSlots kosong → chip filter tidak tampil, Halaman tetap normal)
+async function fetchWaSlots() {
+  try {
+    const res = await axios.get(`${API}/api/wa/status`, {
+      headers: { Authorization: `Bearer ${auth.token}` },
+    })
+    waSlots.value = (res.data.slots || []).map((s) => ({ slot: Number(s.slot) || 0, label: s.label || null, chatCount: s.chatCount ?? 0 }))
+  } catch { waSlots.value = [] }
 }
 
 async function createTag() {
@@ -697,6 +763,8 @@ async function fetchContacts() {
     if (search.value.trim()) params.q = search.value.trim()
     // v0.13.4 — filter by tag (via ContactTag, server-side)
     if (selectedTagId.value !== null) params.tagId = selectedTagId.value
+    // v4.1.12 — filter nomor asal (server-side via chat.numberSlot)
+    if (selectedSlot.value !== 'all') params.numberSlot = selectedSlot.value
     const res = await axios.get(`${API}/api/contacts`, {
       params,
       headers: { Authorization: `Bearer ${auth.token}` },
@@ -868,6 +936,7 @@ watch(showImportModal, (val) => {
 onMounted(() => {
   fetchContacts()
   fetchTags()
+  fetchWaSlots() // v4.1.12 — daftar nomor tenant utk chip filter slot
   socketStore.on('tags_changed', onTagsChanged)
   socketStore.on('tag_created', onTagCreated)
   socketStore.on('tag_deleted', onTagDeleted)
