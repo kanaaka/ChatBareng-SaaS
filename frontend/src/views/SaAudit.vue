@@ -5,7 +5,7 @@
     detail collapsible (existing <details>), tombol muat lebih (existing).
     Endpoint GET /api/sa/audit TIDAK diubah (locked — additive murni).
   -->
-  <div class="p-4 md:p-6 max-w-6xl mx-auto pb-16">
+  <div class="p-4 md:p-6 pb-16">
     <!-- Header view -->
     <div class="flex items-center justify-between mb-5 flex-wrap gap-2">
       <div>

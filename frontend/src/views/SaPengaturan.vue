@@ -8,7 +8,7 @@
        null tenantId — dipakai SaSidebar via GET /api/sa/platform-branding)
     3. Placeholder P2: pricing/payment gateway + AI provider key (backlog, bukan kosong)
   -->
-  <div class="p-4 md:p-6 max-w-3xl mx-auto pb-16">
+  <div class="p-4 md:p-6 pb-16">
     <!-- Header view -->
     <div class="mb-5">
       <h1 class="text-xl md:text-2xl font-bold" :style="{ color: 'var(--md-sys-color-on-surface)' }">Pengaturan</h1>
