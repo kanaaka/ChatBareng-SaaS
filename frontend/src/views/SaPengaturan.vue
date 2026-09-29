@@ -92,8 +92,8 @@
         <M3TextField v-model="aiForm.cloudModel" label="Model cloud (mis. glm-5.3-flash)" type="text" maxlength="100" />
 
         <!-- API key: password input; placeholder masked bila sudah ada + tombol Ganti Key -->
-        <div class="flex items-end gap-2">
-          <div class="flex-1">
+        <div class="flex flex-wrap items-end gap-2">
+          <div class="flex-1" style="min-width: 220px;">
             <M3TextField
               v-if="aiKeyEditing || !aiForm.hasKey"
               v-model="aiKeyDraft"
@@ -120,18 +120,18 @@
           <button type="button" class="m3-btn m3-btn--tonal !min-h-[40px]" :disabled="aiLoadingModels" @click="loadAiModels('cloud')">
             {{ aiLoadingModels ? 'Memuat…' : 'Muat Daftar Model' }}
           </button>
-          <select v-if="aiModels.length" v-model="aiForm.cloudModel" class="m3-btn m3-btn--tonal !min-h-[40px]" style="max-width: 240px;">
+          <select v-if="aiModels.length" v-model="aiForm.cloudModel" class="sa-pg-select">
             <option v-for="m in aiModels" :key="m.name" :value="m.name">{{ m.name }}</option>
           </select>
         </div>
 
         <label class="text-sm font-medium" style="margin-top: 8px;">Format default platform</label>
-        <select v-model="aiForm.defaultPreset" class="px-3 py-2.5 rounded-[var(--md-sys-shape-corner-s)] text-sm border" style="border-color: var(--md-sys-color-outline); background: var(--md-sys-color-surface-container-lowest); color: var(--md-sys-color-on-surface);">
+        <select v-model="aiForm.defaultPreset" class="sa-pg-select">
           <option v-for="p in AI_PRESETS" :key="p.key" :value="p.key">{{ p.label }}</option>
         </select>
 
         <!-- Sub-panel Fallback Lokal -->
-        <div class="rounded-[var(--md-sys-shape-corner-m)] p-4" style="background: var(--md-sys-color-surface-container-lowest); margin-top: 8px;">
+        <div class="sa-subpanel rounded-[var(--md-sys-shape-corner-m)] p-4" style="background: var(--md-sys-color-surface-container-lowest); margin-top: 8px;">
           <div class="flex items-center justify-between gap-4">
             <div>
               <div class="text-sm font-semibold">Fallback Ollama Lokal</div>
@@ -147,11 +147,11 @@
               <button type="button" class="m3-btn m3-btn--tonal !min-h-[40px]" :disabled="aiLoadingLocalModels" @click="loadAiModels('local')">
                 {{ aiLoadingLocalModels ? 'Memuat…' : 'Muat Model Lokal' }}
               </button>
-              <select v-if="aiLocalModels.length" v-model="aiForm.localModel" class="px-2 py-2 rounded-[var(--md-sys-shape-corner-s)] text-sm border" style="border-color: var(--md-sys-color-outline); background: var(--md-sys-color-surface-container-lowest); max-width: 240px;">
+              <select v-if="aiLocalModels.length" v-model="aiForm.localModel" class="sa-pg-select">
                 <option :value="null">— pilih model lokal —</option>
                 <option v-for="m in aiLocalModels" :key="m.name" :value="m.name">{{ m.name }}</option>
               </select>
-              <select v-model="aiPullModel" class="px-2 py-2 rounded-[var(--md-sys-shape-corner-s)] text-sm border" style="border-color: var(--md-sys-color-outline); background: var(--md-sys-color-surface-container-lowest);">
+              <select v-model="aiPullModel" class="sa-pg-select">
                 <option value="qwen3:4b">qwen3:4b</option>
                 <option value="qwen2.5:3b-instruct">qwen2.5:3b-instruct</option>
                 <option value="llama3.2:3b">llama3.2:3b</option>
@@ -184,7 +184,7 @@
         </div>
 
         <!-- ── v3.9.24 — Tabel Harga per-model (snapshot per-call; D2/D3) ── -->
-        <div class="rounded-[var(--md-sys-shape-corner-m)] p-4" style="background: var(--md-sys-color-surface-container-lowest); margin-top: 12px;" data-testid="ai-rates-section">
+        <div class="rounded-[var(--md-sys-shape-corner-m)] p-4 sa-subpanel" style="background: var(--md-sys-color-surface-container-lowest); margin-top: 12px;" data-testid="ai-rates-section">
           <div class="text-sm font-semibold mb-1">Tabel Harga (per 1 juta token, USD)</div>
           <p class="text-xs mb-3" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
             Rate berlaku untuk call berikutnya. Histori lama tidak berubah (snapshot per-call).
@@ -198,11 +198,11 @@
               </thead>
               <tbody>
                 <tr v-for="(r, i) in aiRateRows" :key="i">
-                  <td><input v-model="r.model" type="text" class="sa-aitable__in" aria-label="Nama model" maxlength="64"></td>
-                  <td><input v-model.number="r.inputPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga input per 1M token"></td>
-                  <td><input v-model.number="r.cachedPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga cached per 1M token (kosong = pakai input)" placeholder="—"></td>
-                  <td><input v-model.number="r.outputPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga output per 1M token"></td>
-                  <td><button type="button" class="m3-btn m3-btn--tonal !min-h-[36px]" @click="removeAiRateRow(i)" aria-label="Hapus rate model">Hapus</button></td>
+                  <td data-label="Model"><input v-model="r.model" type="text" class="sa-aitable__in" aria-label="Nama model" maxlength="64"></td>
+                  <td data-label="Input"><input v-model.number="r.inputPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga input per 1M token"></td>
+                  <td data-label="Cached (kosong = input)"><input v-model.number="r.cachedPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga cached per 1M token (kosong = pakai input)" placeholder="—"></td>
+                  <td data-label="Output"><input v-model.number="r.outputPerM" type="number" step="0.001" min="0" class="sa-aitable__in sa-aitable__in--num" aria-label="Harga output per 1M token"></td>
+                  <td data-label=" "><button type="button" class="m3-btn m3-btn--tonal !min-h-[36px]" @click="removeAiRateRow(i)" aria-label="Hapus rate model">Hapus</button></td>
                 </tr>
               </tbody>
             </table>
@@ -596,10 +596,17 @@ onMounted(() => {
 
 <style scoped>
 .sa-panel {
+  /* v4.1.9 — notch label field ikut panel (surface-container) — sama kasus dgn login v4.1.8 */
+  --m3tf-notch-bg: var(--md-sys-color-surface-container);
   background: var(--md-sys-color-surface-container);
   border-radius: var(--md-sys-shape-corner-l);
   box-shadow: var(--md-sys-elevation-1);
   padding: 24px;
+}
+/* v4.1.9 — sub-panel putih di dalam panel: reset notch var ke lowest (putih),
+   biar gak ke-cascade value panel (field "Base URL lokal" di dalamnya) */
+.sa-subpanel {
+  --m3tf-notch-bg: var(--md-sys-color-surface-container-lowest);
 }
 .sa-muted-panel {
   opacity: 0.85;
@@ -639,5 +646,41 @@ onMounted(() => {
   min-width: 96px;
   max-width: 120px;
   font-variant-numeric: tabular-nums;
+}
+
+/* v4.1.9 — select normalisasi: desktop max 320px, mobile full-width */
+.sa-pg-select {
+  width: 100%;
+  max-width: 320px;
+  min-height: 40px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-s);
+  background: var(--md-sys-color-surface-container-lowest);
+  color: var(--md-sys-color-on-surface);
+}
+@media (max-width: 767px) {
+  .sa-pg-select { max-width: none; }
+  /* v4.1.9 — tabel harga: baris jadi kartu (tanpa scroll horizontal di mobile) */
+  .sa-aitable, .sa-aitable tbody, .sa-aitable tr, .sa-aitable td { display: block; width: 100%; }
+  .sa-aitable thead { display: none; }
+  .sa-aitable tr {
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: var(--md-sys-shape-corner-m);
+    padding: 12px;
+    margin-bottom: 10px;
+    background: var(--md-sys-color-surface-container-low);
+  }
+  .sa-aitable td { border-bottom: none !important; padding: 5px 0; }
+  .sa-aitable td[data-label]:not([data-label=" "])::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--md-sys-color-on-surface-variant);
+    margin-bottom: 3px;
+  }
+  .sa-aitable td:last-child { margin-top: 4px; }
 }
 </style>
