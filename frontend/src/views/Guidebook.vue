@@ -368,6 +368,7 @@
             <li><strong>Outside Hours Reply</strong> — balasan otomatis untuk pelanggan yang chat di luar jam operasional (ON/OFF + teks bebas).</li>
             <li><strong>First-of-Day Greeting</strong> — sapaan otomatis untuk pelanggan yang chat pertama kali di hari itu (ON/OFF + teks; maksimal 1×/hari per pelanggan, tidak dihitung first-response CS).</li>
             <li><strong>Jam operasional</strong> diatur per hari: Senin–Jumat, Sabtu, Minggu — masing-masing punya jam mulai/selesai; hari yang OFF dianggap di luar jam kerja.</li>
+            <li><strong>Mode greeting = segmented control</strong> — pilih <strong>Teks</strong>, <strong>CB-AI</strong>, atau <strong>Menu gateway</strong> langsung dari kartu First-of-Day Greeting, per-nomor maupun Default. Satu klik → konfirmasi → tersimpan sebagai satu transaksi; konfigurasi menu yang pernah diatur tidak hilang saat kembali ke teks.</li>
           </ol>
         </section>
 
@@ -377,15 +378,32 @@
             Pelanggan baru menerima <strong>menu bernomor</strong> ("1. Komplain, 2. Ambil hasil, …") sebelum chat masuk antrean. Jawabannya menentukan balasan + tag, lalu chat masuk antrean seperti biasa. CS tidak melihat chat yang belum memilih.
           </p>
           <ol class="guide-steps">
-            <li><strong>Nyalakan</strong> lewat Admin → Menu Gateway (toggle <strong>Aktif</strong>), lalu set <strong>First-of-Day Greeting</strong> di Auto Reply ke mode <strong>Menu gateway</strong> — tanpa itu menu tidak pernah terkirim.</li>
+            <li><strong>Nyalakan</strong> — cara terbaru: Admin → Auto Reply → kartu First-of-Day Greeting → segmented control → pilih <strong>Menu gateway</strong>. Cara lama masih jalan: toggle <strong>Aktif</strong> di halaman ini, lalu set greeting ke mode menu. Tanpa salah satunya menu tidak pernah terkirim.</li>
             <li><strong>Intro</strong> — teks pembuka dengan <code class="guide-kbd">{name}</code>; nomor menu mengikuti urutan opsi.</li>
             <li><strong>Opsi (2–8)</strong> — label, alias kata kunci, balasan konfirmasi per opsi, dan tag kontak yang menempel saat opsi dipilih. ↑↓ untuk mengubah urutan/nomor.</li>
             <li><strong>Timeout</strong> — jika pelanggan tidak menjawab dalam waktu yang diatur, chat langsung masuk antrean tanpa tag menu.</li>
             <li><strong>Fallback</strong> — jawaban di luar menu dapat teks fallback + tag "Lainnya" (bila dipilih), tanpa menu kedua.</li>
             <li><strong>Frekuensi</strong> — tiap chat baru / sekali per hari / sekali per minggu per kontak. Chip "⏳ Menunggu menu" di dashboard admin menampilkan chat yang belum memilih (klik untuk lihat daftarnya).</li>
+            <li><strong>Menu + Outside-hours bisa sekaligus</strong> — mengaktifkan menu tidak lagi memaksa Outside-hours mati. Di luar jam kerja pelanggan terima away text; di dalam jam kerja pelanggan terima menu.</li>
           </ol>
           <div class="guide-tip">
             ℹ️ <strong>Catatan:</strong> Fitur default <strong>OFF</strong> — aman diaktifkan/dimatikan kapan pun. Chat yang sedang menunggu menu saat fitur dimatikan langsung masuk antrean.
+          </div>
+        </section>
+
+        <!-- v4.3.0 (D10) — klaim harian shared antar semua jalur auto message -->
+        <section class="m3-card p-5 sm:p-6 mb-4">
+          <h2 class="text-lg font-semibold mb-2">🎫 Klaim Harian Pesan Otomatis (Shared)</h2>
+          <p class="text-sm mb-3" :style="{ color: 'var(--md-sys-color-on-surface-variant)' }">
+            Setiap pelanggan cuma dapat <strong>satu pesan otomatis per hari (WIB)</strong>, dari jalur mana pun. Kuota harian ini <strong>dibagi bersama (shared)</strong> oleh semua fitur auto message — tidak bisa diakumulasi.
+          </p>
+          <ol class="guide-steps">
+            <li>Pelanggan chat pagi hari dan terima <strong>menu</strong> → kuota hari itu terpakai.</li>
+            <li>Chat lagi di malam hari (di luar jam kerja) pada hari yang sama → <strong>tidak</strong> dapat away text — kuota sudah habis.</li>
+            <li>Besoknya chat lagi → kuota harian baru, dapat pesan otomatis lagi.</li>
+          </ol>
+          <div class="guide-tip">
+            💡 <strong>Detail kuota per jalur:</strong> menu / away text / greeting teks — 1× per hari per pelanggan, dari jalur mana pun. <strong>CB-AI</strong> tidak memakai kuota ini (dia punya aturan anti-spam sendiri berupa limit percakapan per hari). Kalau pesan otomatis gagal terkirim (mis. nomor WhatsApp sedang bermasalah), kuota dikembalikan — pelanggan masih bisa dapat pesan otomatis di pesan berikutnya.
           </div>
         </section>
 

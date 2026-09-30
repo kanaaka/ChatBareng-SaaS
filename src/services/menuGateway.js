@@ -697,13 +697,18 @@ async function getSlotScopeInfo(tenantId) {
     prisma.menuGatewayConfig.findMany({ where: { tenantId: tid, numberSlot: { not: null } }, select: { numberSlot: true, enabled: true } }),
     prisma.autoReplyConfig.findMany({
       where: { tenantId: tid, numberSlot: { not: null }, greetMode: { not: 'menu' }, OR: [{ greetEnabled: true }, { outsideHoursEnabled: true }] },
-      select: { numberSlot: true },
+      select: { numberSlot: true, greetEnabled: true, outsideHoursEnabled: true },
     }),
   ])
   const customMap = new Map(rows.map((r) => [Number(r.numberSlot) || 0, r.enabled === true]))
   const arSet = new Set(arRows.map((r) => Number(r.numberSlot) || 0))
+  // v4.3.0 (D8) — dipecah: arTextManaged = slot dgn GREETING teks/cbai AKTIF (blokir→
+  // konfirmasi saat enable menu); outsideOnly = HANYA outside-hours aktif (TETAP
+  // selectable + banner info). arSet (arManaged) tetap di-emit utk back-compat.
+  const arTextSet = new Set(arRows.filter((r) => r.greetEnabled === true).map((r) => Number(r.numberSlot) || 0))
+  const outsideOnlySet = new Set(arRows.filter((r) => r.greetEnabled !== true).map((r) => Number(r.numberSlot) || 0))
   const shared = await prisma.menuGatewayConfig.findFirst({ where: { tenantId: tid, numberSlot: null }, select: { id: true } })
-  return { customMap, arSet, defaultExists: !!shared }
+  return { customMap, arSet, arTextSet, outsideOnlySet, defaultExists: !!shared }
 }
 
 async function listWaiting(tenantId) {

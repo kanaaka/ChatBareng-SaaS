@@ -32,11 +32,13 @@
       </div>
 
       <!-- v4.2.0 — banner "masih mengikuti Default" (spec §3.2): slot tanpa row sendiri.
-           Badge "menu" utk slot menu-managed (dilindungi — dikelola Menu Gateway). -->
+           v4.3.0 (D1) — slot menu-managed kini BISA DISWITCH dari segmented control di
+           bawah (switch atomik) — banner direword + hint switch, BUKAN "matikan dulu". -->
       <div v-if="isSlotScope && currentSlotInfo?.menuManaged" class="bg-purple-50 rounded-lg shadow-sm p-4">
         <p class="text-sm text-purple-800">
-          Nomor ini sedang dikelola Menu Gateway — matikan menu untuk slot itu di halaman Menu Gateway dulu, lalu simpan ulang di sini.
-          <router-link to="/admin/menu-gateway" class="underline font-medium">Buka Menu Gateway →</router-link>
+          Nomor ini saat ini memakai <b>Menu gateway</b> — atur konten menunya di
+          <router-link to="/admin/menu-gateway" class="underline font-medium">halaman Menu Gateway</router-link>,
+          atau ganti mode greeting lewat kontrol di bawah (Teks / ChatBareng AI) — konfigurasi menunya tetap tersimpan.
         </p>
       </div>
       <div v-else-if="isSlotScope && !currentSlotInfo?.custom" class="bg-blue-50 rounded-lg shadow-sm p-4">
@@ -114,45 +116,32 @@
           <input v-model="form.greetEnabled" type="checkbox" class="w-5 h-5 accent-green-600" />
         </label>
         <div v-if="form.greetEnabled" class="mt-4 space-y-2">
-          <!-- v0.13.0 — mode greeting (D9): teks biasa / menu gateway; v4.0.0 (D4): + CB-AI -->
-          <div class="flex flex-wrap items-center gap-4 mb-2">
-            <span class="text-xs text-gray-600">Mode greeting:</span>
-            <!-- v4.2.0 (Audit R3 N5) — form echo mode menu (shared/slot menu-managed):
-                 radio text/cbai JUGA di-disable — takeover greeting hanya lewat Menu
-                 Gateway (BE: PUT /default dgn greet* → 409 dgn pesan yang sama). -->
-            <label class="flex items-center gap-1.5 text-sm text-gray-800 cursor-pointer" :class="menuManagedEcho ? 'opacity-50 cursor-not-allowed' : ''" style="min-height: 36px;" :title="menuManagedEcho ? menuRadioTitle : ''">
-              <input v-model="form.greetMode" type="radio" value="text" :disabled="menuManagedEcho" class="w-4 h-4 accent-green-600" />
-              Teks biasa
-            </label>
-            <label
-              class="flex items-center gap-1.5 cursor-pointer"
-              style="min-height: 36px;"
-              :class="(!aiPlanOk || menuManagedEcho) ? 'opacity-50' : ''"
-              :title="menuManagedEcho ? menuRadioTitle : (aiPlanOk ? '' : 'AI menjawab dari dokumen yang kamu ajarkan di menu ChatBareng AI')"
-            >
-              <input v-model="form.greetMode" type="radio" value="cbai" :disabled="!aiPlanOk || menuManagedEcho" class="w-4 h-4 accent-green-600" />
-              <span class="text-sm text-gray-800">ChatBareng AI (dari KB)</span>
-            </label>
-            <label
-              class="flex items-center gap-1.5 cursor-not-allowed opacity-50"
-              style="min-height: 36px;"
-              :title="menuRadioTitle"
-            >
-              <!-- v4.2.0 (Audit Kimi K3 BUG#1 opsi A): mode menu = milik halaman Menu
-                   Gateway — radio legacy DINONAKTIFKAN (menu → 400 dari endpoint baru;
-                   konfigurasi menu lewat halaman Menu Gateway) -->
-              <input v-model="form.greetMode" type="radio" value="menu" disabled class="w-4 h-4 accent-green-600" />
-              <span class="text-sm text-gray-800">Menu gateway (pilihan topik)</span>
-              <router-link to="/admin/menu-gateway" class="text-xs text-green-700 hover:underline" @click.stop>→ Buka Menu Gateway</router-link>
-            </label>
+          <!-- v4.3.0 (D1) — SEGMENTED CONTROL 3 MODE: [Teks | CB-AI | Menu gateway].
+               Satu sumber kebenaran greetMode; CB-AI plan-gated (disabled + tooltip);
+               Menu gateway kini AKTIF — switch = satu klik → modal konfirmasi (D4/D7)
+               → flip atomik BE. Halaman Menu Gateway jadi tempat konfigurasi konten. -->
+          <div>
+            <span class="text-xs text-gray-600 block mb-1">Mode greeting</span>
+            <div class="inline-flex rounded-lg border border-gray-300 overflow-hidden" role="group" aria-label="Mode greeting">
+              <button type="button" @click="setGreetMode('text')"
+                :class="['px-4 py-2 text-sm font-medium transition-colors', form.greetMode === 'text' ? 'bg-green-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50']"
+                style="min-height: 44px;">Teks</button>
+              <button type="button" @click="setGreetMode('cbai')"
+                :disabled="!aiPlanOk"
+                :title="!aiPlanOk ? 'ChatBareng AI belum tersedia di paket kamu — hubungi admin platform untuk upgrade' : 'AI menjawab dari dokumen yang kamu ajarkan di menu ChatBareng AI'"
+                :class="['px-4 py-2 text-sm font-medium transition-colors border-x border-gray-300', (!aiPlanOk ? 'opacity-50 cursor-not-allowed bg-white text-gray-400' : (form.greetMode === 'cbai' ? 'bg-green-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'))]"
+                style="min-height: 44px;">CB-AI</button>
+              <button type="button" @click="setGreetMode('menu')"
+                :class="['px-4 py-2 text-sm font-medium transition-colors', form.greetMode === 'menu' ? 'bg-green-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50']"
+                style="min-height: 44px;">Menu gateway</button>
+            </div>
           </div>
-          <p v-if="!aiPlanOk && form.greetMode !== 'menu'" class="text-xs px-3 py-2 rounded-lg bg-amber-50 text-amber-700">
+          <p v-if="!aiPlanOk" class="text-xs px-3 py-2 rounded-lg bg-amber-50 text-amber-700">
             ChatBareng AI belum tersedia di paket kamu — hubungi admin platform untuk upgrade.
           </p>
-          <p v-if="form.greetMode === 'menu'" class="text-xs text-amber-600">
-            Greeting dikelola oleh Menu Gateway — matikan menunya dulu di halaman Menu Gateway
-            untuk mengambil alih greeting di sini.
-            <router-link to="/admin/menu-gateway" class="underline">Buka Menu Gateway</router-link>
+          <p v-if="form.greetMode === 'menu'" class="text-xs text-gray-500">
+            Salam pembuka = menu pilihan topik dari Menu Gateway. Atur isi menu di halaman
+            <router-link to="/admin/menu-gateway" class="underline">Menu Gateway</router-link> (halaman itu kini tempat konfigurasi konten, bukan gerbang on/off).
           </p>
           <p v-else-if="form.greetMode === 'cbai'" class="text-xs text-gray-500">
             Siang dijaga AI dari dokumen KB (menu ChatBareng AI). Tidak tercakup → greeting text
@@ -288,12 +277,32 @@
         </div>
       </div>
     </div>
+
+    <!-- v4.3.0 (D4/D7) — modal konfirmasi SWITCH MODE: greeting teks aktif akan dimatikan
+         dan diganti mode baru; scope Default → mengubah SEMUA slot pengikut (wajib). -->
+    <div v-if="showSwitchModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="cancelSwitch">
+      <div class="bg-white rounded-lg shadow-xl max-w-sm w-full p-5">
+        <h3 class="font-semibold text-gray-900">Ganti mode greeting?</h3>
+        <p class="text-sm text-gray-600 mt-2">{{ switchModalMessage }}</p>
+        <div class="flex justify-end gap-2 mt-4">
+          <button @click="cancelSwitch" class="px-4 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100">Batal</button>
+          <button
+            @click="confirmSwitch"
+            :disabled="saving"
+            class="px-4 py-2 rounded-lg text-sm font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+          >
+            {{ saving ? 'Menyimpan...' : 'Ya, ganti mode' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </PageShell>
 </template>
 
 <script setup>
 import axios from 'axios'
 import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router' // v4.3.0 — deep-link ?slot=N (D8)
 import { useAuthStore } from '../stores/auth'
 import { useToastStore } from '../stores/toast'
 import PageShell from '../components/PageShell.vue'
@@ -302,6 +311,7 @@ import M3Switch from '../components/M3Switch.vue'
 const API = import.meta.env.VITE_API_URL || ''
 const auth = useAuthStore()
 const toast = useToastStore()
+const route = useRoute() // v4.3.0 — deep-link ?slot=N (D8)
 
 const loading = ref(true)
 const saving = ref(false)
@@ -428,33 +438,89 @@ function preview(text) {
   return (text || '').replace(/\{name\}/g, 'Kakak')
 }
 
-// v4.2.0 (Audit BUG#1 opsi A) — tooltip radio menu (dinonaktifkan): menu dikelola Menu Gateway
-const menuRadioTitle = 'Greeting dikelola Menu Gateway — matikan menunya dulu di halaman Menu Gateway untuk mengambil alih greeting di sini'
-// v4.2.0 (Audit R3 N5) — form sedang MENG-ECHO baris menu-managed (greetMode 'menu'
-// dari Menu Gateway legacy link-all / slot menu): radio text/cbai ikut disabled selama
-// tampilan ini menampilkan greeting milik Menu Gateway.
-const menuManagedEcho = computed(() => form.value.greetMode === 'menu')
+// ═══ v4.3.0 (D1/D4/D7) — SEGMENTED CONTROL + MODAL SWITCH ═══
+// klik opsi segment → bila akan MEMATIKAN teks/menu aktif ATAU scope Default dgn menu
+// terlibat → buka modal konfirmasi (D4 per-slot / D7 default wajib); simpan pending
+// dulu, dikirim di confirmSwitch(). Pilih mode yang SAMA = tidak melakukan apa-apa.
+const showSwitchModal = ref(false)
+const pendingMode = ref(null)
+const switchModalMessage = computed(() => {
+  if (!pendingMode.value) return ''
+  const scopeLabel = isSlotScope.value ? `slot ${currentSlot.value}` : 'Default (Semua nomor) — semua slot pengikut akan ikut berubah'
+  if (pendingMode.value === 'menu') {
+    return isSlotScope.value
+      ? `Greeting teks slot ini akan dimatikan dan diganti menu. Outside-hours tidak terpengaruh — tetap jalan di luar jam kerja (${scopeLabel}).`
+      : `Greeting teks Default akan dimatikan dan diganti menu untuk SEMUA nomor yang mengikutinya. Outside-hours tidak terpengaruh — tetap jalan di luar jam kerja.`
+  }
+  return `Greeting menu slot ini akan dimatikan dan diganti ${pendingMode.value === 'cbai' ? 'ChatBareng AI' : 'teks'} (${scopeLabel}). Konfigurasi menu tetap tersimpan — bisa dinyalakan lagi kapan pun.`
+})
 
-async function save() {
+function setGreetMode(mode) {
+  if (saving.value) return
+  if (!aiPlanOk.value && mode === 'cbai') {
+    toast.show({ icon: '⚠️', title: 'Fitur belum tersedia', message: 'ChatBareng AI tidak tersedia di paket kamu — hubungi admin platform untuk upgrade.' })
+    return
+  }
+  const before = form.value.greetMode || 'text'
+  if (mode === before) return
+  const menuEngagedNow = before === 'menu'
+  const menuEngagedNext = mode === 'menu'
+  const scopeDefault = !isSlotScope.value
+  const textActiveNow = form.value.greetEnabled === true && before !== 'menu'
+  // D4: slot + teks aktif mati (→menu) atau menu mati (→teks/cbai) → modal konfirmasi.
+  // D7: scope Default + switch terlibat menu (balik arah) → modal WAJIB.
+  const needsConfirm = (!menuEngagedNow && menuEngagedNext && textActiveNow)
+    || (menuEngagedNow && !menuEngagedNext)
+    || (scopeDefault && (menuEngagedNow || menuEngagedNext))
+  if (!needsConfirm) {
+    form.value.greetMode = mode
+    return
+  }
+  pendingMode.value = mode
+  showSwitchModal.value = true
+}
+
+function cancelSwitch() {
+  showSwitchModal.value = false
+  pendingMode.value = null
+}
+
+async function confirmSwitch() {
+  const mode = pendingMode.value
+  showSwitchModal.value = false
+  pendingMode.value = null
+  if (!mode) return
+  const before = form.value.greetMode || 'text'
+  form.value.greetMode = mode
+  await save({ modeSwitchFrom: before !== mode ? before : undefined })
+}
+
+// save({modeSwitchFrom}) — v4.2.0 simpan normal + v4.3.0 jalur switch mode:
+// switch ke 'menu' → kirim greetMode:'menu' (+greetEnabled:true implisit BE); switch dari
+// 'menu' → kirim greetMode baru TANPA greetText (payload switch-sadar; BE flip atomik).
+// Save biasa saat slot menu-managed: greetMode menu di-omit (hanya field non-greet — BE
+// 200 field-scoped D9); saat view Default menu-managed tanpa switch → blokir FE (409 BE).
+async function save(opts = {}) {
+  const modeSwitch = opts.modeSwitchFrom !== undefined
   // v4.2.0 — guard plan client: radio CB-AI hanya boleh dikirim bila plan ✓
   if (!aiPlanOk.value && (form.value.greetMode === 'cbai' || form.value.outsideHoursMode === 'cbai')) {
     toast.show({ icon: '⚠️', title: 'Fitur belum tersedia', message: 'ChatBareng AI tidak tersedia di paket kamu — hubungi admin platform untuk upgrade.' })
     return
   }
-  // v4.2.0 (Audit BUG#1) — radio menu disabled; kalau masih ada greetMode 'menu'
-  // (mis. slot menu-managed → form echo mode menu), JANGAN kirim greetMode ke endpoint
-  // baru (500 → 400); FE menampilkan banner proteksi di atas.
   const body = { ...form.value }
-  if (body.greetMode === 'menu') delete body.greetMode
-  // guard slot menu-managed: server akan 409; cegah save useless + toast jelas
-  if (isSlotScope.value && currentSlotInfo.value?.menuManaged) {
-    toast.show({ icon: '⚠️', title: 'Slot dikelola Menu Gateway', message: 'Matikan menu untuk slot itu di halaman Menu Gateway dulu, lalu simpan ulang di sini.' })
-    return
-  }
-  // v4.2.0 (Audit R3 N5) — view Default menu-managed: field greet* DILARANG (server
-  // 409 "Greeting dikelola Menu Gateway…"); FE cegah save useless + pesan jelas.
-  if (!isSlotScope.value && form.value.greetMode === 'menu') {
-    toast.show({ icon: '⚠️', title: 'Greeting dikelola Menu Gateway', message: 'Matikan menunya di halaman Menu Gateway dulu, lalu simpan ulang di sini.' })
+  if (modeSwitch) {
+    // Payload SWITCH-SADAR (D2/D5/D6): TANPA greetText legacy — BE mengenali sebagai switch.
+    delete body.greetText
+    body.greetEnabled = true // mode baru = greeting aktif
+    // CB-AI fields tidak relevan di payload switch (bukan edit kartu CB-AI)
+    delete body.cbaiLimit
+    delete body.cbaiInfoFooter
+  } else if (body.greetMode === 'menu') {
+    // Save biasa pada mode menu (bukan switch): greet fields TIDAK dikirim (D9 — BE
+    // 200 field-scoped; menu tetap dikelola kontennya di halaman Menu Gateway).
+    delete body.greetMode
+    delete body.greetEnabled
+    delete body.greetText
     return
   }
   // Validasi ringan di client sebelum PUT
@@ -481,17 +547,27 @@ async function save() {
     const res = isSlotScope.value
       ? await axios.put(`${API}/api/autoreply/slot/${currentSlot.value}`, body)
       : await axios.put(`${API}/api/autoreply/default`, body)
-    const cfg = res.data.config
+    const cfg = res.data.config || {}
     for (const key of Object.keys(form.value)) {
       if (cfg[key] !== undefined) form.value[key] = cfg[key]
     }
-    toast.show({
-      icon: '✅',
-      title: 'Tersimpan',
-      message: isSlotScope.value
-        ? `Pengaturan slot ${currentSlot.value} disimpan (Custom — bebas dari Default)`
-        : 'Pengaturan Default berhasil disimpan',
-    })
+    if (res.data?.switched) {
+      toast.show({
+        icon: '🔄',
+        title: 'Mode greeting diganti',
+        message: res.data.toMode === 'menu'
+          ? `Menu gateway aktif${isSlotScope.value ? ` di slot ${currentSlot.value}` : ' untuk semua nomor Default'} — atur isi menunya di halaman Menu Gateway.`
+          : `Greeting kembali ke ${res.data.toMode === 'cbai' ? 'ChatBareng AI' : 'teks'}${res.data.releasedCount ? ` — ${res.data.releasedCount} chat menunggu menu dilepas ke antrean` : ''}.`,
+      })
+    } else {
+      toast.show({
+        icon: '✅',
+        title: 'Tersimpan',
+        message: isSlotScope.value
+          ? `Pengaturan slot ${currentSlot.value} disimpan (Custom — bebas dari Default)`
+          : 'Pengaturan Default berhasil disimpan',
+      })
+    }
     // v4.2.0 — refresh badge scope (slot bisa jadi Custom) + plan gate (plan bisa berubah)
     fetchOptions()
     try {
@@ -537,6 +613,12 @@ function handleLogout() {
 }
 
 onMounted(async () => {
+  // v4.3.0 (D8) — deep-link dari banner Menu Gateway (?slot=N): buka langsung scope slot itu
+  const q = route.query?.slot
+  if (q !== undefined && q !== null && String(q) !== '') {
+    const qs = parseInt(String(q), 10)
+    if (!Number.isNaN(qs) && qs >= 0 && qs <= 2) selectedScope.value = String(qs)
+  }
   await fetchOptions()
   await loadScopeConfig()
   loading.value = false

@@ -38,12 +38,14 @@
             style="min-height: 44px; min-width: 220px;"
           >
             <option value="default">Semua nomor (Default)</option>
+            <!-- v4.3.0 (D8) — disable HANYA slot dgn greeting teks/cbai AKTIF;
+                 outside-only tetap selectable + banner info -->
             <option
               v-for="s in slotOptions"
               :key="s.slot"
               :value="String(s.slot)"
-              :disabled="s.arManaged"
-              :title="s.arManaged ? 'Nomor ini punya auto-reply teks aktif — matikan dulu di halaman Auto Reply' : ''"
+              :disabled="s.arTextManaged"
+              :title="s.arTextManaged ? 'Nomor ini punya greeting teks aktif — ganti via switch mode di halaman Auto Reply' : ''"
             >
               {{ scopeOptionLabel(s) }}
             </option>
@@ -52,10 +54,17 @@
         </div>
       </div>
 
-      <!-- v4.2.1 — banner "masih mengikuti Default" (spec §3.2): slot tanpa row menu sendiri.
-           Slot dgn AR teks aktif → banner amber (diprotect 409 saat enable menu slot itu). -->
-      <div v-if="isSlotScope && currentSlotInfo?.arManaged" class="bg-amber-50 rounded-lg shadow-sm p-4">
-        <p class="text-sm text-amber-800">Nomor ini punya auto-reply teks aktif — matikan dulu di halaman Auto Reply, lalu simpan menu di sini.</p>
+      <!-- v4.3.0 (D8/O1) — banner amber "punya greeting teks aktif" → jadi TOMBOL-JALAN-PINTAS
+           ke switch mode di Auto Reply (bukan blokir mati); banner outsideOnly = INFO
+           (outside-hours tetap jalan di luar jam kerja — selectable). -->
+      <div v-if="isSlotScope && currentSlotInfo?.arTextManaged" class="bg-amber-50 rounded-lg shadow-sm p-4 flex flex-wrap items-center justify-between gap-3">
+        <p class="text-sm text-amber-800">Nomor ini punya greeting teks aktif — ganti lewat <b>switch mode</b> di halaman Auto Reply, atau matikan greetingnya di sana.</p>
+        <button @click="goModeSwitch" class="px-3 py-2 rounded-lg text-xs font-medium bg-amber-600 text-white hover:bg-amber-700" style="min-height: 36px;">
+          Ganti lewat switch mode →
+        </button>
+      </div>
+      <div v-else-if="isSlotScope && currentSlotInfo?.outsideOnly" class="bg-blue-50 rounded-lg shadow-sm p-4">
+        <p class="text-sm text-blue-800">Nomor ini punya Outside-hours aktif (away text di luar jam kerja) — <b>bukan blokir</b>: simpan menu di sini tetap jalan. Di luar jam kerja, away text yang menjawab; di dalam jam kerja, menu.</p>
       </div>
       <div v-else-if="isSlotScope && currentSlotInfo && !currentSlotInfo.custom" class="bg-blue-50 rounded-lg shadow-sm p-4">
         <p class="text-sm text-blue-800">Nomor ini masih mengikuti Default — Simpan akan menjadikannya Custom.</p>
@@ -418,12 +427,31 @@
         </div>
       </div>
     </div>
+
+    <!-- v4.3.0 (D4) — modal konfirmasi enable menu saat slot punya greeting teks aktif -->
+    <div v-if="showConfirmModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="cancelConfirm">
+      <div class="bg-white rounded-lg shadow-xl max-w-sm w-full p-5">
+        <h3 class="font-semibold text-gray-900">Aktifkan menu & matikan greeting teks?</h3>
+        <p class="text-sm text-gray-600 mt-2">{{ confirmModalMessage }}</p>
+        <div class="flex justify-end gap-2 mt-4">
+          <button @click="cancelConfirm" class="px-4 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100">Batal</button>
+          <button
+            @click="confirmEnableMenu"
+            :disabled="saving"
+            class="px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
+          >
+            {{ saving ? 'Menyimpan...' : 'Ya, aktifkan menu' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </PageShell>
 </template>
 
 <script setup>
 import axios from 'axios'
 import { ref, computed, onMounted, watch } from 'vue'
+import { useRouter } from 'vue-router' // v4.3.0 — jalur-pintas switch mode (banner amber D8)
 import { useToastStore } from '../stores/toast'
 import PageShell from '../components/PageShell.vue'
 import M3Switch from '../components/M3Switch.vue'
@@ -432,6 +460,7 @@ import { useConfirm } from '../utils/confirm'
 
 const API = import.meta.env.VITE_API_URL || ''
 const toast = useToastStore()
+const router = useRouter() // v4.3.0 — goModeSwitch (D8)
 const { confirmAction } = useConfirm()
 
 const saving = ref(false)
@@ -657,20 +686,55 @@ async function loadScopeConfig() {
   } catch (e) { console.error('Fetch tags error:', e) }
 }
 
+// ═══ v4.3.0 (D4) — modal konfirmasi enable menu saat slot punya greeting teks aktif:
+// BE 200 {confirmRequired} ATAU FE-scope-check → simpan payload pending, modal OK →
+// kirim ulang PERSIS payload + confirm:true (BE matikan greeting teks + release). ═══
+const showConfirmModal = ref(false)
+const confirmPending = ref(null)
+const confirmModalMessage = computed(() => {
+  const s = isSlotScope.value ? `slot ${currentSlot.value}` : 'Default (semua slot pengikut)'
+  return `Greeting teks ${s} akan dimatikan dan diganti menu. Outside-hours tidak terpengaruh — tetap jalan di luar jam kerja. Konfigurasi greeting teksnya tetap tersimpan (bisa dinyalakan lagi lewat switch mode).`
+})
+function cancelConfirm() {
+  showConfirmModal.value = false
+  confirmPending.value = null
+}
+async function confirmEnableMenu() {
+  showConfirmModal.value = false
+  if (!confirmPending.value) return
+  saving.value = true
+  try {
+    const res = await axios.put(`${API}/api/menu-gateway`, { ...confirmPending.value, confirm: true })
+    confirmPending.value = null
+    const cfg = res.data.config || {}
+    if (cfg.options) {
+      form.value.options = normalizeOptions(cfg.options)
+      if (form.value.options.length === 0) form.value.options = [emptyOption(1), emptyOption(2)]
+    }
+    form.value.enabled = !!cfg.enabled
+    form.value.aiHybrid = !!cfg.aiHybrid
+    form.value.aiThreshold = Number(cfg.aiThreshold ?? form.value.aiThreshold)
+    toast.show({ icon: '🔄', title: 'Mode diganti', message: 'Greeting teks dimatikan — menu aktif. Outside-hours tetap jalan di luar jam kerja.' })
+    await fetchOptions()
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal simpan', message: e.response?.data?.error || 'Terjadi kesalahan' })
+  } finally {
+    saving.value = false
+  }
+}
+
+// v4.3.0 (D8) — tombol-jalan-pintas banner amber → switch mode di Auto Reply (slot itu)
+function goModeSwitch() {
+  router.push(`/admin/autoreply?slot=${currentSlot.value}`)
+}
+
 async function save() {
   const err = validateClient()
   if (err) {
     toast.show({ icon: '⚠️', title: 'Belum valid', message: err })
     return
   }
-  // v4.2.1 — slot dgn AR teks aktif: enable menu slot itu akan 409 (proteksi v3.9.4)
-  if (isSlotScope.value && form.value.enabled && currentSlotInfo.value?.arManaged) {
-    toast.show({ icon: '⚠️', title: 'Nomor punya auto-reply teks aktif', message: 'Matikan dulu trigger teksnya di halaman Auto Reply, lalu simpan menu di sini.' })
-    return
-  }
-  saving.value = true
-  try {
-    const payload = {
+  const payload = {
       enabled: form.value.enabled,
       introText: form.value.introText,
       fallbackText: form.value.fallbackText,
@@ -695,7 +759,17 @@ async function save() {
         answerMode: (o.answerMode === 'ai_knowledge' && kbPlanOk.value) ? 'ai_knowledge' : 'text', // v4.0.0a hotfix — plan ✗ → text (PUT gak 403)
         aiDocIds: Array.isArray(o.aiDocIdsList) && o.aiDocIdsList.length > 0 ? o.aiDocIdsList.join(',') : '',
       })),
-    }
+  }
+  // v4.3.0 (D3/D4) — slot dgn greeting teks/cbai AKTIF: enable menu → bukan blokir
+  // lagi; FE pakai flag arTextManaged → modal konfirmasi → kirim ulang payload + confirm:true
+  // (BE 200 {confirmRequired} tetap di-handle utk data-stale).
+  if (isSlotScope.value && form.value.enabled && currentSlotInfo.value?.arTextManaged) {
+    confirmPending.value = payload
+    showConfirmModal.value = true
+    return
+  }
+  saving.value = true
+  try {
     const res = await axios.put(`${API}/api/menu-gateway`, payload)
     const cfg = res.data.config || {}
     // v0.13.2 — info sinkron: radio greeting di Auto Reply ikut status saklar ini

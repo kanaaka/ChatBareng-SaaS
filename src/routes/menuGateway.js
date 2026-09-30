@@ -24,6 +24,10 @@
  * validate-first, 400 { error, errors }, 500 internal). Unknown field DITOLAK (400).
  * GreetMode TIDAK di endpoint ini — di PUT /api/autoreply (spec §8).
  */
+// v4.3.0 — GET /options (D8): flag arTextManaged & outsideOnly (tetap emit arManaged utk
+// back-compat). Enable-guard keluar outsideHoursEnabled dari predikat blokir; sisa
+// teks-aktif per-slot → 200 {confirmRequired, slots} (bukan 409) — D3/D4. scope
+// shared/default tetap modal wajib di BE (409) + tanda confirmRequired (D7).
 const express = require('express')
 const router = express.Router()
 const prisma = require('../prisma')
@@ -57,6 +61,7 @@ const ALLOWED_TOP_FIELDS = new Set([
   'timeoutValue', 'timeoutUnit', 'repeatFrequency',
   'numberSlot', 'numberSlots', // v3.9.4 — tick-box scope (fix: sebelumnya ditolak 400 "Field tidak dikenal" — QA #5)
   'scopeDefault', // v4.2.1 — tulis SHARED row saja (tanpa expand-ke-slot & tanpa netralisasi); 400 bila digabung numberSlot/numberSlots
+  'confirm', // v4.3.0 (D4) — flag re-submit setelah modal konfirmasi FE (greeting teks slot → dimatikan sadar)
   'aiHybrid', 'aiThreshold', // v3.9.25 — AI Hybrid Routing (spec D3/D5)
   'options',
 ])
@@ -416,7 +421,8 @@ router.get('/options', ...rt, featMenuGatewayGate, async (req, res) => {
   try {
     const tid = req.tenantId
     // v4.2.1 — DB scope info di service (additive; DB queries SAJA — pola autoreply/options v4.2.0)
-    const { customMap, arSet, defaultExists } = await menuGateway.getSlotScopeInfo(tid)
+    // v4.3.0 (D8) — + arTextSet / outsideOnlySet (dipecah dari arSet; arSet tetap utk back-compat)
+    const { customMap, arSet, arTextSet, outsideOnlySet, defaultExists } = await menuGateway.getSlotScopeInfo(tid)
     let slots = []
     try {
       const waSvc = require('../wa/pool')
@@ -427,15 +433,28 @@ router.get('/options', ...rt, featMenuGatewayGate, async (req, res) => {
       slots = numbers.map((n) => {
         const slot = Number(n.slot) || 0
         const enabled = customMap.get(slot) === true
-        return { slot, label: n.label || null, custom: customMap.has(slot), menuManaged: enabled, enabled, arManaged: arSet.has(slot) }
+        return {
+          slot, label: n.label || null, custom: customMap.has(slot), menuManaged: enabled, enabled,
+          // v4.2.1 back-compat — arManaged = SEMUA slot dgn AR teks/outside aktif:
+          arManaged: arSet.has(slot),
+          // v4.3.0 (D8) — flag BARU utk FE: disable hanya arTextManaged; outsideOnly selectable:
+          arTextManaged: arTextSet.has(slot),
+          outsideOnly: outsideOnlySet.has(slot) && !arTextSet.has(slot),
+        }
       })
       if (!seen.has(0)) {
-        slots.unshift({ slot: 0, label: null, custom: customMap.has(0), menuManaged: customMap.get(0) === true, enabled: customMap.get(0) === true, arManaged: arSet.has(0) })
+        slots.unshift({
+          slot: 0, label: null, custom: customMap.has(0), menuManaged: customMap.get(0) === true, enabled: customMap.get(0) === true,
+          arManaged: arSet.has(0), arTextManaged: arTextSet.has(0), outsideOnly: outsideOnlySet.has(0) && !arTextSet.has(0),
+        })
       }
     } catch (e) {
       // listTenantNumbers gagal → fallback minimal slot-0 sintetis (200 bijak, bukan 500)
       console.error('MenuGateway options listTenantNumbers error (non-fatal):', e.message)
-      slots = [{ slot: 0, label: null, custom: customMap.has(0), menuManaged: customMap.get(0) === true, enabled: customMap.get(0) === true, arManaged: arSet.has(0) }]
+      slots = [{
+        slot: 0, label: null, custom: customMap.has(0), menuManaged: customMap.get(0) === true, enabled: customMap.get(0) === true,
+        arManaged: arSet.has(0), arTextManaged: arTextSet.has(0), outsideOnly: outsideOnlySet.has(0) && !arTextSet.has(0),
+      }]
     }
     let defaultExistsEcho = defaultExists
     try {
@@ -578,11 +597,18 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
     if (!targetList && body.enabled === true) {
       const sharedAR = await prisma.autoReplyConfig.findFirst({
         where: { tenantId: req.tenantId, numberSlot: null },
-        select: { greetEnabled: true, outsideHoursEnabled: true },
+        select: { greetEnabled: true, greetMode: true, outsideHoursEnabled: true },
       })
-      if (sharedAR && (sharedAR.greetEnabled || sharedAR.outsideHoursEnabled)) {
+      // v4.3.0 (D3) — outsideHoursEnabled TIDAK lagi dianggap blokir (runtime D5 v0.13.0:
+      // malam = away text, jam kerja = menu — koeksistensi legal). Yang menyisakan blokir
+      // (konfirmasi wajib, D7) hanya GREETING teks/cbai aktif (greetEnabled, mode ≠ menu).
+      const sharedTextGreet = !!(sharedAR && sharedAR.greetEnabled && sharedAR.greetMode !== 'menu')
+      if (sharedTextGreet) {
         return res.status(409).json({
-          error: "Auto Reply 'Semua nomor' masih aktif (greeting/outside-hours). Matikan dulu di halaman Auto Reply (atau matikan menunya per-slot di sini), lalu aktifkan link-all di sini. Aktifkan per-slot via tick-box kalau mau hybrid.",
+          error: "Auto Reply 'Semua nomor' masih punya greeting teks aktif — matikan/saklar dulu di halaman Auto Reply (atau di slot pengikutnya), lalu aktifkan link-all di sini. Aktifkan per-slot via tick-box kalau mau hybrid.",
+          slots: ['default'],
+          confirmRequired: true, // v4.3.0 — D7: semantik konfirmasi wajib (modal FE), bukan blokir teks
+          slotsText: ['default'],
         })
       }
     }
@@ -640,16 +666,29 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
 
     // v3.9.4 — proteksi dua arah (kawan Auto Reply 409): slot yang punya auto-reply
     // TEKS aktif tidak boleh ditimpa menu — admin diminta matikan dulu di Auto Reply.
+    // ═══ v4.3.0 (D3/D4) — BUKAN blokir lagi utk slot: greeting teks aktif → respons
+    // 200 {confirmRequired: true, slots} — FE tampilkan modal konfirmasi lalu kirim ulang
+    // persis body ini + flag confirm:true (BE eksekusi switch atomik). Yang tetap
+    // terblokir 409: payload confirm TIDAK valid / scopeDefault (D7 — BE tetap keras).
     if (targetList && body.enabled === true) {
       const active = await prisma.autoReplyConfig.findMany({
         where: { tenantId: req.tenantId, numberSlot: { in: targetList }, OR: [{ greetEnabled: true }, { outsideHoursEnabled: true }] },
-        select: { numberSlot: true, greetMode: true },
+        select: { numberSlot: true, greetMode: true, greetEnabled: true, outsideHoursEnabled: true },
       })
       const textActive = active.filter((r) => r.greetMode !== 'menu').map((r) => Number(r.numberSlot)).sort((a, b) => a - b)
-      if (textActive.length > 0) {
-        return res.status(409).json({
-          error: `Slot ${textActive.join(', ')} punya auto-reply teks aktif — matikan dulu di halaman Auto Reply (uncentang slot itu atau matikan trigger-nya), lalu aktifkan menu di sini.`,
-          slots: textActive,
+      // v4.3.0 (D3) — outsideOnly (hanya outside-hours aktif) TIDAK lagi menghalangi:
+      // hanya slot dgn GREETING teks aktif yang butuh konfirmasi.
+      const greetingActive = active.filter((r) => r.greetMode !== 'menu' && r.greetEnabled === true).map((r) => Number(r.numberSlot)).sort((a, b) => a - b)
+      if (body.confirm === true) {
+        // Payload konfirmasi (re-submit FE) → lanjut tanpa blok (switch sadar, D4).
+        if (greetingActive.length > 0) console.log(`[MenuGateway] enable dengan confirm=true — greeting teks slot ${greetingActive.join(', ')} akan dimatikan (switch mode sadar)`)
+      } else if (greetingActive.length > 0) {
+        const detail = greetingActive.map((s) => `slot ${s} punya greeting teks aktif — akan dimatikan dan diganti menu (Outside-hours tetap jalan di luar jam kerja)`)
+        return res.status(200).json({
+          confirmRequired: true,
+          slots: greetingActive,
+          detail,
+          error: `Slot ${greetingActive.join(', ')} punya greeting teks aktif — konfirmasi untuk menggantinya dengan menu (Outside-hours tetap jalan di luar jam kerja).`,
         })
       }
     }
@@ -724,6 +763,29 @@ router.put('/', ...rt, featMenuGatewayGate, async (req, res) => {
     let greetSync = null
     const autoSvc = require('../services/autoReply')
     if (body.enabled === true) {
+      // v4.3.0 (D3/D4) — payload confirm=true (re-submit setelah modal FE): greeting teks
+      // slot-scope DIMATIKAN dalam transaksi yang sama (AR row slot → greetEnabled=false,
+      // mode tetap; outside-hours TIDAK disentuh). Slot menu-managed lain zero-cascade.
+      if (body.confirm === true) {
+        // v4.3.0 (D4) — re-submit FE setelah modal: greeting teks yang akan ditimpa menu
+        // dimatikan SADAR (scope-aware: slot-scope = slot itu; shared/scopeDefault = shared).
+        const confirmedSlotWhere = targetList
+          ? { tenantId: req.tenantId, numberSlot: { in: targetList }, greetMode: { not: 'menu' }, greetEnabled: true }
+          : { tenantId: req.tenantId, numberSlot: null, greetMode: { not: 'menu' }, greetEnabled: true }
+        const activeRows = await prisma.autoReplyConfig.findMany({ where: confirmedSlotWhere, select: { numberSlot: true } })
+        const listConfirmed = [...new Set(activeRows.map((r) => Number(r.numberSlot) || 0))].sort((a, b) => a - b)
+        if (listConfirmed.length > 0) {
+          await prisma.$transaction(async (tx) => {
+            for (const s of listConfirmed) {
+              // v4.3.0 audit MED-2 — ternary duplikat whereKey disederhanakan (verdict GO-WITH-NOTES; perilaku identik)
+              const whereKey = { tenantId: req.tenantId, numberSlot: s, greetMode: { not: 'menu' } }
+              await tx.autoReplyConfig.updateMany({ where: whereKey, data: { greetEnabled: false, updatedById: req.user.id } })
+              await tx.chat.updateMany({ where: { tenantId: req.tenantId, numberSlot: s, menuState: 'awaiting' }, data: { menuState: 'done', queuedAt: new Date() } })
+            }
+          }, { timeout: 15000, maxWait: 5000 }).catch(() => null)
+          console.log(`[MenuGateway] switch konfirmasi: greeting teks slot ${listConfirmed.join(', ')} dimatikan (switch-sadar v4.3.0)`)
+        }
+      }
       await autoSvc.enableGreetForScope(req.tenantId, targetList ? [...targetList] : null, req.user.id)
       // v3.9.4 — tick-box menu eksplisit: shared menu (legacy link-all) dinetralkan
       // supaya slot DI LUAR centangan tidak lagi dapat menu via fallback shared

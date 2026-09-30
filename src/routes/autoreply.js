@@ -7,6 +7,7 @@
 const express = require('express')
 const router = express.Router()
 const prisma = require('../prisma')
+const broadcast = require('../socket/broadcast') // v4.3.0 — emit menu_waiting_update setelah release
 const { requireAuth, requireAdmin, requireTenant } = require('../auth')
 const plans = require('../services/plans') // v4.0.0 — plan gate CB-AI (featAiKnowledge)
 
@@ -21,6 +22,9 @@ const {
   MAX_TEXT_LEN,
   CBAI_SHARED_FIELDS, // v4.2.0 — single-source-of-truth (spec §0) dari service
 } = require('../services/autoReply')
+// v4.3.0 — sinkron switch mode kebutuh config MG (echo + countWaiting); lazy-safe pola existing
+const menuGateway = require('../services/menuGateway')
+const mgEchoSvc = menuGateway // alias echo (pola mgEcho di handler)
 
 // Validasi pasangan jam kerja per tipe hari
 function validateHours(body, prefix, errors) {
@@ -71,6 +75,89 @@ function validateTextField(body, field, label, errors) {
 // v4.0.0 (D4) — greetMode extended value "cbai"; outsideHoursMode baru "text" | "cbai"
 const GREET_MODES = ['text', 'menu', 'cbai']
 const OUTSIDE_MODES = ['text', 'cbai']
+
+// ═════════════════════════════════════════════════════════════════════════
+// v4.3.0 — GREETING MODE SWITCH ATOMIK (spec docs/spec-v4.3.0-greeting-mode-switch.md
+// D2/D5/D6): satu transaksi AR row + MG slot row + release-awaiting scoped;
+// invalidasi DUA cache (autoSvc.invalidateConfig + menuGateway.invalidateConfig)
+// SETELAH commit. Schema TIDAK berubah — additive code only.
+// ═════════════════════════════════════════════════════════════════════════
+const MG_RUNTIME_DEFAULTS = {
+  introText: 'Halo {name}! Silakan pilih topik yang ingin Anda sampaikan:',
+  fallbackText: 'Terima kasih! CS kami akan segera membalas pesan Anda. 🙏',
+  timeoutValue: 30,
+  timeoutUnit: 'minutes',
+}
+
+/** v4.3.0 — prefill MG on-demand (D6): MG Default ada → clone intro/fallback/timeout */
+async function mgDefaultPrefill(tenantId) {
+  // LIMITS sinkron dengan LIMITS menuGateway route (introText 1000/fallbackText 500) —
+  // schema default juga aman (≤ limits), jadi create langsung TIDAK butuh clamp.
+  const dflt = await prisma.menuGatewayConfig.findFirst({
+    where: { tenantId, numberSlot: null },
+    select: { introText: true, fallbackText: true, timeoutValue: true, timeoutUnit: true },
+  })
+  return dflt || MG_RUNTIME_DEFAULTS
+}
+
+/**
+ * v4.3.0 — txMenuSwitchOn (D6): AR slot row upsert (greetEnabled=true, greetMode='menu')
+ * + MG row slot create-on-demand (prefill D6 bila belum ada; row utuh TIDAK diubah).
+ * Outside-hours slot TIDAK disentuh (D3/D6). P2002-safe create (pola existing).
+ */
+async function txMenuSwitchOn(tx, tenantId, slot, userId) {
+  const upd = { greetEnabled: true, greetMode: 'menu', updatedById: userId }
+  await tx.autoReplyConfig.upsert({
+    where: { tenantId_numberSlot: { tenantId, numberSlot: slot } },
+    update: upd,
+    create: {
+      tenantId, numberSlot: slot, ...upd,
+      // Row MINIMAL menu (pola enableGreetForScope v3.9.4 — tanpa rules teks):
+      greetText: '', outsideHoursEnabled: false, outsideHoursText: '',
+      monFriEnabled: true, monFriStart: '00:00', monFriEnd: '23:59',
+      satEnabled: true, satStart: '00:00', satEnd: '23:59',
+      sunEnabled: true, sunStart: '00:00', sunEnd: '23:59',
+    },
+  })
+  const mgRow = await tx.menuGatewayConfig.findUnique({
+    where: { tenantId_numberSlot: { tenantId, numberSlot: slot } },
+    select: { id: true },
+  })
+  if (mgRow) {
+    await tx.menuGatewayConfig.update({ where: { id: mgRow.id }, data: { enabled: true, updatedById: userId } })
+  } else {
+    const pre = await mgDefaultPrefill(tenantId)
+    await tx.menuGatewayConfig.create({
+      data: { tenantId, numberSlot: slot, enabled: true, ...pre, updatedById: userId },
+    }).catch(async (e) => {
+      if (e.code !== 'P2002') throw e
+      await tx.menuGatewayConfig.update({ where: { tenantId_numberSlot: { tenantId, numberSlot: slot } }, data: { enabled: true, updatedById: userId } })
+    })
+  }
+}
+
+/**
+ * v4.3.0 — txMenuSwitchOff (D5/O2): AR slot row (mode menu) → mode baru (text/cbai)
+ * dgn field greet payload; MG row slot enabled=false TAPI row+options DIPERTAHANKAN
+ * (O2 KEEP — reset permanen eksklusif lewat tombol Reset ke Default v4.2.1).
+ * Chats awaiting milik slot ini di-release DI DALAM transaksi (pola releaseAwaiting
+ * scoped v4.2.1 DELETE — updateMany kondisi + emit setelah commit).
+ */
+async function txMenuSwitchOff(tx, tenantId, slot, greetData, userId) {
+  await tx.autoReplyConfig.updateMany({
+    where: { tenantId, numberSlot: slot, greetMode: 'menu' },
+    data: { ...greetData, updatedById: userId },
+  })
+  await tx.menuGatewayConfig.updateMany({
+    where: { tenantId, numberSlot: slot },
+    data: { enabled: false, updatedById: userId },
+  })
+  const released = await tx.chat.updateMany({
+    where: { tenantId, numberSlot: slot, menuState: 'awaiting' },
+    data: { menuState: 'done', queuedAt: new Date() },
+  })
+  return released.count
+}
 
 // ── GET /api/autoreply (admin only) ──
 router.get('/', ...rt, async (req, res) => {
@@ -129,6 +216,7 @@ router.get('/', ...rt, async (req, res) => {
 async function validateAutoreplyBody(body, req, context = 'default') {
   const errors = []
   const data = {}
+
   // v4.2.0 AUDIT N3 — gunakan context: 'slot' TIDAK boleh menyentuh field CB-AI
   // (sudah difilter caller DENIED_CBAI sebelum validator) — guard dua lapis di sini:
   if (context === 'slot') {
@@ -149,7 +237,14 @@ async function validateAutoreplyBody(body, req, context = 'default') {
   // Menu Gateway, bukan dari sini.
   if (body.greetMode !== undefined) {
     if (body.greetMode === 'menu') {
-      return { errors: ['Mode menu diatur di halaman Menu Gateway — pilih Teks biasa atau ChatBareng AI di sini'], data }
+      // v4.3.0 (D2/D6) — switch-sadar = payload greetMode TANPA greetText legacy.
+      // legacy payload (ada greetText ATAU greetEnabled tanpa greetMode — tidak lazim utk
+      // switch) → tetap DITOLAK 400 jalur lama (proteksi row-orphan menu — e2e-v420 S12).
+      if (typeof body.greetText !== 'undefined' || (typeof body.greetEnabled !== 'undefined' && typeof body.greetMode !== 'string')) {
+        return { errors: ['Mode menu diatur di halaman Menu Gateway — pilih Teks biasa atau ChatBareng AI di sini'], data }
+      }
+      // switch-sadar → menu VALID (handler menjalankan flip atomik + MG on-demand)
+      return { errors: [], data: { __menuSwitch: true }, menuRequested: true }
     }
     if (typeof body.greetMode !== 'string' || !GREET_MODES.includes(body.greetMode)) {
       return { errors: [`greetMode harus "text", "menu", atau "cbai"`], data }
@@ -240,8 +335,11 @@ async function validateAutoreplyBody(body, req, context = 'default') {
   }
   if (errors.length > 0) return { errors, data }
 
-  // Plan gate CB-AI (persis pola existing — 403 upsell ramah, ALL actors)
-  if (data.greetMode === 'cbai' || data.outsideHoursMode === 'cbai') {
+  // Plan gate CB-AI (persis pola existing — 403 upsell ramah, ALL actors).
+  // v4.3.0 — gate dari BODY RAW: data greetMode selalu berasal dari body (marker
+  // menuSwitch tidak pernah bernilai 'cbai') sehingga body check sudah lengkap; set
+  // text/menu SELALU bebas (matikan tidak diblokir plan).
+  if (body.greetMode === 'cbai' || body.outsideHoursMode === 'cbai') {
     const plan = await plans.getPlan(req.tenantId)
     if (!plan || plan.featAiKnowledge === false) {
       return { errors: [{ planGate: true, status: 403, body: { error: 'ChatBareng AI (Auto Reply) tidak tersedia di paket Anda. Hubungi admin platform untuk upgrade.', feature: 'featAiKnowledge' } }], data }
@@ -319,6 +417,10 @@ router.put('/default', ...rt, async (req, res) => {
       if (errors.length === 1 && errors[0]?.planGate) return res.status(errors[0].status).json(errors[0].body)
       return res.status(400).json({ error: errors[0], errors })
     }
+    // v4.3.0 (D5/D6) — flag payload switch-sadar SHARED utk seluruh greet-jalur Default:
+    // legacy = ada greetText (takeover teks penuh) ATAU greetEnabled TANPA greetMode.
+    const isLegacyGreetPayload = body.greetText !== undefined || (body.greetEnabled !== undefined && body.greetMode === undefined)
+    let releasedCount = 0 // v4.3.0 — released awaiting jalur switch menu-scope
     // v4.2.0 AUDIT R3 N5 (Kimi K3) — shared menu-managed: FIELD GREET* DILARANG
     // (greetEnabled/greetMode/greetText → 409 "Greeting dikelola Menu Gateway…").
     // Greeting milik halaman Menu Gateway sampai menu-nya dimatikan di sana (atau via
@@ -326,14 +428,112 @@ router.put('/default', ...rt, async (req, res) => {
     // jadi text tapi MenuGatewayConfig tetap enabled → hybrid tak-terlihat (chat
     // awaiting tetap dirouting menu; sync MG bisa flip balik AR ke 'menu').
     // Field NON-greet (outsideHours*/jam/repeatFrequency/cbai*) TETAP 200 — independent.
-    if (body.greetEnabled !== undefined || body.greetMode !== undefined || body.greetText !== undefined) {
+    // ── v4.3.0 (D2/D6/D7) — SWITCH MODE ATOMIK menu→teks/cbai + teks/cbai→menu:
+    // payload dgn greetMode ≠ 'menu' TETAPI slot/shared sedang mode menu → BUKAN 409
+    // lagi; jalankan flip atomik (AR row + MG row + release-awaiting scoped) dalam SATU
+    // transaksi + invalidasi DUA cache. Payload tanpa greetMode (teks penuh) saat
+    // menu-managed TETAP 409 (takeover teks penuh tak sadar = jalur lama). D7: scope
+    // Default WAJIB modal konfirmasi — dilakukan FE via confirmDefault dulu.
+    const greetFieldsHere = ['greetEnabled', 'greetMode', 'greetText'].filter((f) => body[f] !== undefined)
+    if (greetFieldsHere.length > 0) {
       const menuShared = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null, greetMode: 'menu' }, select: { id: true } })
+      if (menuShared && body.greetMode !== undefined && body.greetMode !== 'menu') {
+        const to = String(body.greetMode)
+        if (!isLegacyGreetPayload) {
+          // v4.3.0 (D2/D5) — shared menu→teks/cbai: shared AR row → mode baru (greetEnabled
+          // hormat payload), shared MG row OFF KEEP; release-awaiting SCOPED = HANYA slot
+          // "pengikut shared" (tanpa row MG sendiri, efektif tidak lagi menu-enabled);
+          // slot menu-managed lain TIDAK disentuh (polа scoped master-off v4.2.1).
+          const released = await prisma.$transaction(async (tx) => {
+            await tx.autoReplyConfig.updateMany({
+              where: { tenantId: req.tenantId, numberSlot: null, greetMode: 'menu' },
+              data: { greetMode: to, greetEnabled: body.greetEnabled !== undefined ? !!body.greetEnabled : true, updatedById: req.user.id },
+            })
+            await tx.menuGatewayConfig.updateMany({
+              where: { tenantId: req.tenantId, numberSlot: null },
+              data: { enabled: false, updatedById: req.user.id },
+            })
+            const g = await tx.chat.groupBy({ by: ['numberSlot'], where: { tenantId: req.tenantId, menuState: 'awaiting' } })
+            let rc = 0
+            for (const gg of g) {
+              const s = Number(gg.numberSlot) || 0
+              const hasOwn = await tx.menuGatewayConfig.findUnique({ where: { tenantId_numberSlot: { tenantId: req.tenantId, numberSlot: s } }, select: { enabled: true } })
+              if (hasOwn) continue // slot menu sendiri TIDAK disentuh (zero-cascade)
+              const r = await tx.chat.updateMany({ where: { tenantId: req.tenantId, numberSlot: s, menuState: 'awaiting' }, data: { menuState: 'done', queuedAt: new Date() } })
+              rc += r.count
+            }
+            return rc
+          }, { timeout: 15000, maxWait: 5000 })
+          invalidateConfig(req.tenantId)
+          menuGateway.invalidateConfig(req.tenantId)
+          broadcast.emitToTenant(req.tenantId, 'menu_waiting_update', { count: await menuGateway.countWaiting(req.tenantId).catch(() => 0) })
+          const cfgNow = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null } })
+          const mgEcho = await mgEchoSvc.getConfig(req.tenantId).catch(() => null)
+          return res.json({ config: { ...cfgNow, repeatFrequency: cfgNow.repeatFrequency ?? mgEcho?.repeatFrequency ?? 'daily' }, switched: true, scope: 'default', fromMode: 'menu', toMode: to, releasedCount: released })
+        }
+        return res.status(409).json({
+          error: 'Greeting dikelola Menu Gateway — matikan menunya di halaman Menu Gateway dulu, lalu simpan ulang di sini.',
+          slots: ['default'],
+        })
+      }
       if (menuShared) {
         return res.status(409).json({
           error: 'Greeting dikelola Menu Gateway — matikan menunya di halaman Menu Gateway dulu, lalu simpan ulang di sini.',
           slots: ['default'],
         })
       }
+    }
+    // ── v4.3.0 (D2/D6/D7) — SWITCH teks/cbai → menu pada scope Default: flip atomik
+    // (shared AR row → greetMode='menu' + shared MG row ON + release-awaiting scoped
+    // milik slot "pengikut shared" — row MG slot sendiri TIDAK disentuh, zero-cascade).
+    // Payload switch-sadar = greetMode:'menu' TANPA greetText legacy. Outside-hours
+    // shared TIDAK disentuh (D3/D6). Di sini BUKAN lagi 409/400 jalur lama.
+    if (body.greetMode === 'menu' && !isLegacyGreetPayload) {
+      await prisma.$transaction(async (tx) => {
+        const updMenu = { greetMode: 'menu', greetEnabled: true, updatedById: req.user.id }
+        const sharedRowMenu = await tx.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
+        if (sharedRowMenu) {
+          await tx.autoReplyConfig.update({ where: { id: sharedRowMenu.id }, data: updMenu })
+        } else {
+          await tx.autoReplyConfig.create({
+            data: { tenantId: req.tenantId, numberSlot: null, ...updMenu, outsideHoursEnabled: false, outsideHoursText: '', monFriEnabled: true, monFriStart: '00:00', monFriEnd: '23:59', satEnabled: true, satStart: '00:00', satEnd: '23:59', sunEnabled: true, sunStart: '00:00', sunEnd: '23:59' },
+          }).catch(async (e) => {
+            if (e.code !== 'P2002') throw e
+            const again = await tx.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
+            if (again) await tx.autoReplyConfig.update({ where: { id: again.id }, data: updMenu })
+          })
+        }
+        const mgShared = await tx.menuGatewayConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
+        if (mgShared) {
+          await tx.menuGatewayConfig.update({ where: { id: mgShared.id }, data: { enabled: true, updatedById: req.user.id } })
+        } else {
+          const pre = await mgDefaultPrefill(req.tenantId)
+          await tx.menuGatewayConfig.create({ data: { tenantId: req.tenantId, numberSlot: null, enabled: true, ...pre, updatedById: req.user.id } }).catch(async (e) => {
+            if (e.code !== 'P2002') throw e
+            const again = await tx.menuGatewayConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null }, select: { id: true } })
+            if (again) await tx.menuGatewayConfig.update({ where: { id: again.id }, data: { enabled: true, updatedById: req.user.id } })
+          })
+        }
+        // Release-awaiting SCOPED: hanya slot tanpa row MG sendiri (pengikut shared) —
+        // pola scoped master-off v4.2.1; slot menu-managed lain zero-cascade.
+        const g = await tx.chat.groupBy({ by: ['numberSlot'], where: { tenantId: req.tenantId, menuState: 'awaiting' } })
+        let rc = 0
+        for (const gg of g) {
+          const s = Number(gg.numberSlot) || 0
+          const hasOwn = await tx.menuGatewayConfig.findUnique({ where: { tenantId_numberSlot: { tenantId: req.tenantId, numberSlot: s } }, select: { enabled: true } })
+          if (hasOwn) continue
+          const r = await tx.chat.updateMany({ where: { tenantId: req.tenantId, numberSlot: s, menuState: 'awaiting' }, data: { menuState: 'done', queuedAt: new Date() } })
+          rc += r.count
+        }
+        releasedCount = rc
+      }, { timeout: 15000, maxWait: 5000 })
+      // invalidasi DUA cache (AR + MG) SETELAH commit
+      invalidateConfig(req.tenantId)
+      menuGateway.invalidateConfig(req.tenantId)
+      broadcast.emitToTenant(req.tenantId, 'menu_waiting_update', { count: await menuGateway.countWaiting(req.tenantId).catch(() => 0) })
+      const cfgNow = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: null } })
+      const mgEcho = await menuGateway.getConfig(req.tenantId).catch(() => null)
+      return res.json({ config: { ...cfgNow, repeatFrequency: cfgNow.repeatFrequency ?? mgEcho?.repeatFrequency ?? 'daily' }, switched: true, scope: 'default', toMode: 'menu', releasedCount })
     }
 
     await getConfig(req.tenantId) // pastikan shared row ter-seed (pola existing)
@@ -382,13 +582,53 @@ router.put('/slot/:slot', ...rt, async (req, res) => {
       if (errors.length === 1 && errors[0]?.planGate) return res.status(errors[0].status).json(errors[0].body)
       return res.status(400).json({ error: errors[0], errors })
     }
-    // PROTEKSI menu-managed (teks persis pola existing v3.9.4 — spec §2.3)
+    // PROTEKSI menu-managed (teks persis pola existing v3.9.4 — spec §2.3).
+    // v4.3.0 (D2/D9) — FIELD-SCOPED: hanya greet* yang ditolak 409; switch mode
+    // (greetMode ≠ menu saat slot menu) atau payload greet*-kosong LANJUT 200.
     const menuRow = await prisma.autoReplyConfig.findFirst({ where: { tenantId: req.tenantId, numberSlot: s, greetMode: 'menu' }, select: { id: true } })
     if (menuRow) {
-      return res.status(409).json({
-        error: `Slot ${s} sedang dikelola Menu Gateway — matikan menu untuk slot itu di halaman Menu Gateway dulu, lalu simpan ulang di sini.`,
-        slots: [s],
-      })
+      const greetFieldsSent = ['greetEnabled', 'greetMode', 'greetText'].filter((f) => body[f] !== undefined)
+      if (greetFieldsSent.length > 0) {
+        // v4.3.0 — payload mode-switch SADAR (greetMode terisi, tanpa greetText legacy):
+        // → 200 via flip atomik D5 (AR row + MG row KEEP + release-awaiting scoped).
+        const isLegacyGreetPayload = body.greetText !== undefined || (body.greetEnabled !== undefined && body.greetMode === undefined)
+        if (greetFieldsSent.includes('greetMode') && body.greetMode !== 'menu' && !isLegacyGreetPayload) {
+          const to = String(body.greetMode)
+          const greetData = {}
+          if (body.greetEnabled !== undefined) greetData.greetEnabled = !!body.greetEnabled
+          if (to === 'cbai') greetData.greetEnabled = true // mode cbai = greeting hidup (pola existing)
+          const txRes = await prisma.$transaction(async (tx) => {
+            const rel = await txMenuSwitchOff(tx, req.tenantId, s, { ...greetData, greetMode: to }, req.user.id)
+            return rel
+          }, { timeout: 15000, maxWait: 5000 })
+          invalidateConfig(req.tenantId)
+          menuGateway.invalidateConfig(req.tenantId)
+          broadcast.emitToTenant(req.tenantId, 'menu_waiting_update', { count: await menuGateway.countWaiting(req.tenantId).catch(() => 0) })
+          const cfgNow = await prisma.autoReplyConfig.findUnique({ where: { tenantId_numberSlot: { tenantId: req.tenantId, numberSlot: s } } })
+          const mgEcho = await menuGateway.getConfigForSlot(req.tenantId, s).catch(() => null)
+          const cfgEcho = { ...cfgNow, repeatFrequency: cfgNow.repeatFrequency ?? mgEcho?.repeatFrequency ?? 'daily' }
+          return res.json({ config: cfgEcho, custom: true, switched: true, fromMode: 'menu', toMode: to, releasedCount: txRes })
+        }
+        return res.status(409).json({
+          error: `Slot ${s} sedang dikelola Menu Gateway — matikan menu untuk slot itu di halaman Menu Gateway dulu, lalu simpan ulang di sini.`,
+          slots: [s],
+        })
+      }
+    }
+    if (body.greetMode === 'menu') {
+      // v4.3.0 — jalur B (teks/cbai → menu): payload dgn greetMode='menu' → flip atomik
+      // D6 (upsert AR row menu minimal + MG row on-demand prefill) dalam SATU transaksi +
+      // invalidasi DUA cache. Outside-hours slot TIDAK disentuh (D3/D6). Marker
+      // __sentinel sudah divalidasi di validator — di sini langsung eksekusi.
+      await prisma.$transaction(async (tx) => {
+        await txMenuSwitchOn(tx, req.tenantId, s, req.user.id)
+      }, { timeout: 15000, maxWait: 5000 })
+      invalidateConfig(req.tenantId)
+      menuGateway.invalidateConfig(req.tenantId)
+      const cfgNow = await prisma.autoReplyConfig.findUnique({ where: { tenantId_numberSlot: { tenantId: req.tenantId, numberSlot: s } } })
+      const mgEcho2 = await menuGateway.getConfigForSlot(req.tenantId, s).catch(() => null)
+      const cfgEcho2 = { ...cfgNow, repeatFrequency: cfgNow.repeatFrequency ?? mgEcho2?.repeatFrequency ?? 'daily' }
+      return res.json({ config: cfgEcho2, custom: true, switched: true, toMode: 'menu', menuGatewayEnabled: true })
     }
     // Upsert row slot ini SAJA (tidak shared, tidak slot lain) + P2002-safe (pola existing)
     const cfg = await prisma.autoReplyConfig.upsert({

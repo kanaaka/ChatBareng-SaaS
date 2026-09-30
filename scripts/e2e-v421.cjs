@@ -258,7 +258,10 @@ async function main() {
   const sharedAR5v = await prisma.autoReplyConfig.findFirst({ where: { tenantId: 8, numberSlot: null }, select: { greetEnabled: true, greetMode: true } })
   console.log(`  [S5 pre-check] shared AR greetEnabled=${sharedAR5v?.greetEnabled} mode=${sharedAR5v?.greetMode}`)
   const s5a = await api('PUT', '/api/menu-gateway', { enabled: true, introText: 'X', fallbackText: 'Y', numberSlots: [0], options: FULL_FORM.options }, t8)
-  check(`S5-a enable saat slot-0 punya AR teks aktif → 409 (pola v3.9.4) status=${s5a.status}`, s5a.status === 409, JSON.stringify(s5a.data).slice(0, 140))
+  // v4.3.0 (D3/D4) — DEVIASI TERDOKUMenTASI vs v4.2.1: enable menu saat slot punya greeting
+  // teks aktif TIDAK lagi 409 — BE jawab 200 {confirmRequired:true, slots} (modal FE →
+  // resubmit confirm:true). 409 legacy TIDAK berlaku utk slot dengan teks aktif.
+  check(`S5-a enable saat slot-0 punya AR teks aktif → 200 confirmRequired (v4.3.0 D3/D4) status=${s5a.status}`, s5a.status === 200 && s5a.data?.confirmRequired === true && (s5a.data?.slots || []).includes(0), JSON.stringify(s5a.data).slice(0, 140))
   const s5a2 = await api('PUT', '/api/menu-gateway', { enabled: true, introText: 'X', fallbackText: 'Y', scopeDefault: true, options: FULL_FORM.options }, t8)
   check(`S5-a2 scopeDefault enable saat shared AR teks aktif → 409 JUGA (proteksi semantik sama) status=${s5a2.status}`, s5a2.status === 409)
   await prisma.autoReplyConfig.updateMany({ where: { tenantId: 8, numberSlot: null }, data: { greetEnabled: false, outsideHoursEnabled: false, greetMode: 'text' } })
