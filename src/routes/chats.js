@@ -99,9 +99,12 @@ function accessDenied(res) {
 }
 
 // ═══ v3.9.2 K1-A — Contact identity helpers (C.8) ═══
-// Kontak = identity per (tenantId, phone): 1 orang = 1 kontak, WALAUPUN dia punya
-// chat di beberapa slot. Chat yang dihapus boleh per-chat, kontak TIDAK boleh
-// dibuang kalau masih dibutuhkan chat lain.
+// v3.9.2 (asumsi lama): 1 orang = 1 kontak WALAUPUN dia punya chat di beberapa
+// slot. v4.3.1 REALITY (per-slot contact): tiap chat auto-punya contact
+// sendiri (Contact.chatId @unique) → helper di bawah sibling-contact-aware:
+// merge antar-slot HANYA bila sibling memang belum punya contact sendiri.
+// Chat yang dihapus boleh per-chat, kontak TIDAK boleh dibuang kalau masih
+// dibutuhkan chat lain yang tak punya contact sendiri.
 
 /**
  * Cari kontak yang nempel chat ini + chat 1:1 LAIN milik nomor yang sama
@@ -135,29 +138,60 @@ async function findContactAndSiblingChat(tx, tenantId, chatId) {
 }
 
 /**
- * deleteContactOnlyIfNotShared — HAPUS kontak linked ke chat ini, KECUALI kontak
- * masih nempel (via phone) ke chat 1:1 lain slot lain → DIPERTAHANKAN (primary
- * otomatis pindah saat chat itu aktif lagi — syncContactFromChat K1-A).
+ * deleteContactOnlyIfNotShared — HAPUS kontak linked ke chat ini.
+ * v4.3.1 — per-slot contact reality (tiap chat auto-punya contact sendiri,
+ * Contact.chatId @unique): bila ada chat sibling (nomor sama, slot lain):
+ *   - sibling PUNYA contact sendiri → contact chat ini dihapus (intent admin
+ *     dihormati; identitas nomor tetap hidup via contact milik sibling).
+ *   - sibling TANPA contact sendiri (legacy/langka) → identitas DIPERTAHANKAN:
+ *     detach eksplisit ke chatId=null (bukan skip-diam bergantung FK set-null
+ *     yang mengorbankan contact jadi orphan tak-disengaja).
+ * Tidak ada sibling → hapus (unchanged v3.7).
+ * Race-safety (D7): bila terjadi race sibling-contact, transaksi rollback +
+ * 500 — fallback natural yang tetap berlaku.
  */
 async function deleteContactOnlyIfNotShared(tx, tenantId, chatId) {
   const { contact, otherChat } = await findContactAndSiblingChat(tx, tenantId, chatId)
   if (!contact) return { count: 0 }
-  if (otherChat) return { count: 0 } // identitas masih dibutuhkan — pertahankan
+  if (otherChat) {
+    const siblingContact = await tx.contact.findUnique({ where: { chatId: otherChat.id } })
+    if (siblingContact) {
+      // sibling self-sufficient → hapus contact chat ini (D5)
+      return tx.contact.deleteMany({ where: { id: contact.id } })
+    }
+    // sibling kosong → pertahankan identitas: detach eksplisit (chatId null)
+    return tx.contact.updateMany({ where: { id: contact.id, chatId }, data: { chatId: null } })
+  }
   return tx.contact.deleteMany({ where: { id: contact.id } })
 }
 
 /**
  * detachContactKeepIdentity — kontak di-detach dari chat yang dihapus.
- * v3.9.2 K1-A: bila kontak juga punya chat LAIN (slot lain, nomor sama) → primary
- * pindah ke chat sisanya (paling baru aktif; BUKAN orphan); kalau tidak ada →
- * orphan (chatId null, pola v3.7).
+ * v4.3.1 — per-slot contact reality (Contact.chatId @unique): bila ada chat
+ * sibling (nomor sama, slot lain):
+ *   - sibling PUNYA contact sendiri → JANGAN pindahkan; detach sendiri ke
+ *     chatId=null (pola orphan v3.7 — data identitas utuh, identitas tetap
+ *     terjaga via contact milik sibling). Move paksa ke sibling = P2002
+ *     (chatId @unique) → transaksi rollback → 500; chat tak-bisa-dihapus.
+ *   - sibling TANPA contact sendiri (kasus legacy/langka v3.9.2 K1-A) → move
+ *     contact ke sibling (merge sah karena sibling memang kosong).
+ * Tidak ada sibling → orphan (chatId null, pola v3.7) — unchanged.
+ * Race-safety (D7): bila terjadi race sibling-contact, transaksi rollback +
+ * 500 — fallback natural yang tetap berlaku.
  */
 async function detachContactKeepIdentity(tx, tenantId, chatId) {
   const { contact, otherChat } = await findContactAndSiblingChat(tx, tenantId, chatId)
   if (!contact) return { count: 0 }
   if (otherChat) {
+    const siblingContact = await tx.contact.findUnique({ where: { chatId: otherChat.id } })
+    if (siblingContact) {
+      // sibling self-sufficient → JANGAN pindahkan; detach sendiri (D2)
+      return tx.contact.updateMany({ where: { id: contact.id, chatId }, data: { chatId: null } })
+    }
+    // sibling kosong → move contact ke sibling (D3 — perilaku lama)
     return tx.contact.updateMany({ where: { id: contact.id, chatId }, data: { chatId: otherChat.id } })
   }
+  // No sibling → orphan (chatId null, pola v3.7) — unchanged (D4)
   return tx.contact.updateMany({ where: { id: contact.id, chatId }, data: { chatId: null } })
 }
 
@@ -1609,13 +1643,15 @@ router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
         ['scheduledMessages', () => tx.scheduledMessage.deleteMany({ where: { chatId: chat.id } })],
         deleteContact
           ? // v3.6 behavior: kontak linked ikut terhapus total
-            // v3.9.2 K1-A (C.8) — kontak dihapus HANYA bila dia TIDAK link ke chat
-            // lain milik slot lain (1 identity per orang — jangan buang identitas).
-            // Chat 1:1 nomor sama di slot lain = kontak masih dibutuhkan.
+            // v4.3.1 — sibling ada + punya contact sendiri → contact chat ini
+            // DIHAPUS (intent admin dihormati; identitas nomor tetap hidup via
+            // contact sibling); sibling tanpa contact sendiri → detach
+            // eksplisit chatId=null (identitas dipertahankan).
             ['contacts', () => deleteContactOnlyIfNotShared(tx, req.tenantId, chat.id)]
           : // v3.7 KEEP: DETACH — kontak utuh (nama, nomor, tag) tapi lepas dari chat
-            // v3.9.2 K1-A — detach HANYA bila kontak gak link ke chat lain (slot lain):
-            // kalau masih link → primary pindah ke chat sisanya (jangan jadi orphan).
+            // v4.3.1 — sibling ada + punya contact sendiri → detach chatId=null
+            // (JANGAN move — sibling self-sufficient, move paksa = P2002 500);
+            // sibling tanpa contact sendiri → move ke sibling (merge sah).
             ['contacts', () => detachContactKeepIdentity(tx, req.tenantId, chat.id)],
         ['chats', () => tx.chat.delete({ where: { id: chat.id } })],
       ]
