@@ -1,0 +1,84 @@
+================================================================
+ CHATBARENG SAAS — PANDUAN INSTALL HOSTING (paket 2026-10-01, v4.3.1)
+================================================================
+
+ISI PAKET
+- Kode aplikasi siap jalan (frontend sudah di-build di public/)
+- data/wa-cs-hub.db — database SQLite TERISI data produksi tenant:
+  Klinik Parahita (slot0 + slot1), Mazaya Fit, Womba Clinic —
+  3 tenant, 16 user, 3.150 chat, 8.750 pesan, 2.988 kontak,
+  4 konfigurasi menu-gateway, KB doc 2. TIDAK perlu migrasi.
+- data/media/ — 712 file lampiran WA (terenkripsi .enc)
+- data/wa-session/ — SENGAJA KOSONG: semua sesi WhatsApp belum ditaruh;
+  scan QR fresh di server (lihat langkah 6). Jangan isi manual.
+- .env — konfigurasi + KUNCI ENKRIPSI (lihat peringatan di bawah)
+
+SYARAT SERVER
+- Node.js 20+ (cek: node -v) dengan npm + akses internet untuk npm ci
+- ~1.2 GB disk (paket ~450 MB + node_modules ~350 MB + headroom)
+- Bebas pilih port (default .env: 5047)
+
+LANGKAH INSTALL
+1) Upload & extract ZIP ini ke folder hosting, mis: /home/USER/chatbareng
+2) cd /home/USER/chatbareng
+3) npm ci
+   (sekali jalan: deps + generate Prisma client otomatis via postinstall)
+4) npm start   (server listen di PORT dari .env, default 5047)
+   Pastikan app berjalan sebagai background service (systemd/pm2/screen).
+5) Buka http://IP-SERVER:5047 → login superadmin (kredensial di .env
+   bagian SUPERADMIN_*).
+6) Halaman WhatsApp: setiap tenant menampilkan QR.
+   SCAN BERURUTAN dari device WhatsApp masing-masing nomor (Linked Devices):
+     - Klinik Parahita      → +62 811-3332-8880 (slot0)
+     - Parahita Diagnostic  → +62 811-3332-6888 (slot1)
+     - Mazaya Fit           → +62 817-0310-1897
+     - Mazaya slot-1/slot-2 → bila nomornya aktif dipakai, scan juga
+     - Womba Clinic         → +62 822-8998-2886
+   QR valid ±60 detik — kalau expired klik regenerate. Setelah scan,
+   status berubah "Connected" — sesi tersimpan di data/wa-session/.
+7) Selesai — semua akun user tetap ada dgn password masing2.
+   Login page: /login (admin tenant via username masing-masing)
+
+⚠️ PERINGATAN PENTING
+- JANGAN ganti MSG_ENCRYPTION_KEY / MEDIA_ENCRYPTION_KEY di .env.
+  Keduanya terikat ke data — ganti = seluruh chat & lampiran lama GAK KEBACA.
+- JANGAN hapus/replace folder data/ — itu nyawa aplikasi
+  (database + media + sesi WA setelah scan).
+- File .env berisi kunci enkripsi + kredensial: chmod 600, jangan di-commit,
+  jangan dibagikan. Zip ini juga sensitif — simpan privat.
+
+REVERSE PROXY (opsional — domain + SSL)
+- Arahkan domain ke http://127.0.0.1:5047
+- WAJIB forward WebSocket (socket.io), contoh nginx:
+    location / {
+      proxy_pass http://127.0.0.1:5047;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+    }
+- Setelah jalan, CORS_ORIGIN di .env boleh dipersempit ke domain app.
+
+TROUBLESHOOTING
+- "Cannot find module @prisma/client" → npx prisma generate (normalnya
+  otomatis via postinstall; manual hanya bila postinstall gagal)
+- Media lama gak muncul → pastikan data/media/ ikut ter-upload dan
+  MEDIA_DIR di .env benar
+- WA putus-nyambung terus → cek ws/Upgrade headers di reverse proxy
+- Port dipakai app lain → ubah PORT di .env lalu restart
+
+VERIFIKASI CEPAT PASCA-INSTALL
+- curl http://127.0.0.1:5047/api/health → {"status":"ok",...}
+- Login superadmin → dashboard tampil
+- Salah satu chat tenant lama terbuka, lampiran lama bisa di-view
+  (proves enkripsi key + media path parity)
+
+CONTACT
+- Pertanyaan teknis: reply WhatsApp ini langsung (dibalas oleh Alita).
+- Repository GitHub: github.com/kanaaka/ChatBareng-SaaS
+  (collab invite sudah dikirim ke email IT Parahita — mohon diterima;
+  repo TIDAK berisi DB/media/.env — paket ini yang lengkap)
+
+Versi aplikasi: v4.3.1 (commit 6f0c709a + changelog 13cbe89)
+Dibundel & diuji oleh: Alita (2026-10-01)
+================================================================

@@ -1,0 +1,13 @@
+version: "3.8"
+
+services:
+  wa-cs-hub:
+    build: .
+    ports:
+      - "5030:5030"
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
