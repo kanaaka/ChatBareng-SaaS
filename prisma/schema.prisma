@@ -381,6 +381,11 @@ model Tag {
   tenantId  Int
   name      String
   color     String       @default("blue")
+  // ═══ v4.4.0 F3 — silent block: kontak ber-tag ini dikecualikan dari antrean ═══
+  // queueWhere() NOT contact.tags.some(tag.excludeFromQueue) — chat tanpa contact
+  // tetap masuk antrean; chat tetap tampil normal di list (hanya tidak bisa di-take
+  // dari antrean). Toggle admin: PATCH /api/tags/:id.
+  excludeFromQueue Boolean  @default(false)
   createdBy Int?
   createdAt DateTime     @default(now())
   chats     ChatTag[]

@@ -6,6 +6,8 @@ const { requireAuth, requireAdmin, requireTenant } = require('../auth')
 // v3.0 — Isolasi tenant: semua tag = tenant-scoped
 const rt = [requireAuth, requireTenant]
 const broadcast = require('../socket/broadcast')
+// v4.4.0 F3 — refresh banner antrean setelah toggle exclude
+const queue = require('../socket/queue')
 
 // GET /api/tags — list all tags (any authenticated user)
 // v0.13.4 — tambah contactCount per tag (via ContactTag) — ADDITIVE:
@@ -32,7 +34,7 @@ router.get('/', ...rt, async (req, res) => {
 // POST /api/tags — create new tag (any authenticated user)
 router.post('/', ...rt, async (req, res) => {
   try {
-    const { name, color } = req.body
+    const { name, color, excludeFromQueue } = req.body || {}
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Tag name is required' })
     }
@@ -50,6 +52,8 @@ router.post('/', ...rt, async (req, res) => {
         name: name.trim(),
         color: tagColor,
         createdBy: req.user.id,
+        // v4.4.0 F3 — buat tag yang langsung meng-eksklusi kontak dari antrean
+        excludeFromQueue: excludeFromQueue === true,
       },
     })
 
@@ -125,6 +129,40 @@ router.put('/:id', ...rt, requireAdmin, async (req, res) => {
     res.json({ tag })
   } catch (e) {
     console.error('Update tag error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ═══ v4.4.0 F3 — PATCH /api/tags/:id — toggle excludeFromQueue (silent block) ═══
+// ADMIN-ONLY (konsisten PUT/DELETE: memengaruhi antrean global tenant).
+// Body { excludeFromQueue: true|false } — wajib boolean → selain itu 400.
+// Setelah toggle: emit tag_updated (FE sync allTags/chips) + tags_changed +
+// queue_update (banner count refresh segera; kontak ber-tag masuk/keluar antrean).
+router.patch('/:id', ...rt, requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    const tagRow = await prisma.tag.findFirst({ where: { id, tenantId: req.tenantId } })
+    if (!tagRow) return res.status(404).json({ error: 'Tag not found' })
+
+    const { excludeFromQueue } = req.body || {}
+    if (typeof excludeFromQueue !== 'boolean') {
+      return res.status(400).json({ error: 'excludeFromQueue harus boolean true/false' })
+    }
+
+    const updated = await prisma.tag.update({
+      where: { id },
+      data: { excludeFromQueue },
+      include: { _count: { select: { chats: true, contacts: true } } },
+    })
+    const tag = { ...updated, contactCount: updated._count.contacts }
+
+    broadcast.emitToTenant(req.tenantId, 'tag_updated', { tag })
+    broadcast.emitToTenant(req.tenantId, 'tags_changed', { reason: 'tag_updated', tagId: id })
+    queue.emitQueueUpdate(req.tenantId)
+
+    res.json({ tag })
+  } catch (e) {
+    console.error('Patch tag (excludeFromQueue) error:', e)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

@@ -68,11 +68,24 @@
               @click="toggleFilterTag(tag.id)"
               :class="['px-3 py-2 text-sm cursor-pointer hover:bg-gray-50 flex items-center justify-between', filterTagIds.includes(tag.id) ? 'bg-green-50' : '']"
             >
-              <span class="flex items-center gap-2">
+              <span class="flex items-center gap-2 min-w-0">
                 <span :class="['w-3 h-3 rounded-full', tagDotClass(tag.color)]"></span>
                 {{ tag.name }}
+                <span v-if="tag.excludeFromQueue" class="text-[10px] text-gray-400 bg-gray-100 rounded px-1 py-0.5" title="Kontak ber-tag ini dikecualikan dari antrean (silent block)">🚫</span>
               </span>
-              <span v-if="filterTagIds.includes(tag.id)" class="text-green-600">✓</span>
+              <span class="flex items-center gap-1 flex-shrink-0">
+                <!-- v4.4.0 F3 — toggle admin exclude-from-queue langsung dari menu filter -->
+                <button
+                  v-if="auth.isAdmin"
+                  type="button"
+                  @click.stop="toggleTagExclude(tag)"
+                  :class="['text-[10px] rounded px-1.5 py-0.5 border', tag.excludeFromQueue ? 'border-gray-300 bg-gray-100 text-gray-600' : 'border-gray-200 text-gray-400 hover:text-wa-green']"
+                  :title="tag.excludeFromQueue
+                    ? 'AKTIF: kontak ber-tag ini TIDAK masuk antrean — klik untuk izinkan lagi'
+                    : 'Kecualikan kontak ber-tag ini dari antrean (silent block)'"
+                >🚫 {{ tag.excludeFromQueue ? 'on' : 'off' }}</button>
+                <span v-if="filterTagIds.includes(tag.id)" class="text-green-600">✓</span>
+              </span>
             </div>
           </div>
         </div>
@@ -296,6 +309,8 @@ import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 import { useChatsStore } from '../stores/chats'
 import { getInitials, formatTime, formatListTime, tagColorClass, tagDotClass, highlightSearchTerm } from '../utils/format'
+// v4.4.0 F3 — toast feedback toggle "kecualikan dari antrean"
+import { useToastStore } from '../stores/toast'
 // v4.1.3.1 — "Tandai belum dibaca" (FE-only, localStorage cb_manual_unread)
 import { list as manualUnreadList, add as manualUnreadAdd, remove as manualUnreadRemove } from '../utils/manualUnread'
 // v4.1.3.1 hotfix — reactivity: marker harus sync SEGERA (dot hilang saat dibales,
@@ -314,6 +329,8 @@ const emit = defineEmits(['select', 'select-search', 'filter-params'])
 
 const auth = useAuthStore()
 const chats = useChatsStore()
+// v4.4.0 F3 — feedback toggle tag exclude
+const toastStore = useToastStore()
 
 const search = ref('')
 const loadingChats = computed(() => chats.loadingChats)
@@ -590,6 +607,33 @@ async function fetchAllTags() {
   }
 }
 
+// v4.4.0 F3 — toggle admin "kecualikan dari antrean" utk tag existing.
+// PATCH /api/tags/:id (admin-only) → backend emit tag_updated + queue_update
+// (banner antrean refresh). UI update lokal juga segera (responsif walau socket lambat).
+async function toggleTagExclude(tag) {
+  if (!auth.isAdmin || !tag?.id) return
+  try {
+    const res = await axios.patch(`${API}/api/tags/${tag.id}`, { excludeFromQueue: !tag.excludeFromQueue })
+    const updated = res.data.tag
+    const idx = allTags.value.findIndex(t => t.id === tag.id)
+    if (idx !== -1) allTags.value[idx] = { ...updated }
+    toastStore.show({
+      icon: '🚫',
+      title: 'Antrean tag',
+      message: updated.excludeFromQueue
+        ? `"${updated.name}" dikecualikan dari antrean (silent block)`
+        : `"${updated.name}" boleh masuk antrean lagi`,
+    })
+  } catch (e) {
+    console.error('Toggle tag excludeFromQueue error:', e)
+    toastStore.show({
+      icon: '⚠️',
+      title: 'Gagal mengubah tag',
+      message: e.response?.data?.error || e.message,
+    })
+  }
+}
+
 // Public method untuk parent: changeFilter dipanggil dari FilterChips
 function changeFilter(val) {
   chats.filter = val
@@ -635,7 +679,8 @@ function onTagDeleted(data) {
 function onTagUpdated(data) {
   if (!data.tag) return
   const idx = allTags.value.findIndex(t => t.id === data.tag.id)
-  if (idx !== -1) allTags.value[idx] = { ...allTags.value[idx], name: data.tag.name, color: data.tag.color }
+  // v4.4.0 F3 — spread penuh: rename/warna/excludeFromQueue ikut ter-sync realtime
+  if (idx !== -1) allTags.value[idx] = { ...data.tag }
 }
 
 import { useSocketStore } from '../stores/socket'

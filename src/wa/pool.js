@@ -482,6 +482,99 @@ async function connectTenant(tenantId, opts = {}) {
     }
   })
 
+  // ═══ v4.4.0 — Centang biru: messages.update → Message.status (F1 spec docs/spec-v4.4.0-blue-ticks-take-tag-exclude-resolve.md) ═══
+  // Payload Baileys: array { key:{ id, remoteJid, fromMe, participant? }, update:{ status?, ... } }.
+  // Status ACK Baileys: 0 pending, 1 server-ack, 2 device/pending, 3 = DELIVERED, 4 = READ, 5 = PLAYED.
+  // Mapping: 3 → 'delivered', ≥4 → 'read', <3 diabaikan.
+  // LINGKUP v4.4.0: key.fromMe === true DAN remoteJid BUKAN grup (@g.us) — chat 1:1
+  // pelanggan (kasus utama Kanaka). TODO(v4.4.x): receipt grup (@g.us, key.participant
+  // = pembaca per-anggota) → perlu mapping Message.participantJid, belum di scope ini.
+  // GUARD MONOTONIC: status TIDAK PERNAH turun (sent → delivered → read).
+  // Diterapkan via updateMany bertingkat (waMessageId TANPA unique constraint →
+  // updateMany, bukan update) + filter status in [...] → race lintas update aman:
+  //   delivered: where status in ['sent']             ; read: where status in ['sent','delivered']
+  // Pesan yang sudah 'read' tidak pernah turun ke 'delivered' (filter menolak).
+  sock.ev.on('messages.update', async (updates) => {
+    if (!Array.isArray(updates) || updates.length === 0) return
+    const deliveredIds = []
+    const readIds = []
+    for (const u of updates) {
+      try {
+        const key = u?.key
+        const statusNum = u?.update?.status
+        if (!key || typeof statusNum !== 'number') continue
+        // v4.4.0 scope: 1:1 only — fromMe + bukan grup. Pesan grup → TODO di atas.
+        if (key.fromMe !== true) continue
+        if (typeof key.remoteJid !== 'string' || key.remoteJid.endsWith('@g.us')) continue
+        if (!key.id) continue
+        if (statusNum === 3) deliveredIds.push(key.id)
+        else if (statusNum >= 4) readIds.push(key.id)
+        // statusNum < 3 (pending/server-ack) → abaikan (tidak ada perubahan status UI)
+      } catch {
+        // entry payload buruk → lanjut entry berikutnya
+      }
+    }
+    if (deliveredIds.length === 0 && readIds.length === 0) return
+    try {
+      // Kumpulkan tenant untuk broadcast (select SEBELUM update — chatId tetap valid
+      // walau row di-purge; dedupe via Set)
+      const tenantByWaId = new Map()
+      const allIds = [...new Set([...deliveredIds, ...readIds])]
+      const rows = await prisma.message.findMany({
+        where: { waMessageId: { in: allIds }, direction: 'out', tenantId: tid },
+        // v4.4.0 fix kontrak FE: handler onMessageStatus (Dashboard) match by
+        // `messageId` (DB id) — pola receipts.js v0.12.9. waMessageId tetap dibawa.
+        select: { id: true, waMessageId: true, tenantId: true, chatId: true },
+      })
+      for (const r of rows) {
+        if (!r.waMessageId) continue
+        if (!tenantByWaId.has(r.waMessageId)) tenantByWaId.set(r.waMessageId, { tenantId: r.tenantId, chatId: r.chatId, dbId: r.id })
+      }
+      // Monotonic dua-tahap: delivered dulu (dari 'sent'), read setelahnya (dari
+      // 'sent'/'delivered') — updateMany = satu query per tahap, bukan per-baris.
+      let deliveredCount = 0
+      let readCount = 0
+      if (deliveredIds.length > 0) {
+        const res = await prisma.message.updateMany({
+          where: { waMessageId: { in: deliveredIds }, direction: 'out', status: { in: ['sent'] }, tenantId: tid },
+          data: { status: 'delivered' },
+        })
+        deliveredCount = res.count
+      }
+      if (readIds.length > 0) {
+        const res = await prisma.message.updateMany({
+          where: { waMessageId: { in: readIds }, direction: 'out', status: { in: ['sent', 'delivered'] }, tenantId: tid },
+          data: { status: 'read' },
+        })
+        readCount = res.count
+      }
+      // Broadcast message_status per pasangan (tenantId, chatId ter-unik) — pola
+      // emitToTenant seperti receipts.js/socket/queue.js. FE update in-place (tanpa refetch).
+      const emitted = new Set()
+      for (const [waId, info] of tenantByWaId) {
+        const wasDelivered = deliveredIds.includes(waId)
+        const wasRead = readIds.includes(waId)
+        if (!wasDelivered && !wasRead) continue
+        // Status final monotonic: read menang bila ada di kedua batch
+        const finalStatus = wasRead ? 'read' : 'delivered'
+        const key = `${info.tenantId}:${info.chatId}:${waId}`
+        if (emitted.has(key)) continue
+        emitted.add(key)
+        broadcast.emitToTenant(info.tenantId, 'message_status', {
+          messageId: info.dbId,
+          waMessageId: waId,
+          chatId: info.chatId,
+          status: finalStatus,
+        })
+      }
+      if (deliveredCount > 0 || readCount > 0) {
+        log(tid, slot, `[v4.4.0] receipts: delivered=${deliveredCount}, read=${readCount}`)
+      }
+    } catch (e) {
+      logErr(tid, slot, 'messages.update (receipts) error:', e.message)
+    }
+  })
+
   return st
 }
 

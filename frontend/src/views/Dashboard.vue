@@ -343,7 +343,8 @@ import { usePresenceStore } from '../stores/presence'
 import { getThemeMode, applyTheme } from '../utils/theme'
 import { useConfirm } from '../utils/confirm'
 // v4.1.3.1 — marker "Tandai belum dibaca" hilang saat chat dibuka / dibalas
-import { remove as manualUnreadRemove } from '../utils/manualUnread'
+// v4.4.0 F2 — take dari banner antrean TANPA buka chat → auto tandai belum dibaca
+import { remove as manualUnreadRemove, add as manualUnreadAdd } from '../utils/manualUnread'
 import ChatListPane from './ChatListPane.vue'
 import ChatDetail from './ChatDetail.vue'
 import FilterChips from '../components/FilterChips.vue'
@@ -1163,14 +1164,16 @@ async function handleTakeNext() {
     const data = await chats.takeNext()
     if (data?.chat) {
       const name = data.chat.contactName || data.chat.contactPhone
-      await selectChat(data.chat)
+      // v4.4.0 F2 — TIDAK auto-buka: chat masuk Mine + marker "belum dibaca"
+      // (dot biru manualUnread, ala WhatsApp). Buka tetap manual via list.
+      manualUnreadAdd(data.chat.id)
       chats.fetchChats(chats.filterParams)
       await chats.fetchQueueCount()
       queueCount.value = chats.queueCount
       toastStore.show({
-        icon: '✅',
+        icon: '📥',
         title: 'Chat diambil',
-        message: `Chat diambil: ${name}`,
+        message: `${name} masuk Mine — ditandai belum dibaca`,
       })
     }
   } catch (e) {
@@ -1255,10 +1258,10 @@ async function removeTag(tagId) {
   }
 }
 
-async function onCreateTag({ name, color }) {
+async function onCreateTag({ name, color, excludeFromQueue }) {
   if (!name.trim()) return
   try {
-    const tag = await chats.createTag(name.trim(), color)
+    const tag = await chats.createTag(name.trim(), color, !!excludeFromQueue)
     // tag_created Socket.IO event handles list sync; tambah manual utk pane
     if (!allTags.value.find(t => t.id === tag.id)) {
       allTags.value.push(tag)
@@ -1804,12 +1807,13 @@ function onTagDeleted(data) {
 function onTagUpdated(data) {
   if (!data.tag) return
   const idx = allTags.value.findIndex(t => t.id === data.tag.id)
-  if (idx !== -1) allTags.value[idx] = { ...allTags.value[idx], name: data.tag.name, color: data.tag.color }
+  // v4.4.0 F3 — spread penuh biar excludeFromQueue ikut ter-sync realtime
+  if (idx !== -1) allTags.value[idx] = { ...data.tag }
   if (currentChat.value?.tags) {
-    currentChat.value.tags.forEach(ct => { if (ct.tag.id === data.tag.id) { ct.tag = { ...ct.tag, name: data.tag.name, color: data.tag.color } } })
+    currentChat.value.tags.forEach(ct => { if (ct.tag.id === data.tag.id) { ct.tag = { ...ct.tag, name: data.tag.name, color: data.tag.color, excludeFromQueue: data.tag.excludeFromQueue } } })
   }
   chats.chats.forEach(c => {
-    if (c.tags) c.tags.forEach(ct => { if (ct.tag.id === data.tag.id) { ct.tag = { ...ct.tag, name: data.tag.name, color: data.tag.color } } })
+    if (c.tags) c.tags.forEach(ct => { if (ct.tag.id === data.tag.id) { ct.tag = { ...ct.tag, name: data.tag.name, color: data.tag.color, excludeFromQueue: data.tag.excludeFromQueue } } })
   })
 }
 

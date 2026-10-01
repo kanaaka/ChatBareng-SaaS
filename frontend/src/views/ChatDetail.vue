@@ -63,6 +63,16 @@
 
       <!-- Quick actions (desktop only, hidden di mobile — kebab menggantikan) -->
       <div class="hidden md:flex items-center gap-1 flex-shrink-0">
+        <!-- v4.4.0 F4 — Resolve desktop di sebelah AI Summary (1:1 open saja — grup
+             tanpa resolve seperti kebab; emit resolve existing → Dashboard handleResolve;
+             mobile tetap via kebab) -->
+        <button
+          v-if="!groupChat && chat.status !== 'resolved'"
+          type="button"
+          @click="$emit('resolve')"
+          class="text-sm px-3 py-1.5 rounded-lg font-medium bg-green-100 text-green-700 hover:bg-green-200"
+          title="Resolve chat"
+        >✓ Resolve</button>
         <button
           v-if="!isMobile"
           type="button"
@@ -183,6 +193,7 @@
             >
               <span :class="['w-3 h-3 rounded-full', tagDotClass(tag.color)]"></span>
               {{ tag.name }}
+              <span v-if="tag.excludeFromQueue" class="ml-auto text-[10px] text-gray-400 bg-gray-100 rounded px-1.5 py-0.5 flex-shrink-0" title="Kontak ber-tag ini dikecualikan dari antrean (silent block)">🚫 antrean</span>
             </div>
           </div>
           <div v-else class="px-3 py-2 text-xs text-gray-400">No tags yet — create one below</div>
@@ -197,6 +208,13 @@
                 :class="['w-4 h-4 rounded-full border-2', tagDotClass(c.value), newTagColor === c.value ? 'border-gray-800' : 'border-transparent']"
               ></button>
             </div>
+            <!-- v4.4.0 F3 — admin: buat tag yang langsung meng-eksklusi kontak dari
+                 antrean (silent block). Toggle tag existing ada di menu filter tag
+                 ChatListPane (PATCH /api/tags/:id). -->
+            <label v-if="auth.isAdmin" class="flex items-center gap-2 mb-2 text-xs text-gray-600 cursor-pointer select-none">
+              <input v-model="newTagExcludeQueue" type="checkbox" class="accent-wa-green" />
+              Kecualikan dari antrean 🚫
+            </label>
             <div class="flex gap-1">
               <input
                 v-model="newTagName"
@@ -494,7 +512,10 @@
         <div class="text-xs text-gray-400 mt-1 flex items-center gap-1">
           {{ formatTime(msg.timestamp) }}
           <span v-if="msg.direction === 'out'">
-            <span v-if="msg.status === 'read'">✓✓</span>
+            <!-- v4.4.0 F1 — centang biru: read = biru (ala WhatsApp); delivered tetap
+                 abu-abu. Status mengalir realtime via socket 'message_status'
+                 (pool.js messages.update → Dashboard onMessageStatus, contract messageId=DB id). -->
+            <span v-if="msg.status === 'read'" class="text-blue-500">✓✓</span>
             <span v-else-if="msg.status === 'delivered'">✓✓</span>
             <span v-else>✓</span>
           </span>
@@ -890,6 +911,8 @@ const attachMenuOpen = ref(false)
 const templateSearch = ref('')
 const newTagName = ref('')
 const newTagColor = ref('blue')
+// v4.4.0 F3 — checkbox "Kecualikan dari antrean" utk tag baru (admin)
+const newTagExcludeQueue = ref(false)
 const isMobile = ref(typeof window !== 'undefined' ? window.innerWidth < 768 : false)
 const showScrollButton = ref(false)
 const composerHeight = ref(72)
@@ -1064,9 +1087,11 @@ const filteredTemplateGroups = computed(() => {
 
 function emitCreateTag() {
   if (!newTagName.value.trim()) return
-  emit('create-tag', { name: newTagName.value.trim(), color: newTagColor.value })
+  // v4.4.0 F3 — bawa flag excludeFromQueue (checkbox admin)
+  emit('create-tag', { name: newTagName.value.trim(), color: newTagColor.value, excludeFromQueue: newTagExcludeQueue.value })
   newTagName.value = ''
   newTagColor.value = 'blue'
+  newTagExcludeQueue.value = false
 }
 
 // v0.2.0 §3.1 — back: router.back(), fallback '/' kalau history kosong

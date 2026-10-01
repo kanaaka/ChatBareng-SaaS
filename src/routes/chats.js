@@ -334,6 +334,10 @@ router.get('/', ...rt, async (req, res) => {
       where.AND = [
         ...(Array.isArray(where.AND) ? where.AND : []),
         { OR: [{ menuState: null }, { menuState: { not: 'awaiting' } }] },
+        // v4.4.0 F3 — PARITAS antrean (invariant v0.13.3: banner count == isi tab
+        // Unassigned): tab juga exclude kontak ber-tag excludeFromQueue — sama
+        // dgn queueWhere() di socket/queue.js (grup sudah di-exclude di AND atas).
+        { NOT: [{ contact: { tags: { some: { tag: { excludeFromQueue: true } } } } }] },
       ]
     } else if (filter === 'all' && req.user.role === 'admin') {
       // admin: semua chat (no extra where)

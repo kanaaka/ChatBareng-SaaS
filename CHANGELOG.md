@@ -1,3 +1,16 @@
+# v4.4.0 — 2026-10-01 (FITUR ×4: Centang Biru + Take-Tanpa-Buka + Tag Exclude-Antrean + Tombol Resolve Desktop)
+
+**Request Kanaka 13:27–13:31 ("langsung semua fitur")** — 4 fitur QA-experience sekaligus (spec `docs/spec-v4.4.0-blue-ticks-take-tag-exclude-resolve.md`, recon-verified line numbers):
+
+- **F1 Centang biru (read receipt outbound):** listener Baileys `messages.update` baru di `src/wa/pool.js` (hanya `fromMe` 1:1, grup TODO) → status `sent→delivered→read` MONOTONIC via 2-tahap `updateMany` (waMessageId tak-unique → tanpa race; status tak pernah turun) → broadcast `message_status` (kontrak lama FE: `messageId` = DB id, pola receipts.js v0.12.9 + extra `waMessageId`). FE: tick `read` jadi **biru** (`text-blue-500`) di bubble outbound; delivered/sent tetap abu. Listener FE `message_status` already-wired (Dashboard onMessageStatus) — in-place update, zero refetch. Caveat WhatsApp: pelanggan matikan read receipt → kita cuma sampai delivered (privacy bawaan WA).
+- **F2 Take-tanpa-buka:** `handleTakeNext()` (banner antrean) TIDAK lagi auto-`selectChat` — chat masuk Mine + **auto tandai belum dibaca** (util manualUnread existing → dot biru + bold di list, ala WhatsApp). Toast baru 📥. Jalur take per-chat (`@take="handleAssign"`) & backend take-next TIDAK berubah.
+- **F3 Silent block via tag:** kolom baru `Tag.excludeFromQueue Boolean @default(false)` (migrasi ADD-ONLY 1 kolom; `2026100107400000_v440_tag_exclude_queue`); `queueWhere()` NOT-array +1 klausa (`contact.tags.some(tag.excludeFromQueue)`) — chat tanpa contact tetap masuk antrean; single source of truth (queue count + tab Unassigned + take-next). Endpoint **PATCH `/api/tags/:id` admin-only** (validasi boolean + emit tag_updated/tags_changed/queue_update); POST /api/tags terima flag juga. FE: checkbox "Kecualikan dari antrean 🚫" saat buat tag (admin), tombol toggle on/off di menu filter tag (ChatListPane, admin), badge 🚫 di ChatDetail tag dropdown & filter menu; tag_updated spread-penuh → sync realtime. Chat ber-tag EXCLUDE tetap tampil normal di list — hanya tidak bisa di-take dari antrean.
+- **F4 Tombol Resolve desktop:** `✓ Resolve` hijau di header Quick Actions (sebelah kiri 🤖 AI Summary), hanya `!groupChat && status!=='resolved'`, emit `resolve` existing → handleResolve tanpa wiring baru; mobile tetap via kebab.
+
+**Catatan teknis:** build FE PASS; migrasi dev diterapkan via copy-DB (lesson 3x subagent: dev server WAJIB `/tmp` copy, BUKAN DB prod — dev server bajakan Dory sudah di-kill 13:39). Prod deploy: backup → `prisma migrate deploy` → restart by-PID → smoke.
+
+---
+
 # v4.3.2 — 2026-10-01 (FITUR + FIX: Media Viewer fullscreen — lightbox + zoom in/out)
 
 **Lapor Kanaka 11:55:** klik gambar pelanggan di chat tidak membuka apa-apa. Akar (recon, bukan tebakan): template ChatDetail.vue memanggil `openLightbox(msg)` (image L460 + sticker L479) tapi fungsi itu **tidak pernah didefinisi** → TypeError → klik mati. Bonus bug: tombol download inline memanggil `downloadMedia(msg)` yang juga tidak pernah ada definisinya. Bonus temuan: modal lightbox di Dashboard.vue pernah dikabelin tapi ref-nya tidak pernah di-set non-null (dead code unreachable).

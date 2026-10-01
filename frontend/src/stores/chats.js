@@ -103,8 +103,9 @@ export const useChatsStore = defineStore('chats', {
       const res = await axios.get(`${API}/api/tags`)
       return res.data.tags
     },
-    async createTag(name, color) {
-      const res = await axios.post(`${API}/api/tags`, { name, color })
+    // v4.4.0 F3 — excludeFromQueue opsional (silent block antrean, admin)
+    async createTag(name, color, excludeFromQueue = false) {
+      const res = await axios.post(`${API}/api/tags`, { name, color, excludeFromQueue })
       return res.data.tag
     },
     async addTagToChat(chatId, tagId) {
