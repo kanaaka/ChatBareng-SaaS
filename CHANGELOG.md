@@ -1,3 +1,17 @@
+# v4.3.2 — 2026-10-01 (FITUR + FIX: Media Viewer fullscreen — lightbox + zoom in/out)
+
+**Lapor Kanaka 11:55:** klik gambar pelanggan di chat tidak membuka apa-apa. Akar (recon, bukan tebakan): template ChatDetail.vue memanggil `openLightbox(msg)` (image L460 + sticker L479) tapi fungsi itu **tidak pernah didefinisi** → TypeError → klik mati. Bonus bug: tombol download inline memanggil `downloadMedia(msg)` yang juga tidak pernah ada definisinya. Bonus temuan: modal lightbox di Dashboard.vue pernah dikabelin tapi ref-nya tidak pernah di-set non-null (dead code unreachable).
+
+**Implementasi** (spec `docs/spec-v4.3.2-media-viewer-lightbox.md` D1–D4, builder Alita langsung per arahan Kanaka "kamu sendiri aja bisa"): 
+- Komponen baru `frontend/src/components/MediaViewer.vue` (Teleport ke body, fullscreen gelap): **tombol Zoom In/Out** (step ×1.25, clamp 1×–8×), indikator persen, reset 1×, wheel-zoom mengikuti kursor, drag-pan saat zoom>1 (pointer events), dblclick toggle 1↔2.5×, Esc/klik ruang kosong = tutup, download, caption pelanggan di bawah gambar, keyboard +/=/−/0/Esc, aria-label. Tanpa dependency baru — vanilla transform + pointer events.
+- ChatDetail.vue: definisikan `openLightbox` + `downloadMedia` + helper `mediaUrl(msg)` (sekalian deduplikasi string `/api/media/${id}?token=` 4×), state `viewerMsg`, mount `<MediaViewer>` di root template.
+- Dashboard.vue: dead-code lightbox + ref `lightboxImage` dihapus (grep-verified: hanya 3 occurrences semuanya dalam blok itu).
+- **Murni frontend — NO schema/backend change, NO npm dep.** Build `public/assets/` ✓ bundle berisi viewer ✓ deploy live (serve 200).
+
+**QA:** (diisi sesudah e2e sanity — lihat di bawah). Smoke prod: index + chunk viewer 200.
+
+---
+
 # v4.3.1 — 2026-10-01 (FIX: DELETE /api/chats/:id 500 P2002 — per-slot contact reality)
 
 **Bug** (temuan QA real-WA Alita 03:27–05:45 WIB, reports/qa-v4.3.0-2026-10-01.md): hapus chat di kebab menu → **500** selamanya bila nomor pelanggan punya chat di ≥1 slot lain tenant yang sama. Akar: helper contact v3.9.2 K1-A masih berasumsi 1 nomor = 1 contact (merge antar-slot), sementara skema per-slot membuat tiap chat punya contact sendiri (`Contact.chatId @unique`) → move paksa ke sibling = P2002 → rollback semua → 500. Repro live: chat 8370 (slot0) + 8371 (slot1), tenant-10.

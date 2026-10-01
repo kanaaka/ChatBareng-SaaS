@@ -293,15 +293,8 @@
     <!-- Spacer mobile homerow (list view saja) -->
     <div v-if="!isMobileDetail" class="md:hidden flex-shrink-0" style="height: calc(56px + env(safe-area-inset-bottom, 0px));"></div>
 
-    <!-- Lightbox modal for image zoom -->
-    <div
-      v-if="lightboxImage"
-      @click="lightboxImage = null"
-      class="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 cursor-pointer"
-    >
-      <button @click.stop="lightboxImage = null" class="absolute top-4 right-4 text-white text-3xl hover:text-gray-300">✕</button>
-      <img :src="lightboxImage" alt="image" @click.stop class="max-w-[90vw] max-h-[90vh] object-contain rounded-lg" />
-    </div>
+    <!-- v4.3.2 — lightbox ditempat Dashboard DIHAPUS (dead code: tidak pernah di-set non-null;
+         viewer sekarang ada di ChatDetail → MediaViewer.vue -->
 
     <!-- Floating contact edit overlay -->
     <ContactEditModal
@@ -411,7 +404,6 @@ const sendingMedia = ref(false)
 const typingUser = ref(null)
 const waStatus = ref({ connected: false, state: 'connecting' })
 const filter = ref('mine') // v0.1.21 — default 'mine'
-const lightboxImage = ref(null)
 const transferUsers = ref([])
 const chatListPaneRef = ref(null)
 const chatDetailRef = ref(null)

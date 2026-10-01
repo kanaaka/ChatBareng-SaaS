@@ -455,7 +455,7 @@
         </div>
         <!-- Media display -->
         <div v-if="msg.mediaType === 'image'" class="mb-1 relative group">
-          <img :src="`/api/media/${msg.id}?token=${auth.token}`" alt="image"
+          <img :src="mediaUrl(msg)" alt="image"
             class="rounded-lg max-w-[300px] w-full h-auto cursor-pointer"
             @click="openLightbox(msg)" />
           <button
@@ -468,18 +468,18 @@
           </button>
         </div>
         <div v-else-if="msg.mediaType === 'video'" class="mb-1">
-          <video controls :src="`/api/media/${msg.id}?token=${auth.token}`" class="rounded-lg max-w-[300px] w-full"></video>
+          <video controls :src="mediaUrl(msg)" class="rounded-lg max-w-[300px] w-full"></video>
         </div>
         <div v-else-if="msg.mediaType === 'audio'" class="mb-1">
-          <audio controls :src="`/api/media/${msg.id}?token=${auth.token}`" class="w-full max-w-[300px]"></audio>
+          <audio controls :src="mediaUrl(msg)" class="w-full max-w-[300px]"></audio>
         </div>
         <div v-else-if="msg.mediaType === 'sticker'" class="mb-1 relative group">
-          <img :src="`/api/media/${msg.id}?token=${auth.token}`" alt="sticker"
+          <img :src="mediaUrl(msg)" alt="sticker"
             class="rounded-lg max-w-[200px] w-full h-auto cursor-pointer"
             @click="openLightbox(msg)" />
         </div>
         <div v-else-if="msg.mediaType === 'document'" class="mb-1">
-          <a :href="`/api/media/${msg.id}?token=${auth.token}`" download class="inline-flex items-center gap-2 text-blue-600 hover:underline text-sm">
+          <a :href="mediaUrl(msg)" download class="inline-flex items-center gap-2 text-blue-600 hover:underline text-sm">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
             </svg>
@@ -758,6 +758,16 @@
         </svg>
       </button>
     </div>
+
+    <!-- v4.3.2 — Media viewer fullscreen (zoom in/out, pan, Esc) -->
+    <MediaViewer
+      v-if="viewerMsg"
+      :src="mediaUrl(viewerMsg)"
+      :caption="viewerMsg.content || ''"
+      :alt="viewerMsg.mediaType || 'media'"
+      :download-url="mediaUrl(viewerMsg)"
+      @close="viewerMsg = null"
+    />
   </div>
 </template>
 
@@ -773,6 +783,8 @@ import ScheduledPanel from '../components/ScheduledPanel.vue'
 import SummaryModal from '../components/SummaryModal.vue'
 // v4.1.3 — Emoji picker composer (FE-only, spec docs/spec-v4.1.3-emoji-picker.md)
 import EmojiPicker from '../components/EmojiPicker.vue'
+// v4.3.2 — MediaViewer fullscreen (lightbox + zoom) — docs/spec-v4.3.2-media-viewer-lightbox.md
+import MediaViewer from '../components/MediaViewer.vue'
 import { getInitials, formatTime, formatPhone, tagColorClass, tagDotClass } from '../utils/format'
 // v0.14.4 — participant action menu (save-contact + PM) via grup API client
 import { groupsClient, friendlyGroupError } from '../utils/groupsApi'
@@ -837,6 +849,24 @@ const emit = defineEmits([
 
 const auth = useAuthStore()
 const router = useRouter()
+// v4.3.2 — Media viewer: state + helper. Fix: `openLightbox` & `downloadMedia`
+// dipanggil template tapi TIDAK PERNAH didefinisi → klik gambar/sticker & tombol
+// download inline = TypeError = mati (lapor Kanaka 11:55).
+const viewerMsg = ref(null)
+function mediaUrl(msg) {
+  return `/api/media/${msg.id}?token=${auth.token}`
+}
+function openLightbox(msg) {
+  viewerMsg.value = msg
+}
+function downloadMedia(msg) {
+  const a = document.createElement('a')
+  a.href = mediaUrl(msg)
+  a.download = ''
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
 // v0.14.4 — toast + state popover peserta grup
 const toast = useToastStore()
 // v3.9.2 K1-A — socket store (refresh badge nomor asal saat status WA berubah)
