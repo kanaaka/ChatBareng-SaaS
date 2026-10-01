@@ -853,6 +853,8 @@ const router = useRouter()
 // dipanggil template tapi TIDAK PERNAH didefinisi → klik gambar/sticker & tombol
 // download inline = TypeError = mati (lapor Kanaka 11:55).
 const viewerMsg = ref(null)
+// LOW-audit fix: pindah chat → tutup viewer (jangan biarkan gambar chat lama nempel)
+watch(() => props.chat, () => { viewerMsg.value = null })
 function mediaUrl(msg) {
   return `/api/media/${msg.id}?token=${auth.token}`
 }

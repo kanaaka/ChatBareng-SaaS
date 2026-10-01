@@ -193,8 +193,23 @@ function onPointerDown(e) {
 }
 function onPointerMove(e) {
   if (!dragging.value) return
-  tx.value = dragStart.tx + (e.clientX - dragStart.x)
-  ty.value = dragStart.ty + (e.clientY - dragStart.y)
+  let nx = dragStart.tx + (e.clientX - dragStart.x)
+  let ny = dragStart.ty + (e.clientY - dragStart.y)
+  // LOW-audit fix: clamp pan — sisakan minimal 120px gambar di viewport,
+  // jangan biarkan gambar tergeser keluar layar sampai hilang.
+  const el = imgEl.value
+  if (el) {
+    const s = scale.value
+    const w = el.offsetWidth * s
+    const h = el.offsetHeight * s
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    const m = 120
+    nx = Math.min(Math.max(nx, m - vw / 2 - w / 2), vw / 2 + w / 2 - m)
+    ny = Math.min(Math.max(ny, m - vh / 2 - h / 2), vh / 2 + h / 2 - m)
+  }
+  tx.value = nx
+  ty.value = ny
 }
 function onPointerUp(e) {
   if (!dragging.value) return

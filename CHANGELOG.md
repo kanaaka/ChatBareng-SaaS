@@ -8,7 +8,7 @@
 - Dashboard.vue: dead-code lightbox + ref `lightboxImage` dihapus (grep-verified: hanya 3 occurrences semuanya dalam blok itu).
 - **Murni frontend — NO schema/backend change, NO npm dep.** Build `public/assets/` ✓ bundle berisi viewer ✓ deploy live (serve 200).
 
-**QA:** (diisi sesudah e2e sanity — lihat di bawah). Smoke prod: index + chunk viewer 200.
+**Audit:** Kimi slim-audit **GO-WITH-NOTES** (0 HIGH/CRITICAL; 3 LOW — semua difix dalam rilis ini: pan clamp, viewer auto-close saat pindah chat, duplikasi emit 'close'). **QA:** e2e-v431 sanity 18 PASS / 2 FAIL terdokumen (S5+S5-b = cek fixture QA prod utuh — memang dihapus pas smoke v4.3.1 pagi ini sesuai plan "fixture + kontak bersih"; bukan regresi v4.3.2 — frontend-only). Smoke prod: index + chunk viewer 200, `Tingkat zoom` ada di bundle, `lightboxImage`=0 di Dashboard chunk, `function openLightbox` terdefinisi. Deploy live disk-serve (public/ static), tanpa restart server. Backlog v4.3.x berikutnya: a11y focus trap, migrasi token media ke header/cookie.
 
 ---
 
