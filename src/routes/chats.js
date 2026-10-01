@@ -787,6 +787,107 @@ router.post('/take-next', ...rt, async (req, res) => {
   }
 })
 
+// ═══ v4.5.0 B — Batch actions (multi-select chat list) ═══
+// Policy per item = MIRROR PERSIS route single-nya:
+//   batch-resolve  ↔ POST /:id/resolve  (assignee ATAU admin; limbo-clear +
+//     snooze-clear + CSAT hook ikut — batch TIDAK melompati jalur single).
+//   batch-read     ↔ POST /:id/read     (canAccessChat; receipts idempoten).
+// Loop server-side; broadcast per item + SATU emitQueueUpdate di akhir resolve.
+// Return jujur: { resolved|marked: [id], skipped: [{chatId, reason}] }.
+const BATCH_MAX_IDS = 100
+function validBatchIds(raw) {
+  return Array.isArray(raw) && raw.length > 0 && raw.length <= BATCH_MAX_IDS && raw.every(n => Number.isInteger(n)) ? [...new Set(raw)] : null
+}
+
+router.post('/batch-resolve', ...rt, async (req, res) => {
+  try {
+    const ids = validBatchIds(req.body?.chatIds)
+    if (!ids) return res.status(400).json({ error: `chatIds harus array 1..${BATCH_MAX_IDS} integer` })
+    const resolvedIds = []
+    const skipped = []
+    for (const chatId of ids) {
+      try {
+        const chat = await prisma.chat.findFirst({ where: { id: chatId, tenantId: req.tenantId } })
+        if (!chat) { skipped.push({ chatId, reason: 'not_found' }); continue }
+        if (chat.status === 'resolved') { skipped.push({ chatId, reason: 'already_resolved' }); continue }
+        if (chat.assignedToId !== req.user.id && req.user.role !== 'admin') { skipped.push({ chatId, reason: 'not_allowed' }); continue }
+        const limboClear = chat.menuState === 'awaiting' ? { menuState: 'done', menuRequestedAt: null } : {}
+        const updated = await prisma.chat.update({
+          where: { id: chat.id },
+          data: { status: 'resolved', resolvedAt: new Date(), resolvedById: req.user.id, messagesBeforeResolve: chat.csMessagesSent || 0, ...limboClear },
+          include: {
+            assignedTo: { select: { id: true, username: true } },
+            tags: { include: { tag: true } },
+          },
+        })
+        await prisma.chatEvent.create({
+          data: { tenantId: req.tenantId, chatId: chat.id, userId: req.user.id, type: 'resolved' },
+        })
+        if (limboClear && Object.keys(limboClear).length) {
+          broadcast.emitToTenant(req.tenantId, 'menu_waiting_update', { count: await menuGateway.countWaiting(req.tenantId) })
+        }
+        if (chat.snoozedUntil) {
+          await prisma.chat.update({
+            where: { id: chat.id },
+            data: { snoozedUntil: null, snoozedBy: null },
+          })
+        }
+        csat.createSurveyAfterResolve(updated, req.user.id).catch((e) =>
+          console.error('[BatchResolve] CSAT hook error (non-fatal):', e.message)
+        )
+        broadcast.emitToTenant(req.tenantId, 'chat_update', {
+          chatId: chat.id,
+          status: 'resolved',
+          resolvedAt: updated.resolvedAt,
+          resolvedById: req.user.id,
+          snoozedUntil: null,
+        })
+        resolvedIds.push(chat.id)
+      } catch (e) {
+        console.error('[BatchResolve] item error:', e.message)
+        skipped.push({ chatId, reason: 'error' })
+      }
+    }
+    queue.emitQueueUpdate(req.tenantId)
+    console.log(`[BatchResolve] user=${req.user.username} resolved=${resolvedIds.length} skipped=${skipped.length}`)
+    res.json({ resolved: resolvedIds, skipped })
+  } catch (e) {
+    console.error('Batch resolve error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.post('/batch-read', ...rt, async (req, res) => {
+  try {
+    const ids = validBatchIds(req.body?.chatIds)
+    if (!ids) return res.status(400).json({ error: `chatIds harus array 1..${BATCH_MAX_IDS} integer` })
+    const markedIds = []
+    const skipped = []
+    for (const chatId of ids) {
+      try {
+        const chat = await prisma.chat.findFirst({ where: { id: chatId, tenantId: req.tenantId } })
+        if (!chat) { skipped.push({ chatId, reason: 'not_found' }); continue }
+        if (!canAccessChat(req.user, chat)) { skipped.push({ chatId, reason: 'not_allowed' }); continue }
+        await prisma.chat.update({ where: { id: chat.id }, data: { unreadCount: 0 } })
+        // v0.12.9 receipts — pola sama dgn /:id/read (gate AppConfig, idempoten)
+        try {
+          await receipts.markIncomingRead(req.tenantId, chat.id)
+        } catch (e) { console.error('[BatchRead] receipts error:', e.message) }
+        broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: chat.id, unreadCount: 0 })
+        markedIds.push(chat.id)
+      } catch (e) {
+        console.error('[BatchRead] item error:', e.message)
+        skipped.push({ chatId, reason: 'error' })
+      }
+    }
+    console.log(`[BatchRead] user=${req.user.username} marked=${markedIds.length} skipped=${skipped.length}`)
+    res.json({ marked: markedIds, skipped })
+  } catch (e) {
+    console.error('Batch read error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // GET /api/chats/:id - chat detail with paginated messages
 router.get('/:id', ...rt, async (req, res) => {
   try {

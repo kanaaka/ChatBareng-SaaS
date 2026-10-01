@@ -1,3 +1,16 @@
+# v4.5.0 — 2026-10-01 (FITUR: Resolve-Tanpa-Lompat + Multi-Select Batch Actions)
+
+**Request Kanaka 16:46-16:49 (GO 16:49)** — dua UX feedback chat-list:
+
+- **A. Resolve-tanpa-lompat:** chat yang TERBUKA saat di-resolve (oleh sendiri maupun agent lain, realtime) → detail langsung ditutup + **TETAP di tab aktif** (tidak ada `changeFilter('resolved')` lagi yang memaksa CS lompat ke tab Resolved — akar "nuansa lompat" di `onChatUpdate` v0.1.21). Toast ✓ + list refresh. Backend resolve route TIDAK berubah.
+- **B. Multi-select + batch actions:** desktop hover avatar → tickbox; klik pertama = masuk mode seleksi (semua row tampil tickbox, gaya WA Web); mobile entry via long-press menu item "📋 Pilih chat" (item "Keluar mode pilih" saat mode aktif). Action bar di bawah Filters: [Semua] n dipilih · [✓ Resolve] [📖 Dibaca] [🔵 Belum dibaca] [✕]. Klik row saat mode seleksi = toggle (bukan open). Select-all = honoring filter aktif + search (filteredChats tampilan, cap list 100 by construction).
+- **Backend endpoint BARU (no-migration):** `POST /api/chats/batch-resolve` (policy per-item = MIRROR persis route single: assignee|admin, limbo-clear v3.9.8 + snooze-clear v0.10.0 + CSAT hook v0.10.0 + ChatEvent 'resolved' + broadcast per item + SATU emitQueueUpdate di akhir) & `POST /api/chats/batch-read` (policy = canAccessChat, receipts v0.12.9 idempoten, broadcast unreadCount:0). Keduanya: validasi array 1-100 int, return jujur `{resolved/marked, skipped:[{chatId,reason}]}` (not_found/not_allowed/already_resolved/error).
+- **Batch unread** = marker personal per-device (util manualUnread v4.1.3.1 — FE-only, sesuai behaviour existing mark-as-unread; server state tidak berubah).
+
+**QA:** smoke copy-DB :5099 (WA_DISABLED=1, prod zero-touch): batch-resolve 3/0 + skip kasus not_allowed + already_resolved, batch-read unreadCount=0 verified, build PASS. Catatan perilaku: admin resolve massal di tab All dapat me-resolve chat milik agent lain (confirm dialog + skipped jujur).
+
+---
+
 # v4.4.0 — 2026-10-01 (FITUR ×4: Centang Biru + Take-Tanpa-Buka + Tag Exclude-Antrean + Tombol Resolve Desktop)
 
 **Request Kanaka 13:27–13:31 ("langsung semua fitur")** — 4 fitur QA-experience sekaligus (spec `docs/spec-v4.4.0-blue-ticks-take-tag-exclude-resolve.md`, recon-verified line numbers):

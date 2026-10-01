@@ -141,6 +141,37 @@
       </div>
     </div>
 
+    <!-- v4.5.0 B — batch action bar (tampil hanya saat mode seleksi) -->
+    <div v-if="selectionMode" class="border-b border-gray-200 px-3 py-2 flex-shrink-0" style="padding-bottom: max(8px, env(safe-area-inset-bottom, 0px))">
+      <div class="flex items-center gap-2 flex-wrap md:flex-nowrap overflow-x-auto no-scrollbar">
+        <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none flex-shrink-0">
+          <input type="checkbox" class="accent-wa-green" :checked="allVisibleSelected" @change="toggleSelectAll" />
+          Semua
+        </label>
+        <span class="text-xs text-gray-500 flex-shrink-0">{{ selectedIds.size }} dipilih</span>
+        <button
+          :disabled="selectedIds.size === 0 || batchBusy"
+          @click="batchResolveSelected"
+          class="text-xs px-2.5 py-1.5 rounded-lg font-medium bg-green-100 text-green-700 hover:bg-green-200 disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+        >✓ Resolve</button>
+        <button
+          :disabled="selectedIds.size === 0 || batchBusy"
+          @click="batchMarkReadSelected"
+          class="text-xs px-2.5 py-1.5 rounded-lg font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+        >📖 Dibaca</button>
+        <button
+          :disabled="selectedIds.size === 0"
+          @click="batchMarkUnreadSelected"
+          class="text-xs px-2.5 py-1.5 rounded-lg font-medium bg-blue-50 text-blue-600 hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+        >🔵 Belum dibaca</button>
+        <button
+          @click="exitSelectionMode"
+          class="text-xs px-2 py-1.5 rounded-lg text-gray-400 hover:bg-gray-100 flex-shrink-0 ml-auto"
+          title="Keluar mode pilih"
+        >✕</button>
+      </div>
+    </div>
+
     <!-- Chat list -->
     <div class="flex-1 overflow-y-auto overscroll-contain">
       <div v-if="loadingChats" class="p-4 text-center text-gray-400">Loading chats...</div>
@@ -154,7 +185,9 @@
         <div
           v-for="chat in filteredChats"
           :key="chat.id"
-          @click="$emit('select', chat)"
+          @click="selectionMode ? toggleChatSelection(chat.id) : $emit('select', chat)"
+          @mouseenter="hoveredChatId = chat.id"
+          @mouseleave="hoveredChatId = null"
           @contextmenu.prevent="openManualUnreadMenu($event, chat)"
           @touchstart.passive="onChatTouchStart($event, chat)"
           @touchend.passive="onChatTouchEnd"
@@ -178,6 +211,18 @@
                     class="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-blue-500 border-2 border-white dark:border-[var(--md-sys-color-surface-container-lowest)]"
                     title="Ditandai belum dibaca"
                   ></span>
+                  <!-- v4.5.0 B — tickbox multi-select: muncul saat hover (desktop) ATAU
+                       mode seleksi aktif ATAU row ini terpilih. Klik = stop (jangan
+                       open chat); klik pertama mengaktifkan selectionMode. Checked =
+                       solid hijau (menimpa dot saat overlap — kembali saat keluar). -->
+                  <button
+                    v-if="(isDesktopVP && hoveredChatId === chat.id) || selectionMode || isChatSelected(chat.id)"
+                    type="button"
+                    @click.stop="toggleChatSelection(chat.id)"
+                    :class="['absolute -top-1 -right-1 w-5 h-5 rounded-full border-2 flex items-center justify-center text-[10px] font-bold transition-colors',
+                      isChatSelected(chat.id) ? 'bg-wa-green border-wa-green text-white' : 'bg-white border-gray-400 text-transparent']"
+                    :title="isChatSelected(chat.id) ? 'Batalkan pilihan' : 'Pilih chat'"
+                  >✓</button>
                 </div>
                 <div class="min-w-0">
                   <div class="flex items-center gap-1">
@@ -281,6 +326,24 @@
       role="menu"
       aria-label="Menu chat"
     >
+      <!-- v4.5.0 B — masuk mode multi-select dari long-press (entry mobile natural) -->
+      <button
+        v-if="manualUnreadTarget && !selectionMode"
+        type="button"
+        class="w-full text-left px-3 py-2.5 text-sm text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)] flex items-center gap-2.5"
+        @click="enterSelectionModeFromMenu"
+      >
+        📋 Pilih chat
+      </button>
+      <!-- v4.5.0 B — saat SUDAH mode seleksi → item jadi keluar mode (clear + exit, spec §2) -->
+      <button
+        v-else-if="manualUnreadTarget && selectionMode"
+        type="button"
+        class="w-full text-left px-3 py-2.5 text-sm text-amber-600 hover:bg-amber-50 font-medium flex items-center gap-2.5"
+        @click="closeManualUnreadMenu(); exitSelectionMode()"
+      >
+        ✕ Keluar mode pilih ({{ selectedIds.size }} terpilih)
+      </button>
       <button
         v-if="manualUnreadTarget && !isManualUnread(manualUnreadTarget.id)"
         type="button"
@@ -311,6 +374,8 @@ import { useChatsStore } from '../stores/chats'
 import { getInitials, formatTime, formatListTime, tagColorClass, tagDotClass, highlightSearchTerm } from '../utils/format'
 // v4.4.0 F3 — toast feedback toggle "kecualikan dari antrean"
 import { useToastStore } from '../stores/toast'
+// v4.5.0 B — confirm dialog batch resolve (pola confirmRelease Dashboard)
+import { useConfirm } from '../utils/confirm'
 // v4.1.3.1 — "Tandai belum dibaca" (FE-only, localStorage cb_manual_unread)
 import { list as manualUnreadList, add as manualUnreadAdd, remove as manualUnreadRemove } from '../utils/manualUnread'
 // v4.1.3.1 hotfix — reactivity: marker harus sync SEGERA (dot hilang saat dibales,
@@ -331,6 +396,8 @@ const auth = useAuthStore()
 const chats = useChatsStore()
 // v4.4.0 F3 — feedback toggle tag exclude
 const toastStore = useToastStore()
+// v4.5.0 B — confirm dialog
+const { confirmAction } = useConfirm()
 
 const search = ref('')
 const loadingChats = computed(() => chats.loadingChats)
@@ -635,6 +702,105 @@ async function toggleTagExclude(tag) {
       message: e.response?.data?.error || e.message,
     })
   }
+}
+
+// ═══ v4.5.0 B — multi-select + batch actions ═══
+const selectionMode = ref(false)
+const selectedIds = ref(new Set())
+const hoveredChatId = ref(null)
+const batchBusy = ref(false)
+// tickbox hover = desktop viewport saja (mobile: entry via long-press menu)
+const isDesktopVP = ref(typeof window !== 'undefined' ? window.innerWidth >= 768 : true)
+
+function isChatSelected(chatId) {
+  return selectedIds.value.has(chatId)
+}
+function toggleChatSelection(chatId) {
+  if (chatId == null) return
+  if (selectedIds.value.has(chatId)) selectedIds.value.delete(chatId)
+  else selectedIds.value.add(chatId)
+  if (selectedIds.value.size === 0) selectionMode.value = false
+}
+function exitSelectionMode() {
+  selectionMode.value = false
+  selectedIds.value = new Set()
+}
+const allVisibleSelected = computed(() =>
+  filteredChats.value.length > 0 && filteredChats.value.every(c => selectedIds.value.has(c.id))
+)
+function toggleSelectAll() {
+  if (allVisibleSelected.value) {
+    selectedIds.value = new Set()
+  } else {
+    // Select-all = SEMUA chat yang TAMPIL di list — honoring filter aktif + search
+    // (filteredChats); server list sendiri di-cap 100 → by construction ≤100.
+    selectionMode.value = true
+    selectedIds.value = new Set(filteredChats.value.slice(0, 100).map(c => c.id))
+  }
+}
+function enterSelectionModeFromMenu() {
+  const chat = manualUnreadTarget.value
+  closeManualUnreadMenu()
+  if (!chat?.id || selectionMode.value) return
+  selectionMode.value = true
+  selectedIds.value.add(chat.id)
+}
+
+async function batchResolveSelected() {
+  const ids = [...selectedIds.value]
+  if (!ids.length || batchBusy.value) return
+  const ok = await confirmAction({
+    title: 'Resolve chat terpilih?',
+    message: `${ids.length} chat akan di-resolve. Chat milik agent lain / yang tidak boleh kamu akses akan dilewati.`,
+    confirmText: 'Resolve',
+    danger: false,
+  })
+  if (!ok) return
+  batchBusy.value = true
+  try {
+    const data = await chats.batchResolve(ids)
+    const n = (data.resolved || []).length
+    const skipped = data.skipped || []
+    const m = skipped.length
+    const skipNote = m === 0 ? '' : ` — ${m} dilewati (${skipped[0]?.reason === 'not_allowed' ? 'chat agent lain' : skipped[0]?.reason || 'tidak bisa'})`
+    toastStore.show({ icon: '✓', title: 'Batch resolve', message: `${n} chat resolved${skipNote}` })
+    await fetchChatsWithFilters()
+    exitSelectionMode()
+  } catch (e) {
+    toastStore.show({ icon: '⚠️', title: 'Batch resolve gagal', message: e.response?.data?.error || e.message })
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+async function batchMarkReadSelected() {
+  const ids = [...selectedIds.value]
+  if (!ids.length || batchBusy.value) return
+  batchBusy.value = true
+  try {
+    const data = await chats.batchMarkRead(ids)
+    const n = (data.marked || []).length
+    const m = (data.skipped || []).length
+    toastStore.show({ icon: '📖', title: 'Batch dibaca', message: m === 0 ? `${n} chat ditandai dibaca` : `${n} dibaca, ${m} dilewati` })
+    await fetchChatsWithFilters()
+    exitSelectionMode()
+  } catch (e) {
+    toastStore.show({ icon: '⚠️', title: 'Gagal', message: e.response?.data?.error || e.message })
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+function batchMarkUnreadSelected() {
+  const ids = [...selectedIds.value]
+  if (!ids.length) return
+  for (const id of ids) manualUnreadAdd(id)
+  toastStore.show({
+    icon: '🔵',
+    title: 'Batch belum dibaca',
+    message: `${ids.length} chat ditandai belum dibaca (marker personal perangkat ini)`,
+  })
+  exitSelectionMode()
 }
 
 // Public method untuk parent: changeFilter dipanggil dari FilterChips

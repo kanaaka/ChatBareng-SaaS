@@ -99,6 +99,15 @@ export const useChatsStore = defineStore('chats', {
       const res = await axios.post(`${API}/api/chats/${chatId}/resolve`)
       return res.data
     },
+    // v4.5.0 B — batch actions (multi-select)
+    async batchResolve(chatIds) {
+      const res = await axios.post(`${API}/api/chats/batch-resolve`, { chatIds })
+      return res.data
+    },
+    async batchMarkRead(chatIds) {
+      const res = await axios.post(`${API}/api/chats/batch-read`, { chatIds })
+      return res.data
+    },
     async fetchTags() {
       const res = await axios.get(`${API}/api/tags`)
       return res.data.tags

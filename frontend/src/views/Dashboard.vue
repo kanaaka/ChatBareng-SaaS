@@ -1636,32 +1636,22 @@ function onChatUpdate(data) {
       chats.fetchChats(chats.filterParams)
     }
 
-    // v0.1.21 — Real-time reaksi resolved: chat yang dibuka jadi resolved
+    // v4.5.0 A — Resolve-tanpa-lompat (feedback Kanaka 16:46): SEMUA role —
+    // detail yang terbuka langsung ditutup (optimistis) + TETAP di tab aktif.
+    // changeFilter('resolved') dihapus (tidak ada lompatan tab lagi; chat masih
+    // bisa ditemukan di tab Resolved). List refresh lewat blok v0.1.27 di bawah
+    // (chat keluar dari Mine segera; admin di All tetap lihat status via updateChat).
     if (data.status === 'resolved' && currentChat.value) {
       const chatName = currentChat.value.contactName || currentChat.value.contactPhone
-      const wasMine = currentChat.value.assignedToId === auth.user.id
-      if (!auth.isAdmin) {
-        // Keluar dari Mine → pindah ke tab Resolved + tutup detail
-        if (wasMine) {
-          const wasMobileDetail = isMobileDetail.value
-          currentChat.value = null
-          currentMessages.value = []
-          if (wasMobileDetail) router.replace('/')
-          changeFilter('resolved')
-        }
-        toastStore.show({
-          icon: '✓',
-          title: 'Chat resolved',
-          message: `Chat ${chatName} resolved`,
-        })
-      } else {
-        toastStore.show({
-          icon: '✓',
-          title: 'Chat resolved',
-          message: `Chat ${chatName} resolved`,
-        })
-        chats.fetchChats(chats.filterParams)
-      }
+      const wasMobileDetail = isMobileDetail.value
+      currentChat.value = null
+      currentMessages.value = []
+      if (wasMobileDetail) router.replace('/')
+      toastStore.show({
+        icon: '✓',
+        title: 'Chat resolved',
+        message: `Chat ${chatName} resolved`,
+      })
     }
   }
   // v0.1.27 — realtime resolve: kalau chat belum ada di snapshot list (admin nunggu
