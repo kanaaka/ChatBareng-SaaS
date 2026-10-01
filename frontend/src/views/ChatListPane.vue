@@ -717,9 +717,15 @@ function isChatSelected(chatId) {
 }
 function toggleChatSelection(chatId) {
   if (chatId == null) return
-  if (selectedIds.value.has(chatId)) selectedIds.value.delete(chatId)
-  else selectedIds.value.add(chatId)
-  if (selectedIds.value.size === 0) selectionMode.value = false
+  if (selectedIds.value.has(chatId)) {
+    selectedIds.value.delete(chatId)
+    if (selectedIds.value.size === 0) selectionMode.value = false
+  } else {
+    // v4.5.0 audit M-1 — klik tickbox PERTAMA (apapun row-nya) langsung mengunci
+    // selectionMode: baris berubah jadi toggle + action bar muncul (spec B.2).
+    selectionMode.value = true
+    selectedIds.value.add(chatId)
+  }
 }
 function exitSelectionMode() {
   selectionMode.value = false
@@ -731,6 +737,8 @@ const allVisibleSelected = computed(() =>
 function toggleSelectAll() {
   if (allVisibleSelected.value) {
     selectedIds.value = new Set()
+    // v4.5.0 audit L-3 — de-select semua = keluar mode (konsisten dgn toggle row)
+    selectionMode.value = false
   } else {
     // Select-all = SEMUA chat yang TAMPIL di list — honoring filter aktif + search
     // (filteredChats); server list sendiri di-cap 100 → by construction ≤100.

@@ -848,7 +848,8 @@ router.post('/batch-resolve', ...rt, async (req, res) => {
         skipped.push({ chatId, reason: 'error' })
       }
     }
-    queue.emitQueueUpdate(req.tenantId)
+    // v4.5.0 audit L-2 — tidak ada yang berubah antrean → skip broadcast sia-sia
+    if (resolvedIds.length) queue.emitQueueUpdate(req.tenantId)
     console.log(`[BatchResolve] user=${req.user.username} resolved=${resolvedIds.length} skipped=${skipped.length}`)
     res.json({ resolved: resolvedIds, skipped })
   } catch (e) {

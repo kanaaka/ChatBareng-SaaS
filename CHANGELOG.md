@@ -9,6 +9,8 @@
 
 **QA:** smoke copy-DB :5099 (WA_DISABLED=1, prod zero-touch): batch-resolve 3/0 + skip kasus not_allowed + already_resolved, batch-read unreadCount=0 verified, build PASS. Catatan perilaku: admin resolve massal di tab All dapat me-resolve chat milik agent lain (confirm dialog + skipped jujur).
 
+**Audit:** Kimi code-audit **GO-WITH-NOTES** (0 CRITICAL/HIGH; 1 MEDIUM + 6 LOW). Difix dalam rilis: M-1 (klik tickbox first-click langsung meng-unlock selectionMode — action bar muncul + row jadi toggle, sesuai spec/klaim commit); L-2 (emitQueueUpdate di-skip bila tidak ada chat yang resolved); L-3 (de-select semua via "Semua" ikut keluar mode — konsisten toggle per-row). L-1 (batch sequential N=100) = acceptable, catat monitoring; L-4/L-5/L-6 = cosmetic/policy notes. A PASS penuh (race handleResolve×echo-socket aman, wasMine zero-sisa, tidak ada regresi blok unassign/transfer/snooze di handler sama); B PASS (route ordering benar, tenant-scoping per item, policy mirror persis, Vue 3.5.42 Set-reactivity aman).
+
 ---
 
 # v4.4.0 — 2026-10-01 (FITUR ×4: Centang Biru + Take-Tanpa-Buka + Tag Exclude-Antrean + Tombol Resolve Desktop)
