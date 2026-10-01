@@ -1,3 +1,14 @@
+# v4.3.1 — 2026-10-01 (FIX: DELETE /api/chats/:id 500 P2002 — per-slot contact reality)
+
+**Bug** (temuan QA real-WA Alita 03:27–05:45 WIB, reports/qa-v4.3.0-2026-10-01.md): hapus chat di kebab menu → **500** selamanya bila nomor pelanggan punya chat di ≥1 slot lain tenant yang sama. Akar: helper contact v3.9.2 K1-A masih berasumsi 1 nomor = 1 contact (merge antar-slot), sementara skema per-slot membuat tiap chat punya contact sendiri (`Contact.chatId @unique`) → move paksa ke sibling = P2002 → rollback semua → 500. Repro live: chat 8370 (slot0) + 8371 (slot1), tenant-10.
+
+**Fix** (commit `6f0c709a`, builder Dory, spec docs/spec-v4.3.1-chat-delete-500-p2002.md D1–D7 locked, auditor Kimi GO — A/B git-stash bukti 4 FAIL v421 = pre-existing drift data):
+- `detachContactKeepIdentity()`: sibling ada + punya contact sendiri → JANGAN move, detach sendiri `chatId:null` (D2); sibling kosong → move (D3); no sibling → orphan (D4).
+- `deleteContactOnlyIfNotShared()`: sibling self-sufficient → hapus contact chat ini (intent admin dihormati); sibling kosong → detach eksplisit; no sibling → hapus (D5).
+- **Zero schema / endpoint / behaviour change** selain 500→200: 2 chat per-slot tetap terpisah, routing balasan tetap dari nomor slot asal. D6: caller audit — kedua helper internal, hanya di-DELETE handler. D7: race P2002 tetap rollback bersih (side-effect berbahaya semua post-commit).
+
+**QA:** e2e-v431 baru 20/20 PASS (S1–S4 spec + S5 sanity fixture) di copy-DB :5099 (WA_DISABLED=1, prod zero-touch); regresi e2e-v430 53/53 + v420 57/57 + v4121 61/61 PASS, v421 50/54 (4 FAIL = pre-existing drift data tenant-8, bukan kaitan fix); deploy prod by-watchdog-restart 06:13 (PID 34461) + smoke DELETE live di fixture prod → 200 ×2, chats+contacts bersih.
+
 # v4.3.0 — 2026-09-30 (FITUR: Greeting Mode Switch — Teks | CB-AI | Menu per-slot + fix one-way door)
 
 **QA Kanaka 14:12 & 14:21:** (1) slot dgn AR teks aktif tidak punya jalan ke Menu Gateway (radio legacy disabled + dropdown MG disabled = pintu tertutup dua arah); (2) begitu menu nyala, outside-hours tidak bisa dinyalakan lagi (PUT slot 409 whole-body) — night messages dijawab sunyi. Akar: guard v3.9.4 over-block (outsideHours masuk predikat blokir) + proteksi menu-managed memblokir seluruh body. Runtime sudah dukung koeksistensi (D5 v0.13.0: luar jam = away text, jam kerja = menu).
