@@ -617,6 +617,9 @@ async function toggleTagExclude(tag) {
     const updated = res.data.tag
     const idx = allTags.value.findIndex(t => t.id === tag.id)
     if (idx !== -1) allTags.value[idx] = { ...updated }
+    // v4.4.0 audit M1 — refetch list: chat yang baru ter-exclude/ter-izinkan
+    // langsung hilang/muncul di tab Unassigned (paritas banner == tab).
+    fetchChatsWithFilters()
     toastStore.show({
       icon: '🚫',
       title: 'Antrean tag',

@@ -19,6 +19,12 @@
  */
 const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
+// v4.4.0 audit L6 — HARD GUARD: script ini mutasikan config via API. Salah set
+// E2E_BASE ke prod = kerusakan data produksi. Tolak keras bila BASE menyebut 5047.
+if (String(BASE).includes('5047')) {
+  console.error('FATAL: E2E_BASE menunjuk port 5047 (PROD) — dilarang keras. Jalankan tanpa E2E_BASE (default :5099).')
+  process.exit(1)
+}
 const COPY_DB = 'file:/tmp/saas-v3-e2e.db'
 const JID = '62881080702624@s.whatsapp.net' // nomor OpenClaw sebenarnya (koreksi Kanaka 05:21 — JANGAN pakai 6282257176832; itu nomor lama/gak bener)
 require(REPO + '/node_modules/dotenv').config({ path: REPO + '/.env' })

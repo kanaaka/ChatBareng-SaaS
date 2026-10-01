@@ -506,6 +506,9 @@ async function connectTenant(tenantId, opts = {}) {
         // v4.4.0 scope: 1:1 only — fromMe + bukan grup. Pesan grup → TODO di atas.
         if (key.fromMe !== true) continue
         if (typeof key.remoteJid !== 'string' || key.remoteJid.endsWith('@g.us')) continue
+        // v4.4.0 audit L2 — defense-in-depth: newsletter/status tak pernah jadi row
+        // Message (arsip channel), tapi filter eksplisit → handler tanpa query sia-sia.
+        if (key.remoteJid.endsWith('@newsletter') || key.remoteJid === 'status@broadcast') continue
         if (!key.id) continue
         if (statusNum === 3) deliveredIds.push(key.id)
         else if (statusNum >= 4) readIds.push(key.id)
@@ -524,11 +527,11 @@ async function connectTenant(tenantId, opts = {}) {
         where: { waMessageId: { in: allIds }, direction: 'out', tenantId: tid },
         // v4.4.0 fix kontrak FE: handler onMessageStatus (Dashboard) match by
         // `messageId` (DB id) — pola receipts.js v0.12.9. waMessageId tetap dibawa.
-        select: { id: true, waMessageId: true, tenantId: true, chatId: true },
+        select: { id: true, waMessageId: true, tenantId: true, chatId: true, status: true },
       })
       for (const r of rows) {
         if (!r.waMessageId) continue
-        if (!tenantByWaId.has(r.waMessageId)) tenantByWaId.set(r.waMessageId, { tenantId: r.tenantId, chatId: r.chatId, dbId: r.id })
+        if (!tenantByWaId.has(r.waMessageId)) tenantByWaId.set(r.waMessageId, { tenantId: r.tenantId, chatId: r.chatId, dbId: r.id, currentStatus: r.status })
       }
       // Monotonic dua-tahap: delivered dulu (dari 'sent'), read setelahnya (dari
       // 'sent'/'delivered') — updateMany = satu query per tahap, bukan per-baris.
@@ -557,6 +560,13 @@ async function connectTenant(tenantId, opts = {}) {
         if (!wasDelivered && !wasRead) continue
         // Status final monotonic: read menang bila ada di kedua batch
         const finalStatus = wasRead ? 'read' : 'delivered'
+        // v4.4.0 audit L1 — ACK duplikat (mis. DELIVERY datang lagi setelah READ):
+        // DB tetap aman (filter monotonic), tapi emit jangan menurunkan tick FE —
+        // skip bila status final TIDAK lebih tinggi dari status row saat pre-update.
+        const STATUS_RANK = { sent: 1, delivered: 2, read: 3 }
+        const finalRank = STATUS_RANK[finalStatus] || 0
+        const currentRank = STATUS_RANK[info.currentStatus] || 0
+        if (finalRank <= currentRank) continue
         const key = `${info.tenantId}:${info.chatId}:${waId}`
         if (emitted.has(key)) continue
         emitted.add(key)

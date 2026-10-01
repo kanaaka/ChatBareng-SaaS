@@ -53,7 +53,9 @@ router.post('/', ...rt, async (req, res) => {
         color: tagColor,
         createdBy: req.user.id,
         // v4.4.0 F3 — buat tag yang langsung meng-eksklusi kontak dari antrean
-        excludeFromQueue: excludeFromQueue === true,
+        // v4.4.0 audit L4 — flag hanya dihormati utk admin (konsisten dgn PUT/PATCH
+        // admin-only; POST biasa oleh CS tetap boleh buat tag, flag diabaikan).
+        excludeFromQueue: excludeFromQueue === true && req.user.role === 'admin',
       },
     })
 
@@ -141,6 +143,8 @@ router.put('/:id', ...rt, requireAdmin, async (req, res) => {
 router.patch('/:id', ...rt, requireAdmin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10)
+    // v4.4.0 audit L3 — :id bukan angka → 400 bersih (bukan 500 dari Prisma)
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid tag id' })
     const tagRow = await prisma.tag.findFirst({ where: { id, tenantId: req.tenantId } })
     if (!tagRow) return res.status(404).json({ error: 'Tag not found' })
 
@@ -196,6 +200,9 @@ router.delete('/:id', ...rt, requireAdmin, async (req, res) => {
     }
     // v0.13.4 — refresh contactCount chip di Contacts.vue tanpa polling
     broadcast.emitToTenant(req.tenantId, 'tags_changed', { reason: 'tag_deleted', tagId: id })
+    // v4.4.0 audit M2 — hapus tag yang meng-exclude kontak = chat kembali masuk
+    // antrean → banner WAJIB refresh (kalau tag biasa, count tetap — no-op murah).
+    queue.emitQueueUpdate(req.tenantId)
     res.json({ success: true })
   } catch (e) {
     console.error('Delete tag error:', e)

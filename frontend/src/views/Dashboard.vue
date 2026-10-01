@@ -1808,6 +1808,7 @@ function onTagUpdated(data) {
   if (!data.tag) return
   const idx = allTags.value.findIndex(t => t.id === data.tag.id)
   // v4.4.0 F3 — spread penuh biar excludeFromQueue ikut ter-sync realtime
+  const prevExclude = idx !== -1 ? allTags.value[idx]?.excludeFromQueue : undefined
   if (idx !== -1) allTags.value[idx] = { ...data.tag }
   if (currentChat.value?.tags) {
     currentChat.value.tags.forEach(ct => { if (ct.tag.id === data.tag.id) { ct.tag = { ...ct.tag, name: data.tag.name, color: data.tag.color, excludeFromQueue: data.tag.excludeFromQueue } } })
@@ -1815,6 +1816,11 @@ function onTagUpdated(data) {
   chats.chats.forEach(c => {
     if (c.tags) c.tags.forEach(ct => { if (ct.tag.id === data.tag.id) { ct.tag = { ...ct.tag, name: data.tag.name, color: data.tag.color, excludeFromQueue: data.tag.excludeFromQueue } } })
   })
+  // v4.4.0 audit M1 — flag exclude berubah → refetch list (chat masuk/keluar
+  // antrean; paritas banner == tab Unassigned tanpa nunggu event lain).
+  if (prevExclude !== undefined && prevExclude !== data.tag.excludeFromQueue) {
+    chats.fetchChats(chats.filterParams)
+  }
 }
 
 // Global keyboard shortcuts (Ctrl+F, Escape)

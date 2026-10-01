@@ -9,6 +9,8 @@
 
 **Catatan teknis:** build FE PASS; migrasi dev diterapkan via copy-DB (lesson 3x subagent: dev server WAJIB `/tmp` copy, BUKAN DB prod — dev server bajakan Dory sudah di-kill 13:39). Prod deploy: backup → `prisma migrate deploy` → restart by-PID → smoke.
 
+**Audit:** Kimi code-audit **GO-WITH-NOTES** (0 CRITICAL/HIGH; 3 MEDIUM + 7 LOW). Difix dalam rilis: M1 (refetch list chat saat flag exclude berubah — toggle admin & realtime tag_updated → invariant banner==tab tetap); M2 (DELETE tag exclude → emit queue_update = chat kembali ke antrean dgn banner segar); L1 (emit guard monotonic — ACK duplikat tak menurunkan tick FE); L2 (filter eksplisit @newsletter/status@broadcast); L3 (PATCH id NaN → 400); L4 (POST flag exclude diabaikan utk non-admin — konsisten admin-only); L6 (qa-matrix8 hard-guard port 5047). M3 = catatan produk: tag via "Add tag" chat (ChatTag) tidak memengaruhi antrean by design (spec F3 = tag KONTAK/ContactTag) — mirror opsional di-backlog v4.4.x; L5/L7 note-only.
+
 ---
 
 # v4.3.2 — 2026-10-01 (FITUR + FIX: Media Viewer fullscreen — lightbox + zoom in/out)
