@@ -1,0 +1,14 @@
+/* Font self-host: import eksplisit via Vite (lebih andal daripada url() di CSS).
+   Subset latin, weight 400/500/600/700/800, font-display swap (spec §3). */
+@import '@fontsource/roboto/latin-400.css';
+@import '@fontsource/roboto/latin-500.css';
+@import '@fontsource/roboto/latin-600.css';
+@import '@fontsource/roboto/latin-700.css';
+@import '@fontsource/roboto/latin-800.css';
+
+@import './styles/tokens.css';
+@import './styles/components.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

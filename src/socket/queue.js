@@ -20,7 +20,16 @@ function queueWhere(tenantId) {
     OR: [{ menuState: null }, { menuState: { not: 'awaiting' } }],
     // v0.14.9 (v3 port) — exclude grup dari antrean: waJid endsWith '@g.us'
     // (id primary key selalu terisi → NOT bebas jebakan NULL; waJid juga not-null).
-    NOT: { waJid: { endsWith: '@g.us' } },
+    // v4.4.0 F3 — exclude JUGA chat yang kontaknya ber-tag excludeFromQueue=true
+    // (silent block: chat tetap tampil normal di list, hanya tidak masuk antrean
+    // untuk di-take). NOT array = grup ATAU kontak ber-tag. Chat TANPA contact
+    // (Chat.contact Contact? nullable) tidak match inner relation → TETAP masuk
+    // antrean (by design). Yang membatasi = tag level KONTAK (ContactTag);
+    // tag level chat (ChatTag) tidak memengaruhi antrean.
+    NOT: [
+      { waJid: { endsWith: '@g.us' } },
+      { contact: { tags: { some: { tag: { excludeFromQueue: true } } } } },
+    ],
   }
 }
 
