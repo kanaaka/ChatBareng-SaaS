@@ -4,6 +4,7 @@
   "description": "WhatsApp CS Hub \u2014 multi-agent WhatsApp customer service interface",
   "main": "src/server.js",
   "scripts": {
+    "prestart": "node scripts/prestart-migrate.js",
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "seed": "node prisma/seed.js",
