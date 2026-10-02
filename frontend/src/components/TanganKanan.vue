@@ -455,6 +455,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 import { useConfirm } from '../utils/confirm'
+import { fmtBytes } from '../utils/format' // v4.6.1 — shared byte formatter (KB→MB→GB→TB)
 import { useSocketStore } from '../stores/socket'
 import { useAnnouncementsStore } from '../stores/announcements'
 
@@ -522,12 +523,7 @@ const quotaColor = computed(() => {
   return 'var(--md-sys-color-primary)' // netral — masih banyak
 })
 
-function fmtBytes(n) {
-  const num = Number(n) || 0
-  if (num >= 1024 * 1024 * 1024) return (num / (1024 * 1024 * 1024)).toFixed(1).replace('.', ',') + ' GB'
-  if (num >= 1024 * 1024) return Math.round(num / (1024 * 1024)) + ' MB'
-  return num + ' B'
-}
+// v4.6.1 — fmtBytes lokal dihapus → shared dari utils/format (ladder KB/MB/GB/TB)
 const pendingImageFile = ref(null) // v0.1.21 — File object yang nunggu modal
 const toast = ref(null)
 let toastTimer = null
