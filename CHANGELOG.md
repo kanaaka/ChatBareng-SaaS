@@ -1,3 +1,18 @@
+# v4.6.3 — 2026-10-02 (HARDENING: prestart-migrate GUARD v2 — self-heal + proses DDL-share utk IT)
+
+**Latar:** feedback tim IT (16:36 — via log server + pesan): minta **DDL di-share tiap penambahan kolom** (server menjalankan DB miliknya sendiri, mau apply manual). Plus temuan interaksi guard v1: jalur `migrate deploy` bisa crash "duplicate column" bila kolom pernah ditambah manual dan riwayat migrasi tidak konsisten.
+
+**Perubahan (`scripts/prestart-migrate.js` → v2):**
+- Jalur sinkron UNIFIKASI: selalu `db push --skip-generate` dulu (idempoten, additive-only; destructive ditolak prisma = LOUD) → lalu rekonsiliasi riwayat: folder migrasi yang belum tercatat di `_prisma_migrations` → `migrate resolve --applied` (jujur — langkah sebelumnya menyamakan DB ke schema.prisma = superset semua migrasi)
+- Jalur deploy-pertama utk DB ber-riwayat DIHAPUS (sumber crash); `deploy` tetap utk install fresh
+- Hasil: SEMUA bentuk DB (pack / hand-built / pasca-DDL-manual) boot mulus + idempoten — gak ada lagi skenario "DDL manual tadi, server nolak start besok"
+
+**Proses DDL-share (standing, atas permintaan IT):** dokumen baru `docs/SCHEMA-CHANGES.md` — setiap rilis yang mengubah skema WAJIB punya entri + DDL eksak di file ini, dan PR-nya WAJIB membawa blok DDL.
+
+**QA (replika DB; 3/3 + E2E):** (1) kondisi crash v1 (kolom sudah ada manual, riwayat minus v4.4.0) → guard v2 self-heal: resolve saja, exit 0, run ke-2 idempoten; (2) kondisi broken persis server IT (kolom hilang + riwayat minus v4.4.0) → kolom ditambah + tercatat; (3) DB tanpa tabel riwayat → db push sinkron; E2E `npm start` → guard jalan otomatis → boot → `queue-count` 200 + `take-next` 200.
+
+---
+
 # v4.6.2 — 2026-10-02 (FIX INFRA: prestart auto-migrate guard — bunuh epidemic 500 silent version-skip)
 
 **Incident (server hosting IT, wa.labparahita.co.id):** kode v4.5.0+ jalan di atas DB era v4.3.1 yang belum di-migrasi → `GET /api/chats/queue-count` & `POST /take-next` = **500 "column excludeFromQueue does not exist"** → banner claim agent tidak pernah muncul (lapor Kanaka 15:35 & checklist 15:41–15:48; root cause dikonfirmasi via live probe 16:05 dgn kredensial dari Kanaka). Skip migrasi = gagal SILENT — tidak ada yang error sampai fitur yang butuh kolom baru dipakai.
