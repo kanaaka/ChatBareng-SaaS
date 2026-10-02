@@ -349,9 +349,17 @@
       <!-- v0.14.4 — overlay transparan utk tutup popover peserta (klik-luar) -->
       <div v-if="senderMenu.msgId" class="fixed inset-0 z-10" @click.stop="closeSenderMenu"></div>
 
-      <div
-        v-for="msg in messages"
-        :key="msg.id"
+      <!-- v4.6.0 — date separator ala WhatsApp: pill sebelum bubble PERTAMA tiap hari.
+           v-for pindah ke <template> + index: ganti hari vs msg sebelumnya → pill
+           (Hari ini / Kemarin / Sunda-nama-hari / DD/MM/YYYY id-ID). Frontend-only. -->
+      <template v-for="(msg, mIdx) in messages" :key="msg.id">
+        <div
+          v-if="showDateSeparator(messages, mIdx)"
+          class="flex justify-center w-full my-1"
+        >
+          <span class="px-3 py-1 rounded-full bg-gray-200 text-gray-600 text-xs select-none">{{ dateSeparatorLabel(msg.timestamp) }}</span>
+        </div>
+        <div
         :id="'msg-' + msg.id"
         :class="['group relative w-fit max-w-[70%] rounded-lg px-4 py-2 transition-colors duration-1000 break-words overflow-wrap-anywhere min-w-0', msg.direction === 'in' ? 'bg-white self-start' : 'bg-wa-light self-end ml-auto', highlightedMsgId === msg.id ? 'ring-2 ring-yellow-400 bg-yellow-50' : '']"
       >
@@ -520,7 +528,8 @@
             <span v-else>✓</span>
           </span>
         </div>
-      </div>
+        </div>
+      </template>
     </div>
 
     <!-- Scroll-to-bottom floating button (mobile §3.4 + desktop juga berguna) -->
@@ -807,6 +816,31 @@ import EmojiPicker from '../components/EmojiPicker.vue'
 // v4.3.2 — MediaViewer fullscreen (lightbox + zoom) — docs/spec-v4.3.2-media-viewer-lightbox.md
 import MediaViewer from '../components/MediaViewer.vue'
 import { getInitials, formatTime, formatPhone, tagColorClass, tagDotClass } from '../utils/format'
+// v4.6.0 — Date Separator (ala WhatsApp): HARI INI → "Hari Ini"; KEMARIN → "Kemarin";
+// ≤6 HARI → nama hari ("Senin"); >6 hari → "DD/MM/YY" (id-ID, 2-digit). Tanggal = zona
+// waktu VIEWER (browser) — perilaku sama dgn WA Web. Tidak ada
+// backend/schema — murni layer tampilan.
+function vDate(ts) { return new Date(ts) }
+function showDateSeparator(list, idx) {
+  const cur = vDate(list[idx]?.timestamp)
+  if (isNaN(cur.getTime())) return false
+  if (idx === 0) return true
+  const prev = vDate(list[idx - 1]?.timestamp)
+  if (isNaN(prev.getTime())) return true
+  return cur.getDate() !== prev.getDate() || cur.getMonth() !== prev.getMonth() || cur.getFullYear() !== prev.getFullYear()
+}
+function dateSeparatorLabel(ts) {
+  const d = vDate(ts)
+  if (isNaN(d.getTime())) return ''
+  const now = new Date()
+  const same = (a, b) => a.getDate() === b.getDate() && a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear()
+  if (same(d, now)) return 'Hari Ini'
+  const yst = new Date(now); yst.setDate(now.getDate() - 1)
+  if (same(d, yst)) return 'Kemarin'
+  const diffDays = Math.floor((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000)
+  if (diffDays <= 6) return d.toLocaleDateString('id-ID', { weekday: 'long' })
+  return d.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: '2-digit' })
+}
 // v0.14.4 — participant action menu (save-contact + PM) via grup API client
 import { groupsClient, friendlyGroupError } from '../utils/groupsApi'
 import { useToastStore } from '../stores/toast'

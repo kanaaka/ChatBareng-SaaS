@@ -1,3 +1,16 @@
+# v4.6.0 — 2026-10-02 (FITUR: Date Separator ala WhatsApp di chat detail)
+
+**Request Kanaka 10:28 (contoh screenshot WhatsApp 10:30, GO 10:34):** chat detail gak ada penanda tanggal — pesan 9 hari lalu tampil berdempetan dgn pesan hari ini, cuma jam di bubble ("kontak chat 9 hari lalu, chat lagi hari ini, di composer nggak ada tandanya").
+
+**Implementasi (FE-only, `ChatDetail.vue`):**
+- **Pill tanggal center ala WA** muncul SEBELUM bubble pertama tiap hari: `v-for` pindah ke `<template>` + index; `showDateSeparator(list, i)` = pesan beda-tanggal vs pesan sebelumnya (pesan pertama = selalu pill). Render bubble & `formatTime` TIDAK disentuh — zero-regresi layout.
+- **Label (id-ID):** hari ini → **"Hari Ini"** · kemarin → **"Kemarin"** · ≤6 hari → nama hari (**"Rabu"**) · >6 hari → **DD/MM/YY** ("23/09/26" — gaya screenshot Kanaka). Tanggal = zona waktu viewer (browser) — perilaku sama dgn WA Web.
+- Zero backend/schema/migrasi; aman dgn pagination + realtime (perbandingan berbasis array lokal, urutan ascending dari API).
+
+**QA:** logic test (same-day no-dup PASS, first-message pill PASS, midnight rollover PASS) + **visual copy-DB :5099 5/5 pill PASS** (SA impersonate tenant-8, chat 5088 dgn 9 pesan demo lintas-9-hari; prod zero-touch). Build PASS (`index-CmRlWLSQ.js`, chunk `TanganKanan-CoCdw_Z6.js`), live-serve :5047 terverifikasi memuat fitur (tanpa restart — FE static).
+
+---
+
 # v4.5.0 — 2026-10-01 (FITUR: Resolve-Tanpa-Lompat + Multi-Select Batch Actions)
 
 **Request Kanaka 16:46-16:49 (GO 16:49)** — dua UX feedback chat-list:
