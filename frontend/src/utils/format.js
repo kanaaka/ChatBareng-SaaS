@@ -89,3 +89,20 @@ export function highlightSearchTerm(text, term) {
   const regex = new RegExp(`(${escapedTerm})`, 'gi')
   return escaped.replace(regex, '<mark class="bg-yellow-200 rounded px-0.5">$1</mark>')
 }
+
+// v4.6.1 — Byte formatter SHARED ala user-friendly (Kanaka 14:23): raw B dihapus —
+// paling kecil = KB, terus MB → GB → TB. 1 desimal gaya id-ID (koma); integer tampil
+// bersih ("3 GB", bukan "3,0 GB"). Sub-KB tetap tampil dgn desimal ("0,5 KB").
+export function fmtBytes(n) {
+  const num = Number(n) || 0
+  if (!Number.isFinite(num)) return '0 KB'
+  const KB = 1024, MB = KB * 1024, GB = MB * 1024, TB = GB * 1024
+  const one = (v) => {
+    const r = Math.round(v * 10) / 10
+    return Number.isInteger(r) ? String(r) : r.toFixed(1).replace('.', ',')
+  }
+  if (num >= TB) return one(num / TB) + ' TB'
+  if (num >= GB) return one(num / GB) + ' GB'
+  if (num >= MB) return one(num / MB) + ' MB'
+  return one(num / KB) + ' KB'
+}

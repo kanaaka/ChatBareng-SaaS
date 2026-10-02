@@ -8,6 +8,7 @@
 // Chart.js di-import dynamic (tree-shaken; register otomatis di modul chart helper).
 import { ref, reactive, computed, onMounted } from 'vue'
 import axios from 'axios'
+import { fmtBytes } from '../utils/format' // v4.6.1 — shared byte formatter (KB→MB→GB→TB)
 import { Chart } from 'chart.js/auto'
 import { useAuthStore } from '../stores/auth'
 
@@ -118,15 +119,7 @@ function hourTickLabel(h) {
   }
 }
 
-// v3.9.21 — human-readable bytes (id-ID): B/KB/MB/GB/TB
-function fmtBytes(n) {
-  let val = Number(n || 0)
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let i = 0
-  while (val >= 1024 && i < units.length - 1) { val /= 1024; i++ }
-  const num = i === 0 ? String(val) : val.toLocaleString('id-ID', { maximumFractionDigits: 1 })
-  return `${num} ${units[i]}`
-}
+// v4.6.1 — fmtBytes lokal dihapus → shared dari utils/format (raw B dinonaktifkan)
 
 // v3.9.21 — breakdown per-tenant sort desc by bytes (0 byte otomatis di akhir)
 const tkRows = computed(() => {

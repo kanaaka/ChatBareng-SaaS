@@ -180,6 +180,7 @@
 
 <script setup>
 import axios from 'axios'
+import { fmtBytes } from '../utils/format' // v4.6.1 — shared byte formatter (KB→MB→GB→TB)
 import { ref, onMounted } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useConfirm } from '../utils/confirm'
@@ -215,12 +216,8 @@ function fmtDateTime(iso) {
   return d.toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-function fmtSize(bytes) {
-  const n = Number(bytes || 0)
-  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB'
-  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB'
-  return n + ' B'
-}
+// v4.6.1 — fmtSize delegasi ke shared fmtBytes (ladder KB/MB/GB/TB — raw B off)
+const fmtSize = fmtBytes
 
 async function fetchStatus() {
   try {

@@ -12,6 +12,7 @@
 // jika bukan lifetime), SATU tombol "👁 Lihat Detail" (drawer sama dgn desktop).
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
+import { fmtBytes } from '../utils/format' // v4.6.1 — shared byte formatter (KB→MB→GB→TB)
 import M3TextField from '../components/M3TextField.vue'
 import SaTenantDetailDrawer from '../components/SaTenantDetailDrawer.vue'
 
@@ -134,14 +135,7 @@ function planPreset(t) {
   const p = t.plan?.preset || 'custom'
   return p.charAt(0).toUpperCase() + p.slice(1)
 }
-function fmtBytes(n) {
-  const GB = 1024 ** 3
-  const num = Number(n) || 0
-  if (num >= GB) return `${(num / GB).toFixed(1).replace('.', ',')} GB`
-  const MB = 1024 ** 2
-  if (num >= MB) return `${Math.round(num / MB)} MB`
-  return `${num} B`
-}
+// v4.6.1 — fmtBytes lokal dihapus → shared dari utils/format (raw B dinonaktifkan)
 // TanganKanan mini progress bar — guard divide-by-zero; null quota = ∞ (tanpa bar)
 function tkPct(t) {
   const q = t?.plan?.tkQuotaBytes

@@ -9,6 +9,7 @@
 // API keys di-fetch fresh (pola openNumbersModal/openApiKeysModal lama).
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import axios from 'axios'
+import { fmtBytes } from '../utils/format' // v4.6.1 — shared byte formatter (KB→MB→GB→TB)
 import { useAuthStore } from '../stores/auth'
 import M3TextField from './M3TextField.vue'
 import M3Switch from './M3Switch.vue'
@@ -206,14 +207,7 @@ function validityNowLabel(tn) {
 function fmtNum(n) {
   return Number(n || 0).toLocaleString('id-ID')
 }
-function fmtBytes(n) {
-  const GB = 1024 ** 3
-  const num = Number(n) || 0
-  if (num >= GB) return `${(num / GB).toFixed(1).replace('.', ',')} GB`
-  const MB = 1024 ** 2
-  if (num >= MB) return `${Math.round(num / MB)} MB`
-  return `${num} B`
-}
+// v4.6.1 — fmtBytes lokal dihapus → shared dari utils/format (raw B dinonaktifkan)
 function activeFeatures(tn) {
   if (!tn.plan) return []
   return FEATURE_DEFS.filter((f) => tn.plan[f.key]).map((f) => ({ key: f.key, label: f.label }))
