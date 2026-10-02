@@ -1,3 +1,47 @@
+# v4.5.0 — 2026-10-01 (FITUR: Resolve-Tanpa-Lompat + Multi-Select Batch Actions)
+
+**Request Kanaka 16:46-16:49 (GO 16:49)** — dua UX feedback chat-list:
+
+- **A. Resolve-tanpa-lompat:** chat yang TERBUKA saat di-resolve (oleh sendiri maupun agent lain, realtime) → detail langsung ditutup + **TETAP di tab aktif** (tidak ada `changeFilter('resolved')` lagi yang memaksa CS lompat ke tab Resolved — akar "nuansa lompat" di `onChatUpdate` v0.1.21). Toast ✓ + list refresh. Backend resolve route TIDAK berubah.
+- **B. Multi-select + batch actions:** desktop hover avatar → tickbox; klik pertama = masuk mode seleksi (semua row tampil tickbox, gaya WA Web); mobile entry via long-press menu item "📋 Pilih chat" (item "Keluar mode pilih" saat mode aktif). Action bar di bawah Filters: [Semua] n dipilih · [✓ Resolve] [📖 Dibaca] [🔵 Belum dibaca] [✕]. Klik row saat mode seleksi = toggle (bukan open). Select-all = honoring filter aktif + search (filteredChats tampilan, cap list 100 by construction).
+- **Backend endpoint BARU (no-migration):** `POST /api/chats/batch-resolve` (policy per-item = MIRROR persis route single: assignee|admin, limbo-clear v3.9.8 + snooze-clear v0.10.0 + CSAT hook v0.10.0 + ChatEvent 'resolved' + broadcast per item + SATU emitQueueUpdate di akhir) & `POST /api/chats/batch-read` (policy = canAccessChat, receipts v0.12.9 idempoten, broadcast unreadCount:0). Keduanya: validasi array 1-100 int, return jujur `{resolved/marked, skipped:[{chatId,reason}]}` (not_found/not_allowed/already_resolved/error).
+- **Batch unread** = marker personal per-device (util manualUnread v4.1.3.1 — FE-only, sesuai behaviour existing mark-as-unread; server state tidak berubah).
+
+**QA:** smoke copy-DB :5099 (WA_DISABLED=1, prod zero-touch): batch-resolve 3/0 + skip kasus not_allowed + already_resolved, batch-read unreadCount=0 verified, build PASS. Catatan perilaku: admin resolve massal di tab All dapat me-resolve chat milik agent lain (confirm dialog + skipped jujur).
+
+**Audit:** Kimi code-audit **GO-WITH-NOTES** (0 CRITICAL/HIGH; 1 MEDIUM + 6 LOW). Difix dalam rilis: M-1 (klik tickbox first-click langsung meng-unlock selectionMode — action bar muncul + row jadi toggle, sesuai spec/klaim commit); L-2 (emitQueueUpdate di-skip bila tidak ada chat yang resolved); L-3 (de-select semua via "Semua" ikut keluar mode — konsisten toggle per-row). L-1 (batch sequential N=100) = acceptable, catat monitoring; L-4/L-5/L-6 = cosmetic/policy notes. A PASS penuh (race handleResolve×echo-socket aman, wasMine zero-sisa, tidak ada regresi blok unassign/transfer/snooze di handler sama); B PASS (route ordering benar, tenant-scoping per item, policy mirror persis, Vue 3.5.42 Set-reactivity aman).
+
+---
+
+# v4.4.0 — 2026-10-01 (FITUR ×4: Centang Biru + Take-Tanpa-Buka + Tag Exclude-Antrean + Tombol Resolve Desktop)
+
+**Request Kanaka 13:27–13:31 ("langsung semua fitur")** — 4 fitur QA-experience sekaligus (spec `docs/spec-v4.4.0-blue-ticks-take-tag-exclude-resolve.md`, recon-verified line numbers):
+
+- **F1 Centang biru (read receipt outbound):** listener Baileys `messages.update` baru di `src/wa/pool.js` (hanya `fromMe` 1:1, grup TODO) → status `sent→delivered→read` MONOTONIC via 2-tahap `updateMany` (waMessageId tak-unique → tanpa race; status tak pernah turun) → broadcast `message_status` (kontrak lama FE: `messageId` = DB id, pola receipts.js v0.12.9 + extra `waMessageId`). FE: tick `read` jadi **biru** (`text-blue-500`) di bubble outbound; delivered/sent tetap abu. Listener FE `message_status` already-wired (Dashboard onMessageStatus) — in-place update, zero refetch. Caveat WhatsApp: pelanggan matikan read receipt → kita cuma sampai delivered (privacy bawaan WA).
+- **F2 Take-tanpa-buka:** `handleTakeNext()` (banner antrean) TIDAK lagi auto-`selectChat` — chat masuk Mine + **auto tandai belum dibaca** (util manualUnread existing → dot biru + bold di list, ala WhatsApp). Toast baru 📥. Jalur take per-chat (`@take="handleAssign"`) & backend take-next TIDAK berubah.
+- **F3 Silent block via tag:** kolom baru `Tag.excludeFromQueue Boolean @default(false)` (migrasi ADD-ONLY 1 kolom; `2026100107400000_v440_tag_exclude_queue`); `queueWhere()` NOT-array +1 klausa (`contact.tags.some(tag.excludeFromQueue)`) — chat tanpa contact tetap masuk antrean; single source of truth (queue count + tab Unassigned + take-next). Endpoint **PATCH `/api/tags/:id` admin-only** (validasi boolean + emit tag_updated/tags_changed/queue_update); POST /api/tags terima flag juga. FE: checkbox "Kecualikan dari antrean 🚫" saat buat tag (admin), tombol toggle on/off di menu filter tag (ChatListPane, admin), badge 🚫 di ChatDetail tag dropdown & filter menu; tag_updated spread-penuh → sync realtime. Chat ber-tag EXCLUDE tetap tampil normal di list — hanya tidak bisa di-take dari antrean.
+- **F4 Tombol Resolve desktop:** `✓ Resolve` hijau di header Quick Actions (sebelah kiri 🤖 AI Summary), hanya `!groupChat && status!=='resolved'`, emit `resolve` existing → handleResolve tanpa wiring baru; mobile tetap via kebab.
+
+**Catatan teknis:** build FE PASS; migrasi dev diterapkan via copy-DB (lesson 3x subagent: dev server WAJIB `/tmp` copy, BUKAN DB prod — dev server bajakan Dory sudah di-kill 13:39). Prod deploy: backup → `prisma migrate deploy` → restart by-PID → smoke.
+
+**Audit:** Kimi code-audit **GO-WITH-NOTES** (0 CRITICAL/HIGH; 3 MEDIUM + 7 LOW). Difix dalam rilis: M1 (refetch list chat saat flag exclude berubah — toggle admin & realtime tag_updated → invariant banner==tab tetap); M2 (DELETE tag exclude → emit queue_update = chat kembali ke antrean dgn banner segar); L1 (emit guard monotonic — ACK duplikat tak menurunkan tick FE); L2 (filter eksplisit @newsletter/status@broadcast); L3 (PATCH id NaN → 400); L4 (POST flag exclude diabaikan utk non-admin — konsisten admin-only); L6 (qa-matrix8 hard-guard port 5047). M3 = catatan produk: tag via "Add tag" chat (ChatTag) tidak memengaruhi antrean by design (spec F3 = tag KONTAK/ContactTag) — mirror opsional di-backlog v4.4.x; L5/L7 note-only.
+
+---
+
+# v4.3.2 — 2026-10-01 (FITUR + FIX: Media Viewer fullscreen — lightbox + zoom in/out)
+
+**Lapor Kanaka 11:55:** klik gambar pelanggan di chat tidak membuka apa-apa. Akar (recon, bukan tebakan): template ChatDetail.vue memanggil `openLightbox(msg)` (image L460 + sticker L479) tapi fungsi itu **tidak pernah didefinisi** → TypeError → klik mati. Bonus bug: tombol download inline memanggil `downloadMedia(msg)` yang juga tidak pernah ada definisinya. Bonus temuan: modal lightbox di Dashboard.vue pernah dikabelin tapi ref-nya tidak pernah di-set non-null (dead code unreachable).
+
+**Implementasi** (spec `docs/spec-v4.3.2-media-viewer-lightbox.md` D1–D4, builder Alita langsung per arahan Kanaka "kamu sendiri aja bisa"): 
+- Komponen baru `frontend/src/components/MediaViewer.vue` (Teleport ke body, fullscreen gelap): **tombol Zoom In/Out** (step ×1.25, clamp 1×–8×), indikator persen, reset 1×, wheel-zoom mengikuti kursor, drag-pan saat zoom>1 (pointer events), dblclick toggle 1↔2.5×, Esc/klik ruang kosong = tutup, download, caption pelanggan di bawah gambar, keyboard +/=/−/0/Esc, aria-label. Tanpa dependency baru — vanilla transform + pointer events.
+- ChatDetail.vue: definisikan `openLightbox` + `downloadMedia` + helper `mediaUrl(msg)` (sekalian deduplikasi string `/api/media/${id}?token=` 4×), state `viewerMsg`, mount `<MediaViewer>` di root template.
+- Dashboard.vue: dead-code lightbox + ref `lightboxImage` dihapus (grep-verified: hanya 3 occurrences semuanya dalam blok itu).
+- **Murni frontend — NO schema/backend change, NO npm dep.** Build `public/assets/` ✓ bundle berisi viewer ✓ deploy live (serve 200).
+
+**Audit:** Kimi slim-audit **GO-WITH-NOTES** (0 HIGH/CRITICAL; 3 LOW — semua difix dalam rilis ini: pan clamp, viewer auto-close saat pindah chat, duplikasi emit 'close'). **QA:** e2e-v431 sanity 18 PASS / 2 FAIL terdokumen (S5+S5-b = cek fixture QA prod utuh — memang dihapus pas smoke v4.3.1 pagi ini sesuai plan "fixture + kontak bersih"; bukan regresi v4.3.2 — frontend-only). Smoke prod: index + chunk viewer 200, `Tingkat zoom` ada di bundle, `lightboxImage`=0 di Dashboard chunk, `function openLightbox` terdefinisi. Deploy live disk-serve (public/ static), tanpa restart server. Backlog v4.3.x berikutnya: a11y focus trap, migrasi token media ke header/cookie.
+
+---
+
 # v4.3.1 — 2026-10-01 (FIX: DELETE /api/chats/:id 500 P2002 — per-slot contact reality)
 
 **Bug** (temuan QA real-WA Alita 03:27–05:45 WIB, reports/qa-v4.3.0-2026-10-01.md): hapus chat di kebab menu → **500** selamanya bila nomor pelanggan punya chat di ≥1 slot lain tenant yang sama. Akar: helper contact v3.9.2 K1-A masih berasumsi 1 nomor = 1 contact (merge antar-slot), sementara skema per-slot membuat tiap chat punya contact sendiri (`Contact.chatId @unique`) → move paksa ke sibling = P2002 → rollback semua → 500. Repro live: chat 8370 (slot0) + 8371 (slot1), tenant-10.

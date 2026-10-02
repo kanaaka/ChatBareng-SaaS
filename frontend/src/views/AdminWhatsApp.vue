@@ -1,0 +1,552 @@
+<template>
+  <PageShell title="WhatsApp" back-to="/admin">
+    <header class="hidden md:flex m3-topbar px-4 py-3 items-center justify-between">
+      <div class="flex items-center gap-3">
+        <h1 class="text-lg font-semibold">WhatsApp</h1>
+      </div>
+      <div class="flex items-center gap-4">
+        <button @click="handleLogout" class="text-sm hover:underline">Logout</button>
+      </div>
+    </header>
+
+    <div class="max-w-4xl mx-auto w-full p-6 space-y-4">
+      <!-- v3.9 — DAFTAR SLOT NOMOR WA (multi-nomor per tenant) -->
+      <div class="bg-white rounded-lg shadow-sm p-6">
+        <div class="flex items-start justify-between gap-4 mb-4 flex-wrap">
+          <div>
+            <h2 class="text-lg font-semibold">Nomor WhatsApp</h2>
+            <p class="text-sm text-gray-500">Setiap nomor punya sesi sendiri — connect/QR/pairing/logout per nomor. Slot-0 = nomor utama.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <!-- v3.9.4 — selector mode routing tenant (QA #2): pool / assigned / mix -->
+            <label v-if="slots.length > 1" class="flex items-center gap-1.5 text-xs text-gray-600">
+              Routing:
+              <select :value="waMode" @change="setWaMode($event.target.value)" class="px-2 py-1 border border-gray-300 rounded-lg text-xs bg-white">
+                <option value="pool">Pool</option>
+                <option value="assigned">Assigned</option>
+                <option value="mix">Mix (per slot)</option>
+              </select>
+            </label>
+            <span v-else-if="waMode" class="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Mode: {{ waMode }}</span>
+            <button @click="addSlot" :disabled="addingSlot" class="px-3 py-1.5 bg-blue-100 text-blue-700 rounded-lg text-sm hover:bg-blue-200 disabled:opacity-50">
+              {{ addingSlot ? 'Menambah…' : '+ Tambah Nomor' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="slots.length === 0" class="text-sm text-gray-400 py-4">Memuat slot…</div>
+
+        <div v-else class="space-y-3">
+          <div v-for="s in slots" :key="s.slot" class="border border-gray-200 rounded-lg p-4">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-sm font-semibold">Slot {{ s.slot }}{{ s.label ? ' — ' + s.label : '' }}</span>
+              <span :class="['text-sm font-medium px-2 py-0.5 rounded-full', s.status?.connected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700']">
+                {{ s.status?.connected ? 'Connected' : (s.status?.state || 'Disconnected') }}
+              </span>
+              <span v-if="s.status?.phoneNumber" class="text-sm text-gray-500">(+{{ s.status.phoneNumber }})</span>
+              <span v-if="s.routeMode === 'assigned'" class="text-xs font-medium px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">Assigned → agent #{{ s.assignedAgentId }}</span>
+              <!-- v3.9.2 K1-A — jumlah chat per slot (nice-to-have E.14) -->
+              <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600" title="Jumlah chat lewat nomor ini">💬 {{ s.chatCount || 0 }} chat</span>
+            </div>
+
+            <!-- Label edit (inline) -->
+            <div class="flex items-center gap-2 mt-3 flex-wrap">
+              <input
+                v-model="s._labelDraft"
+                type="text"
+                placeholder="Label (mis. CS Utama)"
+                maxlength="50"
+                class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg w-56"
+              />
+              <button @click="saveLabel(s)" class="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200">Simpan Label</button>
+            </div>
+
+            <!-- v3.9.4 — Routing per-slot (QA #2): assigned agent + reassign-offline.
+                 Muncul saat mode tenant 'assigned' atau 'mix' (di mix per slot bisa pool). -->
+            <div v-if="waMode !== 'pool'" class="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-2">
+              <select v-if="waMode === 'mix'" v-model="s._routeMode" class="px-2 py-1.5 border border-gray-300 rounded-lg text-sm bg-white">
+                <option value="pool">Pool (antrean umum)</option>
+                <option value="assigned">Assigned ke agent</option>
+              </select>
+              <template v-if="waMode === 'assigned' || s._routeMode === 'assigned'">
+                <select v-model="s._assignedAgentId" class="px-2 py-1.5 border border-gray-300 rounded-lg text-sm bg-white">
+                  <option :value="null">— pilih agent —</option>
+                  <option v-for="u in agents" :key="u.id" :value="u.id">{{ u.username }} ({{ u.role }})</option>
+                </select>
+                <label v-if="s._assignedAgentId" class="flex items-center gap-1.5 text-xs text-gray-600">
+                  <input type="checkbox" v-model="s._reassignOffline" class="w-4 h-4 accent-purple-600" />
+                  reassign ke CS lain kalau offline
+                </label>
+                <button @click="saveRouting(s)" class="px-3 py-1.5 bg-purple-100 text-purple-700 rounded-lg text-sm hover:bg-purple-200">Simpan Routing</button>
+              </template>
+            </div>
+
+            <!-- QR per-slot (hanya slot ini butuh scan) -->
+            <div v-if="s.status?.qrNeeded" class="pt-3">
+              <div class="flex gap-2 mb-3" role="tablist">
+                <button
+                  role="tab"
+                  @click="s._pairMode = 'qr'"
+                  :class="['px-3 py-1.5 rounded-full text-xs font-medium', (s._pairMode || 'qr') === 'qr' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700']"
+                >QR</button>
+                <button
+                  role="tab"
+                  @click="s._pairMode = 'code'"
+                  :class="['px-3 py-1.5 rounded-full text-xs font-medium', (s._pairMode || 'qr') === 'code' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700']"
+                >Pairing Code</button>
+              </div>
+
+              <div v-if="(s._pairMode || 'qr') === 'qr'" class="text-center">
+                <img v-if="s._qrDataUrl" :src="s._qrDataUrl" alt="QR Code" class="mx-auto border border-gray-200 rounded-lg max-w-full" />
+                <p v-else class="text-sm text-gray-400 py-6">
+                  QR belum tersedia —
+                  <button @click="fetchQRSlot(s)" class="text-blue-600 hover:underline">muat ulang</button>
+                </p>
+              </div>
+
+              <div v-else class="max-w-md">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <input v-model="s._pairPhone" type="tel" placeholder="6281234567890" maxlength="15" class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg w-48" />
+                  <button
+                    @click="requestPairingSlot(s)"
+                    class="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
+                  >Minta Kode</button>
+                  <span v-if="s._pairingCode" class="text-xl font-mono font-bold tracking-widest select-all">{{ formatCode(s._pairingCode) }}</span>
+                </div>
+                <p v-if="s._pairError" class="text-xs text-red-600 mt-1">{{ s._pairError }}</p>
+              </div>
+            </div>
+
+            <div class="flex flex-wrap gap-2 pt-3">
+              <button @click="connectSlot(s)" class="px-3 py-1.5 bg-blue-100 text-blue-700 rounded-lg text-sm hover:bg-blue-200">
+                {{ s.status?.connected ? 'Reconnect' : 'Connect' }}
+              </button>
+              <button v-if="s.status?.qrNeeded" @click="fetchQRSlot(s)" class="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200">Refresh QR</button>
+              <!-- v3.9.4 — tombol logout per nomor kembali (QA #1): POST /api/wa/logout
+                   per-slot — beda dgn reconnect (reconnect TIDAK menghapus sesi) -->
+              <button v-if="s.status?.connected" @click="logoutSlot(s)" class="px-3 py-1.5 bg-orange-100 text-orange-700 rounded-lg text-sm hover:bg-orange-200">Logout WA</button>
+              <button
+                v-if="s.slot !== 0"
+                @click="removeSlot(s)"
+                class="px-3 py-1.5 bg-red-100 text-red-700 rounded-lg text-sm hover:bg-red-200"
+              >Hapus Nomor</button>
+              <span v-else class="text-xs text-gray-400 self-center">slot utama — tidak bisa dihapus</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- v0.12.10 — Read receipts (centang biru): admin-only, universal, default OFF
+           (dipindah dari Settings per Kanaka — setting perilaku WA = tempatnya di sini) -->
+      <div class="bg-white rounded-lg shadow-sm p-6">
+        <div class="flex items-start justify-between gap-4">
+          <div class="min-w-0">
+            <h2 class="text-lg font-semibold mb-1">Centang Biru (Read Receipt)</h2>
+            <p class="text-sm text-gray-500">Kirim status "terbaca" (centang biru ✓✓) ke pelanggan saat chat dibuka atau dibalas agent. Berlaku universal untuk semua agent. Default: mati.</p>
+          </div>
+          <M3Switch
+            :model-value="receiptsEnabled"
+            :disabled="receiptsSaving"
+            class="flex-shrink-0 mt-1"
+            @update:model-value="toggleReceipts"
+          />
+        </div>
+      </div>
+
+      <!-- v3.9.23 — Format Summary AI: admin tenant mandiri (6 preset + custom instruksi);
+           CS read-only indikator mode. customText non-kosong = menang atas preset. -->
+      <div class="bg-white rounded-lg shadow-sm p-6">
+        <div class="flex items-start justify-between gap-4 mb-3 flex-wrap">
+          <div class="min-w-0">
+            <h2 class="text-lg font-semibold mb-1">Format Summary AI</h2>
+            <p class="text-sm text-gray-500">Format ringkasan sesi yang dibuat AI (tombol 🤖 di chat). Admin tenant yang atur; CS hanya lihat.</p>
+          </div>
+          <span :class="['text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0', tplMode === 'custom' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-600']">
+            Mode: {{ tplMode === 'custom' ? 'instruksi sendiri' : 'preset ' + tplForm.presetKey }}
+          </span>
+        </div>
+
+        <div v-if="!auth.isAdmin" class="text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-lg p-3">
+          👁️ Mode read-only — hanya admin yang bisa mengubah format summary.
+        </div>
+
+        <template v-else>
+          <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+            <label
+              v-for="p in AI_PRESETS"
+              :key="p.key"
+              :class="['flex items-center gap-2 px-3 py-2 rounded-lg border text-sm cursor-pointer', tplForm.presetKey === p.key && tplMode !== 'custom' ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:bg-gray-50']"
+              :title="p.desc"
+            >
+              <input type="radio" :value="p.key" v-model="tplForm.presetKey" class="accent-green-600" />
+              <span class="text-sm truncate">{{ p.label }}</span>
+            </label>
+          </div>
+
+          <div class="mt-4">
+            <label class="block text-sm font-medium text-gray-700 mb-1">Instruksi sendiri (bahasa bebas — menang atas preset)</label>
+            <textarea
+              v-model="tplForm.customText"
+              rows="3"
+              maxlength="1000"
+              placeholder="Mis. 'Ringkas dalam poin-poin singkat, sebutkan nama produk yang ditanyakan dan estimasi harganya.'"
+              class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-1 focus:ring-wa-green focus:border-transparent resize-y"
+            ></textarea>
+            <div class="flex items-center justify-between mt-1">
+              <span class="text-xs text-gray-400">{{ (tplForm.customText || '').length }}/1000 karakter</span>
+              <button
+                type="button"
+                v-if="tplForm.customText"
+                @click="tplForm.customText = ''"
+                class="text-xs text-gray-400 hover:text-gray-600"
+              >kosongkan (kembali ke preset)</button>
+            </div>
+          </div>
+
+          <!-- Uji-dengan-contoh: preview box (DRAFT — belum disimpan) -->
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              @click="testSummaryTemplate"
+              :disabled="tplTesting"
+              class="px-3 py-1.5 bg-blue-100 text-blue-700 rounded-lg text-sm hover:bg-blue-200 disabled:opacity-50"
+            >{{ tplTesting ? 'Menguji…' : '🧪 Uji dengan contoh' }}</button>
+            <button
+              @click="saveSummaryTemplate"
+              :disabled="tplSaving"
+              class="px-4 py-2 bg-wa-green text-white rounded-lg text-sm font-medium hover:bg-green-600 disabled:opacity-50"
+            >{{ tplSaving ? 'Menyimpan…' : 'Simpan' }}</button>
+          </div>
+          <div v-if="tplPreview" class="mt-3 border border-gray-200 rounded-lg p-3 bg-gray-50">
+            <div class="text-xs text-gray-400 mb-1">Preview (contoh transkrip, bukan data pelanggan) · {{ tplPreview.templateUsed }} · {{ ((tplPreview.latencyMs || 0) / 1000).toFixed(1) }}s</div>
+            <div class="text-sm text-gray-800 whitespace-pre-line" style="overflow-wrap: anywhere;">{{ tplPreview.summaryText }}</div>
+          </div>
+          <p v-if="tplError" class="text-red-600 text-sm mt-2">{{ tplError }}</p>
+          <p v-if="tplSuccess" class="text-green-600 text-sm mt-2">{{ tplSuccess }}</p>
+        </template>
+      </div>
+    </div>
+  </PageShell>
+</template>
+
+<script setup>
+import axios from 'axios'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { useAuthStore } from '../stores/auth'
+import { useConfirm } from '../utils/confirm'
+import { useSocketStore } from '../stores/socket'
+import PageShell from '../components/PageShell.vue'
+import M3Switch from '../components/M3Switch.vue'
+import { useToastStore } from '../stores/toast'
+
+const API = import.meta.env.VITE_API_URL || ''
+const auth = useAuthStore()
+const { confirmAction } = useConfirm()
+const socketStore = useSocketStore()
+const toast = useToastStore()
+
+// ── v0.12.10 — Read receipts (centang biru): admin-only, universal, default OFF ──
+const receiptsEnabled = ref(false)
+const receiptsSaving = ref(false)
+
+// ═══ v3.9.23 — Format Summary AI (admin tenant; CS read-only) ═══
+const AI_PRESETS = [
+  { key: 'standard', label: 'Standard (4 blok)', desc: 'Ringkasan · Kebutuhan · Tindakan · Status & langkah' },
+  { key: 'ringkas', label: 'Ringkas', desc: 'Satu paragraf 3–5 kalimat' },
+  { key: 'handoff', label: 'Handoff shift', desc: 'Serah terima antar CS' },
+  { key: 'medis', label: 'Medis', desc: 'Keluhan pasien, layanan, tindak lanjut' },
+  { key: 'penjualan', label: 'Penjualan', desc: 'Minat, keberatan, closing' },
+  { key: 'keluhan', label: 'Keluhan', desc: 'Komplain, urgensi, solusi' },
+]
+const tplForm = ref({ presetKey: 'standard', customText: '' })
+const tplMode = ref('preset') // 'preset' | 'custom'
+const tplSaving = ref(false)
+const tplTesting = ref(false)
+const tplPreview = ref(null)
+const tplError = ref('')
+const tplSuccess = ref('')
+
+async function loadSummaryTemplate() {
+  try {
+    const { data } = await axios.get(`${API}/api/settings/summary-template`)
+    tplForm.value = { presetKey: data.presetKey || 'standard', customText: data.customText || '' }
+    tplMode.value = data.customText ? 'custom' : 'preset'
+  } catch (e) {
+    // belum pernah diset → default standard (silent)
+  }
+}
+
+async function saveSummaryTemplate() {
+  tplError.value = ''
+  tplSuccess.value = ''
+  tplSaving.value = true
+  try {
+    const { data } = await axios.put(`${API}/api/settings/summary-template`, {
+      presetKey: tplForm.value.presetKey,
+      customText: tplForm.value.customText || null,
+    })
+    tplForm.value = { presetKey: data.presetKey, customText: data.customText || '' }
+    tplMode.value = data.customText ? 'custom' : 'preset'
+    tplSuccess.value = 'Format summary disimpan'
+  } catch (e) {
+    tplError.value = e.response?.data?.error || 'Gagal menyimpan format summary'
+  } finally {
+    tplSaving.value = false
+  }
+}
+
+async function testSummaryTemplate() {
+  tplError.value = ''
+  tplTesting.value = true
+  tplPreview.value = null
+  try {
+    const body = {}
+    if (tplForm.value.customText) {
+      body.customText = tplForm.value.customText
+      body.presetKey = tplForm.value.presetKey
+    } else {
+      body.presetKey = tplForm.value.presetKey
+    }
+    const { data } = await axios.post(`${API}/api/settings/summary-template/preview`, body)
+    tplPreview.value = data
+  } catch (e) {
+    tplError.value = e.response?.data?.error || 'Gagal menguji format — coba lagi'
+  } finally {
+    tplTesting.value = false
+  }
+}
+
+async function loadAppConfig() {
+  try {
+    const res = await axios.get(`${API}/api/app-config`)
+    receiptsEnabled.value = !!res.data.readReceiptsEnabled
+  } catch (e) { console.error('Load app-config error:', e) }
+}
+
+async function toggleReceipts(v) {
+  const prev = receiptsEnabled.value
+  receiptsEnabled.value = v
+  receiptsSaving.value = true
+  try {
+    const res = await axios.put(`${API}/api/app-config`, { readReceiptsEnabled: v })
+    receiptsEnabled.value = !!res.data.readReceiptsEnabled
+    toast.show({
+      icon: '👁️',
+      title: 'Pengaturan disimpan',
+      message: v ? 'Centang biru (read receipt) AKTIF — pelanggan lihat ✓✓ biru' : 'Centang biru (read receipt) MATI — centang tetap abu-abu',
+    })
+  } catch (e) {
+    receiptsEnabled.value = prev
+    toast.show({ icon: '⚠️', title: 'Gagal menyimpan', message: e.response?.data?.error || 'Coba lagi' })
+  } finally {
+    receiptsSaving.value = false
+  }
+}
+
+// ═══ v3.9 — Multi-nomor: slot list + per-slot actions ═══
+const slots = ref([])
+const waMode = ref('pool')
+const addingSlot = ref(false)
+const agents = ref([]) // v3.9.4 — utk dropdown assigned per slot
+let pollTimer = null
+
+function formatCode(code) {
+  const compact = String(code || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+  if (compact.length !== 8) return compact
+  return compact.slice(0, 4) + '-' + compact.slice(4)
+}
+
+async function fetchStatus() {
+  try {
+    const res = await axios.get(`${API}/api/wa/status`)
+    waMode.value = res.data.waMode || 'pool'
+    // Merge in-place supaya state _qrDataUrl/_draft tidak hilang saat polling
+    const prev = new Map(slots.value.map((s) => [s.slot, s]))
+    slots.value = (res.data.slots || []).map((n) => {
+      const old = prev.get(n.slot) || {}
+      return {
+        ...n,
+        _labelDraft: old._labelDraft ?? (n.label || ''),
+        _pairMode: old._pairMode || 'qr',
+        _qrDataUrl: old._qrDataUrl || null,
+        _pairingCode: old._pairingCode || null,
+        _pairError: old._pairError || null,
+        _pairPhone: old._pairPhone || '',
+        // v3.9.4 — state routing per-slot (QA #2)
+        _routeMode: old._routeMode ?? (n.routeMode || 'pool'),
+        _assignedAgentId: old._assignedAgentId ?? (n.assignedAgentId ?? null),
+        _reassignOffline: old._reassignOffline ?? !!n.reassignOffline,
+      }
+    })
+    // Auto-fetch QR bila slot butuh scan dan QR belum tampil
+    for (const s of slots.value) {
+      if (s.status?.qrNeeded && !s._qrDataUrl) fetchQRSlot(s)
+    }
+  } catch (e) { console.error(e) }
+}
+
+async function fetchQRSlot(s) {
+  try {
+    const res = await axios.get(`${API}/api/wa/qr?slot=${s.slot}`)
+    s._qrDataUrl = res.data.qrDataUrl
+  } catch (e) { /* QR not available yet */ }
+}
+
+async function connectSlot(s) {
+  try {
+    await axios.post(`${API}/api/wa/reconnect`, { slot: s.slot })
+    toast.show({ icon: '🔄', title: 'Connect dimulai', message: `Slot ${s.slot} — tunggu QR/muncul status.` })
+    setTimeout(fetchStatus, 3000)
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal connect', message: e.response?.data?.error || 'Coba lagi' })
+  }
+}
+
+async function requestPairingSlot(s) {
+  const phone = String(s._pairPhone || '').replace(/\D/g, '')
+  if (phone.length < 8) {
+    s._pairError = 'Nomor tidak valid — 8–15 digit (kode negara di depan).'
+    return
+  }
+  s._pairError = null
+  try {
+    const res = await axios.post(`${API}/api/wa/pairing-code`, { phone, slot: s.slot })
+    s._pairingCode = res.data.pairingCode
+  } catch (e) {
+    s._pairError = e.response?.data?.error || 'Gagal meminta pairing code.'
+  }
+}
+
+async function saveLabel(s) {
+  try {
+    const label = String(s._labelDraft || '').trim()
+    await axios.put(`${API}/api/wa/numbers/${s.slot}`, { label })
+    s.label = label === '' ? null : label
+    toast.show({ icon: '🏷️', title: 'Label disimpan', message: `Slot ${s.slot}: ${label || '(tanpa label)'}` })
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal simpan label', message: e.response?.data?.error || 'Coba lagi' })
+  }
+}
+
+async function addSlot() {
+  // Slot pertama yang belum terdaftar (mulai dari 1)
+  const existing = new Set(slots.value.map((s) => s.slot))
+  let target = null
+  for (let i = 1; i <= 2; i++) {
+    if (!existing.has(i)) { target = i; break }
+  }
+  if (target === null) {
+    toast.show({ icon: '⚠️', title: 'Slot penuh', message: 'Maksimal 3 nomor per tenant (slot 0..2).' })
+    return
+  }
+  addingSlot.value = true
+  try {
+    await axios.post(`${API}/api/wa/numbers`, { slot: target })
+    toast.show({ icon: '➕', title: 'Slot ditambahkan', message: `Slot ${target} terdaftar — klik Connect untuk scan QR.` })
+    await fetchStatus()
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal menambah slot', message: e.response?.data?.error || 'Coba lagi' })
+  } finally {
+    addingSlot.value = false
+  }
+}
+
+async function removeSlot(s) {
+  const ok = await confirmAction({
+    title: `Hapus Nomor Slot ${s.slot}?`,
+    message: 'Sesi WhatsApp nomor ini akan dihapus (logout). Slot lain tidak terpengaruh. Slot yang masih punya chat tidak bisa dihapus (409).',
+    confirmText: 'Hapus',
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await axios.delete(`${API}/api/wa/numbers/${s.slot}`)
+    toast.show({ icon: '🗑️', title: 'Slot dihapus', message: `Slot ${s.slot} dihapus bersih.` })
+    await fetchStatus()
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal hapus slot', message: e.response?.data?.error || 'Coba lagi' })
+  }
+}
+
+async function saveRouting(s) {
+  try {
+    const body = {}
+    if (waMode.value === 'mix') body.routeMode = s._routeMode || 'pool'
+    if (waMode.value === 'assigned' || s._routeMode === 'assigned') {
+      body.assignedAgentId = s._assignedAgentId || null
+      body.reassignOffline = !!s._reassignOffline
+    }
+    const res = await axios.put(`${API}/api/wa/numbers/${s.slot}`, body)
+    s.routeMode = res.data.number.routeMode
+    s.assignedAgentId = res.data.number.assignedAgentId
+    s.reassignOffline = !!res.data.number.reassignOffline
+    toast.show({ icon: '🎯', title: 'Routing disimpan', message: `Slot ${s.slot}: ${s.routeMode === 'assigned' ? 'assigned → agent #' + s.assignedAgentId : 'pool'}` })
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal simpan routing', message: e.response?.data?.error || 'Coba lagi' })
+  }
+}
+
+async function setWaMode(mode) {
+  const prev = waMode.value
+  waMode.value = mode
+  try {
+    await axios.put(`${API}/api/wa/mode`, { mode })
+    toast.show({ icon: '🔀', title: 'Mode routing diubah', message: mode === 'pool' ? 'Pool — semua chat masuk antrean umum' : mode === 'assigned' ? 'Assigned — chat langsung ke agent slot' : 'Mix — per slot (pool/assigned)' })
+    await fetchStatus()
+  } catch (e) {
+    waMode.value = prev
+    toast.show({ icon: '⚠️', title: 'Gagal ubah mode', message: e.response?.data?.error || 'Coba lagi' })
+  }
+}
+
+// v3.9.4 — logout WhatsApp per slot (QA #1): hapus sesi nomor itu (QR rescan),
+// slot & kuota TETAP ADA — beda dgn "Hapus Nomor" (slot ikut dilepas).
+async function logoutSlot(s) {
+  const ok = await confirmAction({
+    title: `Logout WhatsApp Slot ${s.slot}?`,
+    message: 'Sesi WhatsApp nomor ini dihapus — harus scan QR/pairing ulang untuk connect lagi. Slot & label tetap ada.',
+    confirmText: 'Logout WA',
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await axios.post(`${API}/api/wa/logout`, { slot: s.slot, confirm: true })
+    toast.show({ icon: '🚪', title: 'Logout WhatsApp', message: `Slot ${s.slot} — sesi dihapus. Scan QR untuk connect ulang.` })
+    await fetchStatus()
+  } catch (e) {
+    toast.show({ icon: '⚠️', title: 'Gagal logout', message: e.response?.data?.error || 'Coba lagi' })
+  }
+}
+
+async function fetchAgents() {
+  // v3.9.4 — daftar agent tenant utk dropdown assigned (QA #2)
+  try {
+    const res = await axios.get(`${API}/api/users`)
+    agents.value = (res.data.users || []).filter((u) => u.status === 'active' && ['cs', 'admin'].includes(u.role))
+  } catch (e) { console.error('Fetch agents error:', e) }
+}
+
+// socket broadcast: refresh slot saat status WA berubah
+function onWaStatus() {
+  // debounced refresh
+  clearTimeout(onWaStatus._t)
+  onWaStatus._t = setTimeout(fetchStatus, 500)
+}
+
+function handleLogout() {
+  auth.logout()
+  window.location.href = '/login'
+}
+
+onMounted(() => {
+  fetchStatus()
+  fetchAgents()
+  loadAppConfig()
+  loadSummaryTemplate()
+  socketStore.on('wa_status', onWaStatus)
+  pollTimer = setInterval(fetchStatus, 10000)
+})
+onUnmounted(() => {
+  socketStore.off('wa_status', onWaStatus)
+  if (pollTimer) clearInterval(pollTimer)
+})
+</script>
