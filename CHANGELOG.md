@@ -1,3 +1,18 @@
+# v4.6.1 — 2026-10-02 (FIX UX: byte formatter human-friendly — raw B dihapus)
+
+**Lapor Kanaka 14:23 (screenshot):** widget "Kuota Tangan Kanan" tampil `1015748 B / 3.0 GB` — gak user-friendly; harusnya paling kecil KB, terus MB, baru GB.
+
+**Akar:** `fmtBytes` **di-copy-paste 4×** dengan implementasi BEDA (divergen) — versi TanganKanan & SaTenants/SaTenantDetailDrawer lompat langsung `B → MB → GB` jadi angka <1MB jatuh ke `N B`; versi SaOverview beda lagi. Plus `fmtSize` serupa di AdminBackup.
+
+**Fix (FE-only):**
+- **Satu helper SHARED** `fmtBytes` di `utils/format.js` (v4.6.1): ladder **KB → MB → GB → TB** (`>=1024` naik unit), 1 desimal gaya id-ID koma; integer tampil bersih ("3 GB" bukan "3,0 GB"); sub-KB tampil desimal ("0,5 KB"); **raw B dihapus total**.
+- **5 file diterminasi ke shared:** TanganKanan.vue, SaOverview.vue, SaTenants.vue, SaTenantDetailDrawer.vue (hapus fmtBytes lokal) + AdminBackup.vue (`fmtSize = fmtBytes`).
+- Zero backend/schema; hanya tampilan.
+
+**QA:** logic test 8/8 PASS — 1015748 → `991,9 KB` (kasus screenshot), 3GB → `3 GB`, 1MB → `1 MB`, 0 → `0 KB`, 512 → `0,5 KB`, 5,5GB → `5,5 GB`, 1,5TB → `1,5 TB`, 1048575 → `1024 KB`. Build PASS (chunk baru: index-BkR2Lqbn, TanganKanan-DsFS2tqD, dst.) — live-serve :5047 terverifikasi memuat bundle baru tanpa restart.
+
+---
+
 # v4.6.0 — 2026-10-02 (FITUR: Date Separator ala WhatsApp di chat detail)
 
 **Request Kanaka 10:28 (contoh screenshot WhatsApp 10:30, GO 10:34):** chat detail gak ada penanda tanggal — pesan 9 hari lalu tampil berdempetan dgn pesan hari ini, cuma jam di bubble ("kontak chat 9 hari lalu, chat lagi hari ini, di composer nggak ada tandanya").
