@@ -1,3 +1,18 @@
+# v4.6.2 — 2026-10-02 (FIX INFRA: prestart auto-migrate guard — bunuh epidemic 500 silent version-skip)
+
+**Incident (server hosting IT, wa.labparahita.co.id):** kode v4.5.0+ jalan di atas DB era v4.3.1 yang belum di-migrasi → `GET /api/chats/queue-count` & `POST /take-next` = **500 "column excludeFromQueue does not exist"** → banner claim agent tidak pernah muncul (lapor Kanaka 15:35 & checklist 15:41–15:48; root cause dikonfirmasi via live probe 16:05 dgn kredensial dari Kanaka). Skip migrasi = gagal SILENT — tidak ada yang error sampai fitur yang butuh kolom baru dipakai.
+
+**Fix (v4.6.2):** `scripts/prestart-migrate.js` + npm lifecycle **`prestart`**:
+- **Otomatis tiap `npm start`** — TIDAK ada lagi langkah migrasi manual yang bisa ke-skip
+- **Idepoten**: DB sudah mutakhir → exit 0 tanpa menulis apa pun
+- **ADDITIVE-ONLY policy**: jalur riwayat lengkap → `prisma migrate deploy` (never reset); jalur hand-built/db-push (tanpa tabel `_prisma_migrations`) → `prisma db push --skip-generate` — prisma menolak sendiri drift destructive → exit 1 **LOUD** (start batal) daripada 500 diam-diam. NEVER `--accept-data-loss`/reset (lesson 2026-08-31)
+- **Install fresh** (DB file belum ada) → `migrate deploy` penuh (riwayat tercatat)
+- **DATABASE_URL absolutisasi terhadap APP ROOT** (lesson 2026-09-02: relative `file:./` di-resolve prisma CLI terhadap dir schema)
+
+**QA (semua di replika DB, prod zero-touch):** simulate DB server IT persis (kolom di-drop + row riwayat v440 dihapus) → `npm start` → guard deteksi 1 pending → apply → boot OK → login + `queue-count` = **200 {count:25}** + `take-next` = **200 ambil chat** (bukan 500). Deploy-mode PASS, idempoten 2×-run PASS, db-push mode (DB tanpa tabel riwayat) PASS.
+
+---
+
 # v4.6.1 — 2026-10-02 (FIX UX: byte formatter human-friendly — raw B dihapus)
 
 **Lapor Kanaka 14:23 (screenshot):** widget "Kuota Tangan Kanan" tampil `1015748 B / 3.0 GB` — gak user-friendly; harusnya paling kecil KB, terus MB, baru GB.
