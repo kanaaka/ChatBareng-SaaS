@@ -80,6 +80,32 @@ const app = express()
 // → req.ip = IP klien asli dari X-Forwarded-For, BUKAN 127.0.0.1. Tanpa ini SEMUA
 // klien dianggap satu IP → rate limit global gampang kembang oleh polling UI.
 app.set('trust proxy', 'loopback')
+
+// v4.6.4-log (spec docs/spec-log-coverage-upgrade.md §A) — breadcrumb SOFT-ERROR:
+// SEMUA response >= 400 di-log warn via service (module guessing di SERVICE — bukan
+// logic di sini). Terpasang SETELAH `const app` + SEBELUM route/route-mounter
+// pertama; capture layer systemLog sudah terpasang di paling atas file. Best-
+// effort: wrapper finish try/catch, gagal log tidak pernah memengaruhi response;
+// stdout dari console lama TIDAK berubah.
+{
+  const sysLog4xx = require('./services/systemLog')
+  app.use((req, res, next) => {
+    res.on('finish', () => {
+      try {
+        const code = res.statusCode
+        if (code < 400) return
+        // NOISE-IGNORE list di SERVICE (health/media retry/client-log self; auth
+        // 401/403 rate 1/menit per (path,code) → shouldLog4xx memutuskan).
+        if (!sysLog4xx.shouldLog4xx(req.originalUrl || req.url, code)) return
+        sysLog4xx.logResponse4xx(req.method, req.originalUrl || req.url, code, {
+          tenantId: req.user?.tenantId ?? null,
+          username: req.user?.username || null,
+        })
+      } catch { /* best-effort — logging gak boleh bikin request mentok */ }
+    })
+    next()
+  })
+}
 const server = http.createServer(app)
 const io = new Server(server, {
   cors: { origin: config.corsOrigin },

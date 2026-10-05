@@ -7,6 +7,10 @@
 // v0.14.9 — exclude grup dari antrean (waJid-based, bukan id — id sekarang Int).
 const prisma = require('../prisma')
 const broadcast = require('./broadcast')
+// v4.6.4-log (spec docs/spec-log-coverage-upgrade.md §B2) — breadcrumbs QUEUE-EMIT:
+// bug "count gak update" jadi kelihatan (dipanggil/tidak, dgn nilai berapa). Info
+// flood-guarded ±300/menit; best-effort via systemLog.
+const systemLog = require('../services/systemLog')
 
 // Filter antrean bersama (v0.13.3): open + unassigned + punya pesan aktif +
 // BUKAN awaiting + BUKAN grup. Chat awaiting = milik alur Menu Gateway (limbo).
@@ -44,6 +48,14 @@ async function emitQueueUpdate(tenantId) {
   try {
     const count = await prisma.chat.count({ where: queueWhere(tenantId) })
     broadcast.emitToTenant(tenantId, 'queue_update', { count })
+    // v4.6.4-log §B2 — breadcrumbs bisnis (best-effort; stdout TIDAK berubah)
+    try {
+      systemLog.logInfo(`QUEUE-EMIT tenant=${Number(tenantId)} count=${count}`, {
+        module: 'chat',
+        tenantId: tenantId == null ? null : Number(tenantId),
+        meta: { count },
+      })
+    } catch { /* best-effort */ }
     return count
   } catch (e) {
     console.error('[queue] emitQueueUpdate error:', e.message)

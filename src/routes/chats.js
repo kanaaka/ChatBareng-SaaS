@@ -20,6 +20,12 @@ const csat = require('../services/csat')
 const receipts = require('../services/receipts')
 const menuGateway = require('../services/menuGateway') // v3.9.8 — clear limbo broadcast
 
+// v4.6.4-log (spec docs/spec-log-coverage-upgrade.md §C) — breadcrumbs existing
+// ([LIST-DEBUG]/[Snooze]/[Queue]/[BatchResolve]/[BatchRead]) retag ke logInfo
+// module='chat' + tenantId eksplisit (stdout TETAP lewat console asli — wrapper
+// passthrough, urutan teks identik). Best-effort; flood guard ±300/menit jalan di service.
+const sysLog = require('../services/systemLog')
+
 // v3.0 — Isolasi tenant: SEMUA endpoint chats = tenant-scoped.
 const rt = [requireAuth, requireTenant]
 
@@ -428,6 +434,13 @@ router.get('/', ...rt, async (req, res) => {
     })
 
     // DEBUG v0.11.0 (temporary)
+    // v4.6.4-log §C — retag: logInfo module='chat' (+ tenant) → stdout tetap via
+    // console asli (passthrough); dedup 10s — 1 row/request, flood guard aman.
+    try {
+      sysLog.logInfo(`[LIST-DEBUG] filter=${req.query.filter ?? ''} role=${req.user.role} userId=${req.user.id} tenant=${req.tenantId}`, {
+        module: 'chat', tenantId: req.tenantId,
+      })
+    } catch { /* best-effort */ }
     console.log('[LIST-DEBUG] filter=', req.query.filter, '| role=', req.user.role, '| userId=', req.user.id)
     // v0.11.0 — preview chat list dekrip on-the-fly (DB berisi ciphertext)
     for (const c of chats) {
@@ -504,6 +517,12 @@ router.post('/:id/snooze', ...rt, async (req, res) => {
     })
 
     broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: Number(chatId), snoozedUntil: until, snoozedBy: req.user.id })
+    // v4.6.4-log §C — retag [Snooze] → structured log (stdout di bawah tetap persis sama)
+    try {
+      sysLog.logInfo(`[Snooze] ${req.user.username} snooze chat ${chatId} sampai ${until.toISOString()} tenant=${req.tenantId}`, {
+        module: 'chat', tenantId: req.tenantId, meta: { chatId: Number(chatId), until: until.toISOString() },
+      })
+    } catch { /* best-effort */ }
     console.log(`[Snooze] ${req.user.username} snooze chat ${chatId} sampai ${until.toISOString()}`)
     res.json({ chat: updated })
   } catch (e) {
@@ -779,6 +798,12 @@ router.post('/take-next', ...rt, async (req, res) => {
     })
     queue.emitQueueUpdate(req.tenantId)
 
+    // v4.6.4-log §C — retag [Queue] (claim/take) → module 'chat' + tenant (stdout persis sama bawahnya)
+    try {
+      sysLog.logInfo(`[Queue] ${req.user.username} mengambil chat dari antrean: ${result} tenant=${req.tenantId}`, {
+        module: 'chat', tenantId: req.tenantId, meta: { chatId: result, username: req.user.username },
+      })
+    } catch { /* best-effort */ }
     console.log(`[Queue] ${req.user.username} mengambil chat dari antrean: ${result}`)
     res.json({ chat })
   } catch (e) {
@@ -850,6 +875,13 @@ router.post('/batch-resolve', ...rt, async (req, res) => {
     }
     // v4.5.0 audit L-2 — tidak ada yang berubah antrean → skip broadcast sia-sia
     if (resolvedIds.length) queue.emitQueueUpdate(req.tenantId)
+    // v4.6.4-log §C — retag [BatchResolve] → module 'chat' + tenant
+    try {
+      sysLog.logInfo(`[BatchResolve] user=${req.user.username} resolved=${resolvedIds.length} skipped=${skipped.length} tenant=${req.tenantId}`, {
+        module: 'chat', tenantId: req.tenantId,
+        meta: { resolved: resolvedIds.length, skipped: skipped.length },
+      })
+    } catch { /* best-effort */ }
     console.log(`[BatchResolve] user=${req.user.username} resolved=${resolvedIds.length} skipped=${skipped.length}`)
     res.json({ resolved: resolvedIds, skipped })
   } catch (e) {
@@ -881,6 +913,13 @@ router.post('/batch-read', ...rt, async (req, res) => {
         skipped.push({ chatId, reason: 'error' })
       }
     }
+    // v4.6.4-log §C — retag [BatchRead] → module 'chat' + tenant
+    try {
+      sysLog.logInfo(`[BatchRead] user=${req.user.username} marked=${markedIds.length} skipped=${skipped.length} tenant=${req.tenantId}`, {
+        module: 'chat', tenantId: req.tenantId,
+        meta: { marked: markedIds.length, skipped: skipped.length },
+      })
+    } catch { /* best-effort */ }
     console.log(`[BatchRead] user=${req.user.username} marked=${markedIds.length} skipped=${skipped.length}`)
     res.json({ marked: markedIds, skipped })
   } catch (e) {
@@ -1618,9 +1657,17 @@ router.post('/:id/tags', ...rt, async (req, res) => {
     if (!tag) return res.status(404).json({ error: 'Tag not found' })
 
     try {
-      await prisma.chatTag.create({
+      const created = await prisma.chatTag.create({
         data: { chatId: chat.id, tagId: parseInt(tagId, 10) },
       })
+      // v4.6.4-log (spec docs/spec-log-coverage-upgrade.md §B5) — breadcrumbs
+      // CHAT-TAG: tag benar-benar tersambung ke chat (skip bila sudah ada).
+      try {
+        sysLog.logInfo(`CHAT-TAG chat=${chat.id} tag=${tag.id}`, {
+          module: 'chat', tenantId: req.tenantId, meta: { chatId: chat.id, tagId: tag.id },
+        })
+      } catch { /* best-effort */ }
+      void created
     } catch (e) {
       // Already exists - fine
     }

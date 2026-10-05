@@ -1,3 +1,41 @@
+# v4.6.5 (log coverage upgrade) — 2026-10-05 (penambahan hotfix: breadcrumbs bisnis + middleware 4xx + retag console lama)
+
+**Latar:** temuan pasca-ship v4.6.4 — capture layer lama HANYA menangkap exception
+(error yang meledak); "salah behaviour" (silent logic bug, validasi 400/409,
+error frontend yang dihandle sopan) lewat di bawah radar (contoh historis: LID bug
+22 Sep, jebakan NULL queue count). Spec: `docs/spec-log-coverage-upgrade.md`
+(APPROVED 2026-10-05, order Kanaka "update yang perbaikan log itu"). Penambahan
+patch line pada v4.6.4 (TANPA bump major/minor — Keputusan Terkunci; nomor final
+diputuskan saat ship).
+
+**Perubahan (ADDITIVE murni — NO schema change, NO version bump):**
+- **Middleware 4xx** (§A): hook response-finish di `src/server.js` — SEMUA response
+  >= 400 di-log warn (`method path -> code`, meta status+username, tenant dari
+  token). Logic tersimpan di SERVICE (`systemLog.logResponse4xx` + `guessRequestMapping`
+  + `shouldLog4xx`) — tanpa logic duplikat di server.js. Noise-ignore: `/api/health`,
+  `/api/media/` (retry saat offline bisa banjir), `/api/client-log` (anti loop),
+  auth 401/403 rate 1/menit per (path,code). Terpasang SETELAH capture layer &
+  SETELAH `const app`, SEBELUM route pertama.
+- **6 call-sites bisnis** (§B): `MSG-IN` (1 titik pusat pesan WA masuk di
+  `wa/pool.js` — isi pesan TIDAK dilog sama sekali, privacy by design),
+  `QUEUE-EMIT` (`socket/queue.js`), `TAG-SAVE` (`routes/tags.js` POST/PUT/PATCH),
+  `CHAT-TAG` (`routes/chats.js` chatTag.create), `IMPORT-DONE` + `IMPORT-FAIL`
+  (`routes/history.js`, termasuk jalur parse-error 400 yang dulu invisible).
+- **Retag breadcrumbs existing** (§C): `[LIST-DEBUG]`, `[Snooze]`, `[Queue]`,
+  `[BatchResolve]`, `[BatchRead]` di `routes/chats.js` → `sysLog.logInfo`
+  module='chat' + tenantId eksplisit. Console.log lama TIDAK dihapus — stdout
+  behavior PERSIS sama (wrapper v4.6.4 meneruskan), ini murni menambah row
+  terstruktur yang bisa difilter per Modul di UI Log Sistem.
+- **Anti-slop tetap jalan** (§D): dedup 10s + flood guard info ±300/menit +
+  redaksi PII saat ingest (redactText semua field) — di service, tidak diduplikat.
+  Best-effort total: kegagalan log tidak pernah menggagalkan aksi utama.
+
+**QA:** e2e baru `scripts/e2e-log-coverage.cjs` 12 kasus (spec §E) di copy-DB
+port 5099 (produksi 5047 tidak tersentuh): **76 PASS / 0 FAIL**. Detail +
+checklist acceptance: `docs/qa-log-coverage.md`.
+
+---
+
 # v4.6.4 — 2026-10-05 (log menu addition — Superadmin System Log: viewer log lintas-tenant + export + client capture)
 
 **Latar:** dalam alur rilis vendor→IT, tim IT TIDAK punya akses server

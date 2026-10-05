@@ -337,6 +337,73 @@ function logClient(opts = {}) {
   })
 }
 
+// ═════════════ v4.6.4-b — MIDDLEWARE 4xx (spec docs/spec-log-coverage-upgrade.md §A) ═════════════
+// Semua logic MIDDLEWARE 4xx disimpan di SERVICE ini (server.js gak punya logic
+// duplikat — tinggal memasang hook response-finish & memanggil logResponse4xx).
+
+// Path prefix → module konstanta yang sama (§A guessModule): dipakai middleware 4xx.
+// /api/chs ikut 'chat' konsisten dgn retag breadcrumbs (lihat chats.js) — 4xx dari
+// chats.js gak jatuh ke 'other'. Selebihnya → 'other' sesuai spec "lainnya other".
+const API_PATH_PREFIX_MODULES = [
+  ['/api/blast', 'blast'],
+  ['/api/history', 'chat'],
+  ['/api/tags', 'chat'],
+  ['/api/contacts', 'chat'],
+  ['/api/chats', 'chat'],
+  ['/api/wa', 'wa'],
+  ['/api/sa', 'tenant'],
+  ['/api/v1', 'api-keys'],
+]
+function guessRequestMapping(rawPath) {
+  const p = String(rawPath == null ? '' : rawPath).split('?')[0]
+  for (const [prefix, mod] of API_PATH_PREFIX_MODULES) {
+    if (p.startsWith(prefix)) return mod
+  }
+  return 'other'
+}
+
+// Daftar noise-ignore (§A): health probe gagal berkala, media retry saat offline
+// (bisa banjir), /api/client-log itu sendiri (anti log-loop).
+const IGNORE_4XX_PREFIXES = ['/api/health', '/api/client-log', '/api/media/']
+
+// 401/403 dari /api/auth (login gagal = percobaan bot): boleh warn TAPI
+// rate-limit sendiri — cukup 1/menit per (path, code). Key = path-tanpa-query + code.
+const AUTH_4XX_TTL_MS = 60 * 1000
+const auth4xxWindow = new Map() // `${path}|${code}` → lastTs
+function shouldLog4xx(rawPath, code) {
+  const p = String(rawPath == null ? '' : rawPath)
+  for (const pref of IGNORE_4XX_PREFIXES) {
+    if (p.startsWith(pref)) return false
+  }
+  if (p.startsWith('/api/auth/') && (code === 401 || code === 403)) {
+    const now = Date.now()
+    const key = `${p.split('?')[0]}|${code}`
+    const last = auth4xxWindow.get(key)
+    if (last != null && now - last < AUTH_4XX_TTL_MS) return false
+    auth4xxWindow.set(key, now)
+    if (auth4xxWindow.size > 500) {
+      for (const [k, ts] of auth4xxWindow) { if (now - ts >= AUTH_4XX_TTL_MS) auth4xxWindow.delete(k) }
+    }
+  }
+  return true
+}
+
+// Pintu tunggi middleware (server.js): code >= 400 + lolos noise list → logWarn.
+// logWarn lewat emit() biasa → dedup 10s + redaksi jalan; bukan logInfo → gak
+// makan jatah flood guard info. Best-effort total.
+function logResponse4xx(method, rawPath, code, ctx = {}) {
+  const c = Number(code)
+  if (!Number.isFinite(c) || c < 400) return
+  if (!shouldLog4xx(rawPath, c)) return
+  let path = String(rawPath == null ? '' : rawPath)
+  if (path.length > 300) path = path.slice(0, 300)
+  logWarn(`${method} ${path} -> ${c}`, {
+    module: guessRequestMapping(rawPath),
+    tenantId: ctx?.tenantId ?? null,
+    meta: { status: c, username: ctx?.username ?? null },
+  })
+}
+
 // ═════════════════════════════ D2.3 — INSTALL CAPTURE ═════════════════════════════
 let captureInstalled = false
 function installSystemLogCapture() {
@@ -461,4 +528,9 @@ module.exports = {
   RETENTION_DEFAULT_DAYS,
   FLOOD_MAX_INFO_PER_MIN,
   resetInProcessStateForTest,
+  // v4.6.4-b — middleware 4xx helpers (spec log-coverage §A)
+  guessRequestMapping,
+  shouldLog4xx,
+  logResponse4xx,
+  IGNORE_4XX_PREFIXES,
 }
