@@ -18,6 +18,9 @@
  */
 
 const prisma = require('../prisma')
+// v4.6.4 — SystemLog capture terstruktur (spec D2.5): error utama auto-reply
+// masuk log superadmin dengan module+tenant eksplisit (best-effort, non-fatal).
+const systemLog = require('./systemLog')
 const broadcast = require('../socket/broadcast')
 const { encryptText, decryptTextSafe } = require('./textCrypto') // v0.11.0 — enkripsi at-rest isi pesan
 // v3.7 — anti-duplicate re-link kontak orphan (helper shared C1–C4)
@@ -398,6 +401,7 @@ async function sendAutoText(chat, text, today) {
     // Null-kan hanya jika marker masih = today (klaim kita sendiri) —
     // tidak pernah menimpa klaim proses lain yang lebih baru.
     console.error(`[AutoReply] send gagal untuk chat=${chatId} (tenant ${tenantId}):`, sendErr.message)
+    void systemLog.logError(`send gagal untuk chat=${chatId}`, { module: 'auto-reply', tenantId, err: sendErr })
     await prisma.chat.updateMany({
       where: { id: chatId, tenantId, lastAutoGreetDate: today },
       data: { lastAutoGreetDate: null },
@@ -883,6 +887,7 @@ async function maybeAutoReply(chat, msg) {
     return { sent: false }
   } catch (e) {
     console.error('[AutoReply] maybeAutoReply error:', e)
+    void systemLog.logError(`maybeAutoReply error (chat=${chat?.id})`, { module: 'auto-reply', tenantId: chat?.tenantId, err: e })
     return { sent: false }
   }
 }

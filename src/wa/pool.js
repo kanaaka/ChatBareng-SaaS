@@ -15,6 +15,9 @@
 //     {disabled:true}, bootstrap no-op).
 const path = require('path')
 const fs = require('fs')
+// v4.6.4 — SystemLog capture terstruktur (spec D2.5): error pool/koneksi WA masuk
+// log superadmin module=wa (best-effort, non-fatal).
+const systemLog = require('../services/systemLog')
 const P = require('pino')
 const QRCode = require('qrcode')
 const {
@@ -228,6 +231,7 @@ async function connectAllTenants() {
     }
   } catch (e) {
     console.error('[WA] Pool bootstrap error:', e.message)
+    void systemLog.logError('Pool bootstrap error', { module: 'wa', err: e })
   }
 }
 
@@ -416,6 +420,7 @@ async function connectTenant(tenantId, opts = {}) {
       }
     } catch (e) {
       logErr(tid, slot, 'connection.update handler error:', e)
+      void systemLog.logError(`connection.update handler error (slot ${Number(slot) || 0})`, { module: 'wa', tenantId: tid, err: e })
     }
   })
 

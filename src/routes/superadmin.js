@@ -19,6 +19,7 @@ const { invalidateThemeCssCache } = require('./appearance')
 // v3.4 — plan/kuota + audit + backup tenant
 const plans = require('../services/plans')
 const saAudit = require('../services/saAudit')
+const systemLog = require('../services/systemLog') // v4.6.4 — SystemLog capture terstruktur (spec D2.5)
 const tenantBackup = require('../services/tenantBackup')
 const usernameGuard = require('../utils/usernameGuard') // v3.4.1 — username unik global lintas tenant
 const validity = require('../services/validity') // v3.8 — masa aktif tenant
@@ -432,6 +433,7 @@ router.post(
       res.json({ ok: true, deleted, filesRemoved })
     } catch (e) {
       console.error('[SA] Purge tenant error:', e)
+      void systemLog.logError(`Purge tenant #${tid} error`, { module: 'tenant', tenantId: tid || null, err: e })
       res.status(500).json({ error: 'Internal server error' })
     }
   }
@@ -1448,6 +1450,7 @@ router.post('/impersonate/:tenantId', ...sa, async (req, res) => {
     res.json({ token, tenant: { id: tenant.id, name: tenant.name }, expiresIn: '30m' })
   } catch (e) {
     console.error('[SA] Impersonate error:', e)
+    void systemLog.logError(`Impersonate tenant #${parseInt(req.params.tenantId, 10) || '?'} error`, { module: 'tenant', tenantId: parseInt(req.params.tenantId, 10) || null, err: e })
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -1933,6 +1936,154 @@ router.delete('/ai-rates/:model', ...sa, async (req, res) => {
     res.json({ deleted: model })
   } catch (e) {
     console.error('[SA] ai-rates DELETE error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ═══════════════ v4.6.4 — SUPERADMIN SYSTEM LOG (spec §D4, additive murni) ═══════════════
+// Log diagnostik lintas-tenant — SUPERADMIN ONLY (semua route di bawah ini memakai
+// middleware `sa` yang sudah ada). TIDAK ADA endpoint create/update/delete manual:
+// data hanya masuk via capture (services/systemLog.js) dan keluar via auto-prune.
+
+// Builder filter bersama utk list/export (identik dgn spec D4)
+function buildSystemLogWhere(req) {
+  const where = {}
+  if (req.query.level) {
+    const levels = String(req.query.level).split(',').map((s) => s.trim()).filter(Boolean)
+    if (levels.length) where.level = { in: levels }
+  }
+  const moduleF = String(req.query.module || '').trim()
+  if (moduleF && systemLog.MODULES.includes(moduleF)) where.module = moduleF
+  const tenantF = parseInt(String(req.query.tenantId || ''), 10)
+  if (Number.isFinite(tenantF) && tenantF > 0) where.tenantId = tenantF
+  const q = String(req.query.q || '').trim()
+  if (q) where.message = { contains: q.slice(0, 200) }
+  const from = new Date(String(req.query.from || ''))
+  if (!Number.isNaN(from.getTime())) where.ts = { ...(where.ts || {}), gte: from }
+  const to = new Date(String(req.query.to || ''))
+  if (!Number.isNaN(to.getTime())) where.ts = { ...(where.ts || {}), lte: to }
+  return where
+}
+
+function wibStampForFilename(d = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(d)
+  const get = (t) => parts.find((p) => p.type === t)?.value || ''
+  return `${get('year')}${get('month')}${get('day')}-${get('hour')}${get('minute')}`
+}
+
+/** CSV cell — quote semua + escape " → "" (SQL/CSV-injection aman by construction). */
+function logCsvCell(v) {
+  if (v === null || v === undefined) return '""'
+  return '"' + String(v).replace(/"/g, '""') + '"'
+}
+
+// GET /api/sa/system-logs — list ringkas + filter + cursor pagination (id desc)
+// Response tanpa stack/metaJson (detail via :id — payload list tetap ramping).
+router.get('/system-logs', ...sa, async (req, res) => {
+  try {
+    const limitRaw = parseInt(String(req.query.limit || '100'), 10)
+    const limit = Math.min(Math.max(Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 100, 1), 500)
+    const cursorRaw = parseInt(String(req.query.cursor || ''), 10)
+    const where = buildSystemLogWhere(req)
+    const findOpts = {
+      where,
+      orderBy: { id: 'desc' },
+      take: limit,
+      select: {
+        id: true, ts: true, level: true, source: true, module: true,
+        tenantId: true, tenantName: true, appVersion: true, message: true,
+      },
+    }
+    if (Number.isFinite(cursorRaw) && cursorRaw > 0) {
+      findOpts.cursor = { id: cursorRaw }
+      findOpts.skip = 1 // mulai SETELAH id cursor
+    }
+    const rows = await prisma.systemLog.findMany(findOpts)
+    res.json({ items: rows, nextCursor: rows.length === limit ? rows[rows.length - 1].id : null })
+  } catch (e) {
+    console.error('[SA] system-logs list error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/sa/system-logs/stats — ringkasan 24 jam (strip atas UI, spec D4 bonus)
+// WAJIB terdaftar SEBELUM /:id — 'stats' bukan id.
+router.get('/system-logs/stats', ...sa, async (req, res) => {
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    const [byLevel, byModule, byTenant] = await Promise.all([
+      prisma.systemLog.groupBy({ by: ['level'], where: { ts: { gte: since } }, _count: { _all: true } }),
+      prisma.systemLog.groupBy({ by: ['module'], where: { ts: { gte: since } }, _count: { _all: true } }),
+      prisma.systemLog.groupBy({
+        by: ['tenantId', 'tenantName'],
+        where: { ts: { gte: since }, tenantId: { not: null } },
+        _count: { _all: true },
+        orderBy: { _count: { tenantId: 'desc' } },
+        take: 5,
+      }),
+    ])
+    res.json({
+      windowHours: 24,
+      byLevel: byLevel.map((r) => ({ level: r.level, count: r._count._all })),
+      byModule: byModule.map((r) => ({ module: r.module, count: r._count._all })),
+      topTenants: byTenant.map((r) => ({ tenantId: r.tenantId, tenantName: r.tenantName, count: r._count._all })),
+    })
+  } catch (e) {
+    console.error('[SA] system-logs stats error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/sa/system-logs/export — CSV dgn filter identik list; cap 10.000 row
+// terbaru sesuai filter (tidak mem-bombak memori). Redaksi sudah TERJADI SAAT INGEST
+// → CSV aman by construction; kolom stack/meta di-CSV-quote (escape " → "").
+router.get('/system-logs/export', ...sa, async (req, res) => {
+  try {
+    const where = buildSystemLogWhere(req)
+    const rows = await prisma.systemLog.findMany({
+      where,
+      orderBy: { id: 'desc' },
+      take: 10000, // cap spec D4
+    })
+    const header = ['id', 'ts', 'level', 'source', 'module', 'tenantId', 'tenantName', 'appVersion', 'message', 'stack', 'metaJson']
+    const lines = [header.join(',')]
+    for (const r of rows) {
+      lines.push([
+        r.id,
+        r.ts instanceof Date ? r.ts.toISOString() : String(r.ts),
+        r.level, r.source, r.module,
+        r.tenantId == null ? '' : r.tenantId,
+        r.tenantName == null ? '' : r.tenantName,
+        r.appVersion == null ? '' : r.appVersion,
+        r.message,
+        r.stack === null || r.stack === undefined ? '' : JSON.stringify(r.stack),
+        r.metaJson === null || r.metaJson === undefined ? '' : JSON.stringify(r.metaJson),
+      ].map(logCsvCell).join(','))
+    }
+    const filename = `system-log-${wibStampForFilename()}.csv`
+    res.setHeader('Content-Type', 'text/csv')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(lines.join('\n'))
+  } catch (e) {
+    console.error('[SA] system-logs export error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/sa/system-logs/:id — detail lengkap (stack + metaJson). Terdaftar TERAKHIR
+// di kelompok ini (stats/export sudah di atas — 'stats' tidak tertelan sbg :id).
+router.get('/system-logs/:id', ...sa, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid id' })
+    const row = await prisma.systemLog.findUnique({ where: { id } })
+    if (!row) return res.status(404).json({ error: 'Log tidak ditemukan (mungkin sudah di-prune retensi)' })
+    res.json({ item: row })
+  } catch (e) {
+    console.error('[SA] system-logs detail error:', e)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

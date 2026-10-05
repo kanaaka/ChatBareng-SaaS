@@ -8,6 +8,9 @@
 
 const prisma = require('../prisma')
 const broadcast = require('../socket/broadcast')
+// v4.6.4 — SystemLog capture terstruktur (spec D2.5): gagal runner blast masuk log
+// superadmin module=blast (best-effort, non-fatal).
+const systemLog = require('./systemLog')
 const wa = require('../wa/pool')
 const { loadMedia, resolveMediaFilePath } = require('../wa/media')
 const { decryptTextSafe } = require('./textCrypto') // v0.12.4 — enkripsi scope 2: Blast.message
@@ -297,6 +300,7 @@ async function runBlast(blastId) {
 
   } catch (err) {
     console.error(`[Blast] Blast ${blastId} error:`, err)
+    void systemLog.logError(`Blast ${blastId} error`, { module: 'blast', err })
     await finishBlast(blastId, 0, 0, 'failed')
     const failed = await prisma.blast.findUnique({ where: { id: blastId }, select: { tenantId: true } }).catch(() => null)
     if (failed) broadcast.emitToTenant(failed.tenantId, 'blast_error', { blastId, error: err.message })

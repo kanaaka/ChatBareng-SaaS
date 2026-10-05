@@ -1,3 +1,10 @@
+// v4.6.4 — SystemLog capture WAJIB terpasang PALING ATAS (spec D2.3, sebelum require
+// route/service lain): wrap console.error/warn/log/info + crash handler. Call lama
+// tetap tampil di stdout PERSIS seperti biasa (wrapper meneruskan ke console asli),
+// sekaligus ter-capture ke tabel SystemLog (redaksi PII saat ingest, dedup 10s,
+// flood guard info ±300/menit). Best-effort — tidak pernah fatal.
+require('./services/systemLog').installSystemLogCapture()
+
 const express = require('express')
 const http = require('http')
 const { Server } = require('socket.io')
@@ -108,6 +115,46 @@ const apiWriteLimiter = rateLimit({
 })
 app.use('/api/', apiReadLimiter, apiWriteLimiter)
 
+// ═══ v4.6.4 — Client log capture (spec D3): POST /api/client-log — JWT user APA PUN
+// role-nya (super_admin/admin/cs/relay — Keputusan Terkunci #3); tenantId & username
+// DIAMBIL DARI TOKEN (bukan body). Denda rate limit per-user 20/menit via in-memory
+// Map (bukan per-IP). Fire-and-forget 204 — TIDAK mengembalikan detail DB. Body
+// dicap: message ≤ 500, stack ≤ 2000, module dari konstanta yang sama dgn BE.
+// Terdaftar SEBELUM write-guard tenant di bawah → error frontend user tenant
+// expired juga tetap masuk log (diagnostik penting; guard read-only jangan menutup
+// jalur lapor).
+const systemLog = require('./services/systemLog')
+const clientLogBuckets = new Map() // userId → { win, count }
+const CLIENT_LOG_MAX_PER_MIN = 20
+app.post('/api/client-log', requireAuth, (req, res) => {
+  try {
+    // Rate limit per-USER (bukan per-IP — NAT kantor gak boleh saling menghabiskan)
+    const uid = Number(req.user.id)
+    const now = Date.now()
+    let b = clientLogBuckets.get(uid)
+    if (!b || now - b.win >= 60 * 1000) { b = { win: now, count: 0 }; clientLogBuckets.set(uid, b) }
+    b.count++
+    if (b.count > CLIENT_LOG_MAX_PER_MIN) return res.status(204).end()
+
+    const body = req.body || {}
+    let message = typeof body.message === 'string' ? systemLog.capStr(systemLog.redactText(body.message), 500) : ''
+    if (!message || !message.trim()) return res.status(204).end()
+    const stack = typeof body.stack === 'string' ? systemLog.capStr(systemLog.redactText(body.stack), 2000) : null
+    const moduleHint = typeof body.module === 'string' ? body.module : 'frontend'
+    const route = typeof body.route === 'string' ? body.route.slice(0, 120) : null
+    const tenantId = req.user.tenantId != null && Number.isFinite(Number(req.user.tenantId)) ? Number(req.user.tenantId) : null
+    void systemLog.logClient({
+      message, stack, module: systemLog.MODULES.includes(moduleHint) ? moduleHint : 'frontend',
+      tenantId, // DARI TOKEN
+      username: req.user.username,
+      route,
+    })
+    return res.status(204).end()
+  } catch {
+    return res.status(204).end() // fire-and-forget: gagal ingest pun tetap 204
+  }
+})
+
 // ═══ v3.8 — Global WRITE-GUARD masa aktif tenant (READ-ONLY enforcement) ═══
 // Keputusan owner 15:30: tenant expired TETAP bisa login + GET/read (lihat chat,
 // kontak, statistik, export); SEMUA aksi tulis diblokir 403 SUBSCRIPTION_EXPIRED.
@@ -216,6 +263,15 @@ if (fs.existsSync(publicDir)) {
 // Error handler
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err)
+  // v4.6.4 — capture terstruktur: module `api-keys` bila path /api/v1/…, selain itu `other`
+  // (spec D2.5 — middleware error API terakhir). Perilaku lama (stdout + 500 JSON)
+  // TIDAK berubah — ini add-on saja.
+  try {
+    const sysLog = require('./services/systemLog')
+    const p = typeof req.path === 'string' ? req.path : (req.originalUrl || '')
+    const moduleId = p.includes('/api/v1/') ? 'api-keys' : 'other'
+    void sysLog.logError(`Unhandled API error: ${p}`, { module: moduleId, err })
+  } catch { /* best-effort */ }
   res.status(500).json({ error: 'Internal server error' })
 })
 
@@ -272,6 +328,11 @@ async function start() {
     // Bug: initMenuGatewaySweep gak pernah punya caller → timeout "Menunggu menu"
     // gak pernah jalan di produksi (chat nyangkut selamanya).
     require('./services/menuGateway').initMenuGatewaySweep()
+
+    // v4.6.4 — Retensi SystemLog (30 hari default, env SYSTEMLOG_RETENTION_DAYS):
+    // prune saat boot + loop harian in-process di menit kecil acak (pola
+    // anti-cron-eksternal ala gdriveBackup.js). Best-effort, tidak pernah fatal.
+    require('./services/systemLog').initSystemLogRetention()
 
     // Start Express
     server.listen(config.port, () => {

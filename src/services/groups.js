@@ -14,6 +14,9 @@
 
 const prisma = require('../prisma')
 const wa = require('../wa/pool')
+// v4.6.4 — SystemLog capture terstruktur (spec D2.5): assertWaReady* gagal (WA belum
+// terhubung saat aksi grup) masuk log superadmin module=wa (best-effort, non-fatal).
+const systemLog = require('./systemLog')
 const broadcast = require('../socket/broadcast')
 const push = require('../push')
 const { encryptText, decryptTextSafe } = require('./textCrypto')
@@ -45,6 +48,7 @@ function isGroupJid(jid) {
 function assertWaReady(tenantId) {
   const st = wa.getStatusForTenant(tenantId)
   if (!st.connected) {
+    void systemLog.logWarn('assertWaReady gagal: WA belum terhubung', { module: 'wa', tenantId })
     throw new GroupServiceError('WA_BELUM_TERHUBUNG', 503, 'WhatsApp belum terhubung. Hubungkan WhatsApp dulu (halaman Admin → WhatsApp).')
   }
 }
@@ -59,6 +63,7 @@ function assertWaReadySlot(tenantId, slot) {
   const s = Number(slot) || 0
   const st = wa.getStatusForTenant(tenantId, s)
   if (!st.connected) {
+    void systemLog.logWarn(`assertWaReadySlot gagal: slot ${s} belum terhubung`, { module: 'wa', tenantId })
     const msg = s === 0
       ? 'WhatsApp belum terhubung. Hubungkan WhatsApp dulu (halaman Admin → WhatsApp).'
       : `Nomor slot ${s} belum terhubung. Hubungkan nomor itu dulu di halaman Admin → WhatsApp.`
