@@ -978,3 +978,34 @@ model ChannelPost {
   @@unique([archiveId, serverId])
   @@index([archiveId])
 }
+
+// ═══════════════════════════════════════════════════════════════
+// v4.6.4 (log menu addition) — Superadmin System Log (spec docs/spec-superadmin-system-log.md).
+// Satu tabel log diagnostik lintas-tenant utk SUPERADMIN SAJA (tenant TIDAK pernah
+// melihatnya — privasi antar-tenant mutlak). Model ADDITIVE MURNI — tidak ada
+// tabel/kolom lama yang disentuh.
+// - tenantId plain TANPA FK + tenantName snapshot → pola SaAuditLog: row tetap
+//   hidup setelah tenant di-purge (tidak orphan-FK).
+// - Redaksi PII TERJADI SAAT INGEST (services/systemLog.js D7) → DB, UI, dan CSV
+//   semuanya sudah bersih by construction; field di-cap di sini sebagai lapis kedua.
+// - appVersion = snapshot versi app saat entry dibuat (IT tahu "error ini sejak merge vX").
+// ═══════════════════════════════════════════════════════════════
+model SystemLog {
+  id          Int      @id @default(autoincrement()) // Int cukup (2.1B); hindari pain BigInt di JSON API
+  ts          DateTime @default(now())
+  level       String   // "error" | "warn" | "info"
+  source      String   // "server" | "client"
+  module      String   // auto-reply|blast|scheduler|wa|chat|media|api-keys|auth|tenant|database|frontend|other
+  tenantId    Int?     // plain TANPA FK (pola SaAuditLog) → row tetap hidup setelah tenant di-purge
+  tenantName  String?  // snapshot nama saat write (tenant bisa terdelete belakangan)
+  appVersion  String?  // snapshot versi app saat entry dibuat
+  message     String   // TER-REDAKSI + dibatasi 1000 chars (cap #2 di service)
+  stack       String?  // dibatasi 4000 chars (bila ada Error object)
+  metaJson    String?  // JSON konteks tambahan, dibatasi 4000 chars
+  createdAt   DateTime @default(now())
+
+  @@index([ts])
+  @@index([level, ts])
+  @@index([module, ts])
+  @@index([tenantId, ts])
+}

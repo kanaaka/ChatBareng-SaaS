@@ -15,6 +15,8 @@ const items = [
   { to: '/superadmin/overview', label: 'Overview', icon: '📊' },
   { to: '/superadmin/tenants', label: 'Tenants', icon: '👥' },
   { to: '/superadmin/audit', label: 'Audit Log', icon: '📜' },
+  // v4.6.4 (log menu addition) — Log Sistem: setelah Audit (spec D5)
+  { to: '/superadmin/logs', label: 'Log Sistem', icon: '🗒️' },
   { to: '/superadmin/pengaturan', label: 'Pengaturan', icon: '⚙️' },
 ]
 

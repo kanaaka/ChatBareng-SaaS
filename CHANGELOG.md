@@ -1,3 +1,49 @@
+# v4.6.4 — 2026-10-05 (log menu addition — Superadmin System Log: viewer log lintas-tenant + export + client capture)
+
+**Latar:** dalam alur rilis vendor→IT, tim IT TIDAK punya akses server
+(`logs/server-*.log` tidak terlihat dari app) → error per fitur/per-tenant tidak
+bisa di-triage. Menu log di UI superadmin: sebagian issue self-serve oleh IT
+(config/reset lokal), sisanya di-eskalasi ke developer dgn export yang datanya
+lengkap. Spec: `docs/spec-superadmin-system-log.md` (APPROVED 2026-10-05 14:35).
+Masuk sebagai penambahan patch line (TANPA bump major/minor — Keputusan Terkunci):
+nomor final diputuskan saat ship.
+
+**Fitur:**
+- Tabel `SystemLog` **ADDITIVE MURNI** (1 tabel, ZERO DROP; tenantId plain tanpa
+  FK + tenantName snapshot — pola SaAuditLog, survive purge). DDL share di
+  `docs/SCHEMA-CHANGES.md` (wajib di body PR — feedback IT 2026-10-02).
+- `src/services/systemLog.js` — capture layer server: wrapper `console.error/warn`
+  (level error/warn) + `console.log/info` (level info, **flood guard ±300/menit**
+  + 1 warn "info flood suppressed N"), crash handler uncaughtException/
+  unhandledRejection (log saja, TIDAK exit), call-site terstruktur (auto-reply,
+  blast, scheduler v0100 + menuGateway sweep, pool WA + assertWaReady*, purge/
+  impersonate SA, middleware error API), dedup 10 detik, anti-rekursi. **Best-
+  effort total** (pola saAudit): kegagalan write log tidak pernah menggagalkan
+  aksi utama; stdout console lama TIDAK berubah.
+- **Redaksi PII saat ingest**: digit run ≥8 (nomor WA/NIK) → `62***2333`, email →
+  `u***@domain`, blok message/body/payload → `[redacted-body N chars]`; caps
+  message 1000 / stack 4000 / meta 4000 → DB, UI, dan CSV bersih by construction.
+- `POST /api/client-log` — capture error frontend (Vue errorHandler + window
+  error/unhandledrejection di main.js), JWT semua role, tenant & username dari
+  TOKEN (bukan body), rate limit 20/menit/user, fire-and-forget 204.
+- API superadmin: `GET /api/sa/system-logs` (list+filter level/modul/tenant/
+  keyword/rentang + cursor), `/:id` (detail stack+meta), `/export` (CSV cap
+  10.000 row, ikut filter, filename system-log-YYYYMMDD-HHmm WIB), `/stats`
+  (ringkasan 24 jam). Superadmin-only (`sa` middleware).
+- UI: menu **"Log Sistem"** di SaSidebar (setelah Audit) → `/superadmin/logs` —
+  stats strip (angka error merah >0), filter bar, tabel (Waktu/Level/Modul/
+  Tenant/Pesan/Versi), drawer detail (stack, metaJson pretty, **Copy JSON** utk
+  laporan vendor), export CSV, auto-refresh 30s opsional.
+- Retensi **30 hari** (env `SYSTEMLOG_RETENTION_DAYS`): prune saat boot + harian
+  in-process di menit kecil acak (pola anti-cron-eksternal gdriveBackup), hapus
+  batch 5000. Tidak ada edit/delete manual dari UI.
+- `version.json` — snapshot versi app per entry log (IT tahu "error ini sejak merge vX").
+
+**QA:** e2e `scripts/e2e-v470-systemlogs.mjs` 10 kasus (spec §D9) di copy-DB
+(produksi tidak tersentuh) + smoke boot copy-DB port test.
+
+---
+
 # v4.6.3 — 2026-10-02 (HARDENING: prestart-migrate GUARD v2 — self-heal + proses DDL-share utk IT)
 
 **Latar:** feedback tim IT (16:36 — via log server + pesan): minta **DDL di-share tiap penambahan kolom** (server menjalankan DB miliknya sendiri, mau apply manual). Plus temuan interaksi guard v1: jalur `migrate deploy` bisa crash "duplicate column" bila kolom pernah ditambah manual dan riwayat migrasi tidak konsisten.

@@ -70,6 +70,8 @@ const routes = [
       { path: '/superadmin/overview', name: 'SuperAdminOverview', component: () => import('./views/SaOverview.vue'), meta: { auth: true, superadmin: true } },
       { path: '/superadmin/tenants', name: 'SuperAdminTenants', component: () => import('./views/SaTenants.vue'), meta: { auth: true, superadmin: true } },
       { path: '/superadmin/audit', name: 'SuperAdminAudit', component: () => import('./views/SaAudit.vue'), meta: { auth: true, superadmin: true } },
+      // v4.6.4 (log menu addition) — Log Sistem: log diagnostik lintas-tenant (superadmin-only)
+      { path: '/superadmin/logs', name: 'SuperAdminLogs', component: () => import('./views/SaLogs.vue'), meta: { auth: true, superadmin: true } },
       { path: '/superadmin/pengaturan', name: 'SuperAdminPengaturan', component: () => import('./views/SaPengaturan.vue'), meta: { auth: true, superadmin: true } },
     ],
   },

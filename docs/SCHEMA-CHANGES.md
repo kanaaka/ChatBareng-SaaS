@@ -74,3 +74,56 @@ Setiap PR rilis dengan perubahan skema akan:
 1. Memiliki folder `prisma/migrations/<ts>_<nama>/migration.sql` (standar Prisma)
 2. Menambah entri di file ini dengan DDL eksak
 3. Membawa blok **"Perubahan skema & DDL"** di deskripsi PR
+
+---
+
+## v4.6.4 (log menu addition) — 2026-10-05 — Superadmin **System Log** (tabel baru, ADDITIVE MURNI)
+
+- **1 tabel ADD-ONLY** (`SystemLog`) — ZERO DROP, zero perubahan pada tabel/kolom lama.
+  Log diagnostik lintas-tenant untuk SUPERADMIN (viewer `/superadmin/logs`); tenant
+  TIDAK pernah melihatnya (privasi antar-tenant mutlak).
+- `tenantId` plain TANPA FK + `tenantName` snapshot → pola `SaAuditLog`: row tetap
+  hidup setelah tenant di-purge (tidak orphan-FK).
+- **Redaksi PII DIEKSEKUSI SAAT INGEST** (services/systemLog.js): DB & export sudah
+  bersih by construction — nomor WA/NIK (digit ≥8), email, dan blok
+  message/body/payload literal di-redaksi sebelum write.
+- Retensi otomatis **30 hari** (env `SYSTEMLOG_RETENTION_DAYS` override) — prune
+  harian in-process, tanpa cron eksternal. Tidak ada delete manual dari UI.
+- Migrasi diterapkan otomatis oleh `npm start` (guard prestart-migrate v2 — db push
+  idempoten additive-only, persis pola rilis sebelumnya).
+
+**DDL eksak (dialect SQLite — eksak dari `prisma migrate diff` datamodel lama→baru;
+ idempoten bila dijalankan berulang — aman untuk DB server IT):**
+
+```sql
+CREATE TABLE IF NOT EXISTS "SystemLog" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "ts" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "level" TEXT NOT NULL,
+    "source" TEXT NOT NULL,
+    "module" TEXT NOT NULL,
+    "tenantId" INTEGER,
+    "tenantName" TEXT,
+    "appVersion" TEXT,
+    "message" TEXT NOT NULL,
+    "stack" TEXT,
+    "metaJson" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS "SystemLog_ts_idx" ON "SystemLog"("ts");
+CREATE INDEX IF NOT EXISTS "SystemLog_level_ts_idx" ON "SystemLog"("level", "ts");
+CREATE INDEX IF NOT EXISTS "SystemLog_module_ts_idx" ON "SystemLog"("module", "ts");
+CREATE INDEX IF NOT EXISTS "SystemLog_tenantId_ts_idx" ON "SystemLog"("tenantId", "ts");
+```
+
+*(Catatan: bentuk ini setara dgn spec §D8 — versi MySQL di pack diadaptasi ke
+ dialect SQLite yang benar-benar dipakai server; `IF NOT EXISTS` ditambah agar
+ aman dijalankan berulang. Kolom & index identik.)*
+
+**Verifikasi pasca-apply:**
+
+```bash
+sqlite3 data/wa-cs-hub.db "SELECT COUNT(*) FROM sqlite_master WHERE name='SystemLog';"  # >= 1 (tabel ada)
+systemctl restart chatbareng
+# login superadmin → menu "Log Sistem" → /superadmin/logs harus tampil (list 200)
+```
