@@ -16,6 +16,9 @@
  */
 
 const prisma = require('../prisma')
+// v4.6.4 — SystemLog capture terstruktur (spec D2.5): kegagalan sweep masuk log
+// superadmin module=scheduler (best-effort, non-fatal).
+const systemLog = require('./systemLog')
 const broadcast = require('../socket/broadcast')
 const { encryptText, decryptTextSafe } = require('./textCrypto')
 // v0.13.3 (F4) — repeatAllows SATU implementasi (di autoReply.js, marker BERSAMA
@@ -859,6 +862,7 @@ async function sweepOnce() {
     }
   } catch (e) {
     console.error('[MenuGateway] sweep error:', e.message)
+    void systemLog.logError('MenuGateway sweep error', { module: 'scheduler', err: e })
   } finally {
     sweeping = false
   }

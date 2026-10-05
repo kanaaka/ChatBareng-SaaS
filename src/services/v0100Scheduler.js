@@ -13,6 +13,9 @@
  */
 
 const prisma = require('../prisma')
+// v4.6.4 — SystemLog capture terstruktur (spec D2.5): kegagalan scheduler masuk log
+// superadmin module=scheduler (best-effort, non-fatal).
+const systemLog = require('./systemLog')
 const broadcast = require('../socket/broadcast')
 const { encryptText, decryptTextSafe } = require('./textCrypto') // v0.11.0 — enkripsi at-rest isi pesan
 
@@ -193,6 +196,7 @@ async function processScheduledMessages() {
     } catch (e) {
       const errMsg = (e.message || 'Unknown error').slice(0, 500)
       console.error(`[Scheduler v0.10.0] Pesan terjadwal #${sm.id} GAGAL:`, errMsg)
+      void systemLog.logError(`Pesan terjadwal #${sm.id} GAGAL: ${errMsg}`, { module: 'scheduler', tenantId: sm.tenantId })
       await prisma.scheduledMessage.update({
         where: { id: sm.id },
         data: { status: 'error', error: errMsg },
@@ -220,6 +224,7 @@ async function tick() {
     await processCsatPending()
   } catch (e) {
     console.error('[Scheduler v0.10.0] tick error:', e.message)
+    void systemLog.logError('Scheduler tick error', { module: 'scheduler', err: e })
   } finally {
     tickRunning = false
   }
