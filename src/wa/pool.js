@@ -1607,6 +1607,19 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
     },
   })
 
+  // v4.6.4-log (spec docs/spec-log-coverage-upgrade.md §B1) — breadcrumbs: 1 titik
+  // pusat pesan WA masuk (setelah persist, sebelum downstream). Privacy by design:
+  // isi pesan TIDAK dilog sama sekali — hanya chat id + tenant + JID (digit run ≥8
+  // ter-redaksi saat ingest via redactText) + fromMe. Best-effort, flood guard
+  // logInfo (±300/menit) tetap jalan di service.
+  try {
+    systemLog.logInfo(`MSG-IN chat=${chat.id} tenant=${tid}`, {
+      module: 'chat',
+      tenantId: tid,
+      meta: { chatId: chat.id, waJid: chatId, fromMe: !!msg.key.fromMe },
+    })
+  } catch { /* best-effort */ }
+
   // Sync contact (Contact.chatId Int + tenantId)
   // v3.5 §2 — sync contactPhone yang baru di-resolve (LID→phone) ke Contact row
   try {

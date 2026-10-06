@@ -139,13 +139,22 @@
           class="hidden md:flex border-t border-gray-200 bg-green-50 px-3 py-2 items-center justify-between flex-shrink-0"
         >
           <span class="text-sm text-green-800">📨 {{ queueCount }} chat baru di antrean</span>
-          <button
-            @click="handleTakeNext"
-            :disabled="chats.taking"
-            class="m3-btn m3-btn--filled !min-h-[36px] !px-4 text-xs disabled:opacity-50"
-          >
-            {{ chats.taking ? 'Taking...' : 'Take' }}
-          </button>
+          <div class="flex items-center gap-2">
+            <!-- v4.6.6 — Admin Clear Queue: tombol self-serve kosongkan antrean (admin only) -->
+            <button
+              v-if="auth.isAdmin"
+              @click="showClearQueueDialog = true"
+              :disabled="chats.taking"
+              class="m3-btn m3-btn--outlined !min-h-[36px] !px-4 text-xs disabled:opacity-50"
+            >🧹 Kosongkan</button>
+            <button
+              @click="handleTakeNext"
+              :disabled="chats.taking"
+              class="m3-btn m3-btn--filled !min-h-[36px] !px-4 text-xs disabled:opacity-50"
+            >
+              {{ chats.taking ? 'Taking...' : 'Take' }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -328,6 +337,14 @@
       @confirm="handleScheduleConfirm"
       @close="showScheduledDialog = false"
     />
+
+    <!-- v4.6.6 — Admin Clear Queue: modal konfirmasi 2 langkah (admin tenant only) -->
+    <ClearQueueDialog
+      :open="showClearQueueDialog"
+      :count="queueCount"
+      @close="showClearQueueDialog = false"
+      @cleared="handleClearQueueResult"
+    />
   </div>
 </template>
 
@@ -359,6 +376,8 @@ import { getSubscription, isTenantLocked, fmtDateId } from '../utils/subscriptio
 // v0.10.0 — Empat Fitur
 import SnoozeDialog from '../components/SnoozeDialog.vue'
 import ScheduledDialog from '../components/ScheduledDialog.vue'
+// v4.6.6 — Admin Clear Queue (modal konfirmasi 2 langkah)
+import ClearQueueDialog from '../components/ClearQueueDialog.vue'
 
 const API = import.meta.env.VITE_API_URL || ''
 
@@ -442,6 +461,18 @@ const scheduledLoading = ref(false)
 // v0.1.21 — Queue discipline state (dialog release kini M3 ConfirmDialog)
 const releasing = ref(false)
 const queueCount = ref(0)
+
+// v4.6.6 — Admin Clear Queue: dialog + pasca-sukses refresh list & count
+const showClearQueueDialog = ref(false)
+async function handleClearQueueResult(data) {
+  try {
+    await chats.fetchQueueCount()
+  } catch {}
+  queueCount.value = chats.queueCount
+  chats.fetchChats(chats.filterParams) // list refresh (hilang dari Unassigned, tampil di Resolved)
+  if (data?.remaining > 0) return // dialog tetap terbuka (rolling clear — sisa count)
+  showClearQueueDialog.value = false
+}
 
 // v0.13.0 — chip admin "⏳ Menunggu menu": count realtime + flyout list read-only
 const menuWaitingCount = ref(0)

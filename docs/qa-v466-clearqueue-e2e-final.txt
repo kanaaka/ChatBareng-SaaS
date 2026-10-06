@@ -1,0 +1,58 @@
+PASS  S0-a server test boot di 5099 (copy DB, WA_DISABLED=1) 
+PASS  S0-b super_admin row ada di copy DB 
+PASS  S0-c superadmin login status=200 
+PASS  S0-d admin tenant login status=200 
+PASS  S0-e cs login status=200 
+PASS  S0-f 30 chat antrean terbentuk (queue-count=30) got=30
+PASS  S0-g CSAT tenant paksa ENABLED (guard zero-check) + 0 survey sebelum aksi got=0
+PASS  K2-a POST tanpa confirm → 400 (got 400) {"error":"confirmation required"}
+PASS  K2-b POST confirm:false → 400 (got 400) 
+PASS  K2-c POST confirm:"true" (string) → 400 (got 400) 
+PASS  K2-d antrean tidak berubah setelah 400 got=30
+PASS  K3-a POST clear-queue dgn role cs → 403 (got 403) {"error":"Admin access required"}
+PASS  K3-b antrean tidak berubah setelah 403 (cs) got=30
+PASS  K4-a POST confirm (admin) → 200 (got 200) {"cleared":30,"skipped":[],"remaining":0}
+PASS  K4-b cleared=30 skipped=[] remaining=0 (got 30/[]/0) 
+PASS  K4-c 30 chat status=resolved (got 30) 
+PASS  K4-d semua assignedToId=admin.id (yang klik tombol) nonmatch=0
+PASS  K4-e semua resolvedById=admin.id + resolvedAt terisi 
+PASS  K4-f messagesBeforeResolve = csMessagesSent (chat khusus = 2) got=2
+PASS  K4-g messagesBeforeResolve chat lain = 1 
+PASS  K7-a CSAT: 0 survey baru dibuat (before=0 after got 0) 
+PASS  K7-b 0 survey utk chat yang di-clear 
+PASS  K5-a 3 chat awaiting TIDAK tersentuh: masih open+unassigned+awaiting (got 3/3) 
+PASS  K5-b menuRequestedAt fixture awaiting tetap terisi (tidak dibersihkan) 
+PASS  K5-c 3 chat snoozed → snoozedUntil null (got 3/3) 
+PASS  K5-d snoozedBy dibersihkan (null) 
+PASS  K5-e chat polos tidak berubah menuState (tetap null) 
+PASS  K6-a queue-count pasca clear = 0 (got 0) 
+PASS  K6-b DB paritas via queueWhere: 0 chat antrean tersisa tenant uji (got 0) 
+PASS  K8-a chat grup @g.us TIDAK ter-resolved (status=open) 
+PASS  K8-b kontak excludeFromQueue TIDAK ter-resolved (status=open) 
+PASS  K8-c keduanya tidak masuk daftar cleared 
+PASS  K9-a row [ClearQueue] structured muncul (got 1) 
+PASS  K9-b module='chat' (got chat) + level info 
+PASS  K9-c tenantId=12 di row got=12
+PASS  K9-d format user/cleared/remaining benar [ClearQueue] user=adm_cq_u-poxlxankli cleared=30 tenant=12 remaining=0
+PASS  K9-e metaJson cleared=30 remaining=0 skipped=0 {"cleared":30,"remaining":0,"skipped":0}
+PASS  K9-g row passthrough console (capture v4.6.4) juga ada (by design) [ClearQueue] user=adm_cq_u-poxlxankli cleared=30 tenant=12 remaining=0
+PASS  K9-f redaksi OK: 0 nomor pelanggan mentah di row phone=62811***
+PASS  K10-a 2100 chat terbentuk + queue-count=2100 (got 2100) got=2100
+PASS  K10-b clear #1 → 200 (got 200) 
+PASS  K10-c cleared=2000 remaining=100 (got 2000/100) 
+PASS  K10-d 100 tersisa = terlama (open got 100, match 100/100) 
+PASS  K10-e clear #2 via superadmin impersonate → cleared=100 remaining=0 (got 100/0) 
+PASS  K10-f queue-count T2 pasca = 0 (got 0) 
+PASS  K10-g CSAT T2 tetap 0 (before got 0, after 0) 
+PASS  K10-h 2 row [ClearQueue] structured cap-clear tercatat (got 2) 
+PASS  K11-a take-next → 200 + chat benar (claimed=10704 target=10704) 
+PASS  K11-b chat claimed: assignedTo=admin 
+PASS  K11-c single-resolve → 200 (got 200) 
+PASS  K11-d hasil single-resolve benar (resolved + resolvedById=admin) 
+PASS  K11-e CSAT 1 survey dibuat oleh single-resolve (kontras: clear-queue 0) (got 1) got=1
+PASS  K11-f batch-resolve → 200 resolved=1 (got 200/1) 
+PASS  K11-g batch-resolve: chat di-resolve normal 
+PASS  K11-h queue-count = 0 pasca regresi (got 0) 
+PASS  K11-i [BatchResolve] breadcrumb tetap jalan (module chat, row structured got 1) 
+
+=== e2e-clearqueue: 56 PASS / 0 FAIL (5.1s) ===
