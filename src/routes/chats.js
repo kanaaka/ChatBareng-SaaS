@@ -20,6 +20,12 @@ const csat = require('../services/csat')
 const receipts = require('../services/receipts')
 const menuGateway = require('../services/menuGateway') // v3.9.8 — clear limbo broadcast
 
+// v4.6.4-log (spec docs/spec-log-coverage-upgrade.md §C) — breadcrumbs existing
+// ([LIST-DEBUG]/[Snooze]/[Queue]/[BatchResolve]/[BatchRead]) retag ke logInfo
+// module='chat' + tenantId eksplisit (stdout TETAP lewat console asli — wrapper
+// passthrough, urutan teks identik). Best-effort; flood guard ±300/menit jalan di service.
+const sysLog = require('../services/systemLog')
+
 // v3.0 — Isolasi tenant: SEMUA endpoint chats = tenant-scoped.
 const rt = [requireAuth, requireTenant]
 
@@ -428,6 +434,13 @@ router.get('/', ...rt, async (req, res) => {
     })
 
     // DEBUG v0.11.0 (temporary)
+    // v4.6.4-log §C — retag: logInfo module='chat' (+ tenant) → stdout tetap via
+    // console asli (passthrough); dedup 10s — 1 row/request, flood guard aman.
+    try {
+      sysLog.logInfo(`[LIST-DEBUG] filter=${req.query.filter ?? ''} role=${req.user.role} userId=${req.user.id} tenant=${req.tenantId}`, {
+        module: 'chat', tenantId: req.tenantId,
+      })
+    } catch { /* best-effort */ }
     console.log('[LIST-DEBUG] filter=', req.query.filter, '| role=', req.user.role, '| userId=', req.user.id)
     // v0.11.0 — preview chat list dekrip on-the-fly (DB berisi ciphertext)
     for (const c of chats) {
@@ -504,6 +517,12 @@ router.post('/:id/snooze', ...rt, async (req, res) => {
     })
 
     broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: Number(chatId), snoozedUntil: until, snoozedBy: req.user.id })
+    // v4.6.4-log §C — retag [Snooze] → structured log (stdout di bawah tetap persis sama)
+    try {
+      sysLog.logInfo(`[Snooze] ${req.user.username} snooze chat ${chatId} sampai ${until.toISOString()} tenant=${req.tenantId}`, {
+        module: 'chat', tenantId: req.tenantId, meta: { chatId: Number(chatId), until: until.toISOString() },
+      })
+    } catch { /* best-effort */ }
     console.log(`[Snooze] ${req.user.username} snooze chat ${chatId} sampai ${until.toISOString()}`)
     res.json({ chat: updated })
   } catch (e) {
@@ -779,6 +798,12 @@ router.post('/take-next', ...rt, async (req, res) => {
     })
     queue.emitQueueUpdate(req.tenantId)
 
+    // v4.6.4-log §C — retag [Queue] (claim/take) → module 'chat' + tenant (stdout persis sama bawahnya)
+    try {
+      sysLog.logInfo(`[Queue] ${req.user.username} mengambil chat dari antrean: ${result} tenant=${req.tenantId}`, {
+        module: 'chat', tenantId: req.tenantId, meta: { chatId: result, username: req.user.username },
+      })
+    } catch { /* best-effort */ }
     console.log(`[Queue] ${req.user.username} mengambil chat dari antrean: ${result}`)
     res.json({ chat })
   } catch (e) {
@@ -850,6 +875,13 @@ router.post('/batch-resolve', ...rt, async (req, res) => {
     }
     // v4.5.0 audit L-2 — tidak ada yang berubah antrean → skip broadcast sia-sia
     if (resolvedIds.length) queue.emitQueueUpdate(req.tenantId)
+    // v4.6.4-log §C — retag [BatchResolve] → module 'chat' + tenant
+    try {
+      sysLog.logInfo(`[BatchResolve] user=${req.user.username} resolved=${resolvedIds.length} skipped=${skipped.length} tenant=${req.tenantId}`, {
+        module: 'chat', tenantId: req.tenantId,
+        meta: { resolved: resolvedIds.length, skipped: skipped.length },
+      })
+    } catch { /* best-effort */ }
     console.log(`[BatchResolve] user=${req.user.username} resolved=${resolvedIds.length} skipped=${skipped.length}`)
     res.json({ resolved: resolvedIds, skipped })
   } catch (e) {
@@ -881,10 +913,125 @@ router.post('/batch-read', ...rt, async (req, res) => {
         skipped.push({ chatId, reason: 'error' })
       }
     }
+    // v4.6.4-log §C — retag [BatchRead] → module 'chat' + tenant
+    try {
+      sysLog.logInfo(`[BatchRead] user=${req.user.username} marked=${markedIds.length} skipped=${skipped.length} tenant=${req.tenantId}`, {
+        module: 'chat', tenantId: req.tenantId,
+        meta: { marked: markedIds.length, skipped: skipped.length },
+      })
+    } catch { /* best-effort */ }
     console.log(`[BatchRead] user=${req.user.username} marked=${markedIds.length} skipped=${skipped.length}`)
     res.json({ marked: markedIds, skipped })
   } catch (e) {
     console.error('Batch read error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ═══ v4.6.6 — Admin Clear Queue (spec docs/spec-v4.6.6-clear-queue.md §A1) ═══
+// Kosongkan antrean tenant: SEMUA chat kriteria antrean di-assign ke admin +
+// di-resolved (semantik "resolved oleh admin"). Definisi antrean = SATU SUMBER
+// KEBENARAN: queue.queueWhere(req.tenantId) langsung (src/socket/queue.js) —
+// set yang di-clear == set yang dihitung banner/count. JANGAN tulis ulang.
+// Cap 2000 (TERBARU dulu, order lastMessageAt desc) → response `remaining`
+// untuk rolling clear (tombol UI tetap hidup utk klik berikutnya).
+// ⛔ CSAT SENGAJA TIDAK DIPANGGIL: clear queue = housekeeping, BUKAN pengalaman
+// customer — createSurveyAfterResolve TIDAK dijalankan di jalur ini (spec §A1;
+// jebakan utama: N chat fake = N survey CSAT nyasar ke kontak nyata).
+// Emit chunked per 100 chat + sleep 50ms antar chunk (anti-flood); SATU
+// emitQueueUpdate di akhir + SATU menu_waiting_update bila ada limbo dibersihkan.
+// Safety net konsisten dgn single-resolve v3.9.8: clear limbo (menuState
+// 'awaiting' → 'done') + clear snooze (snoozedUntil/snoozedBy → null).
+// Gate: ...rt + requireAdmin (CS/relay → 403; superadmin impersonate ?tenant= OK).
+const CLEAR_QUEUE_CAP = 2000
+const CLEAR_QUEUE_EMIT_CHUNK = 100
+const CLEAR_QUEUE_EMIT_SLEEP_MS = 50
+
+router.post('/clear-queue', ...rt, requireAdmin, async (req, res) => {
+  try {
+    // Benteng double-click/preview request: konfirmasi eksplisit WAJIB
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ error: 'confirmation required' })
+    }
+
+    const now = new Date()
+    const queueWhere = queue.queueWhere(req.tenantId)
+    let candidates = await prisma.chat.findMany({
+      where: queueWhere,
+      orderBy: { lastMessageAt: 'desc' }, // > cap: 2000 TERBARU diproses dulu
+      take: CLEAR_QUEUE_CAP + 1,
+      select: { id: true, csMessagesSent: true, snoozedUntil: true, menuState: true, assignedToId: true },
+    })
+    // (cap+1) probe → lebih dari cap: hitung sisa sebelum aksi utk response `remaining`
+    let remainingBefore = 0
+    if (candidates.length > CLEAR_QUEUE_CAP) {
+      remainingBefore = Math.max(0, (await prisma.chat.count({ where: queueWhere })) - CLEAR_QUEUE_CAP)
+      candidates = candidates.slice(0, CLEAR_QUEUE_CAP)
+    }
+
+    const clearedIds = []
+    const skipped = []
+    let limboClearedCount = 0
+    for (const chat of candidates) {
+      const chatId = chat.id
+      try {
+        const limboClear = chat.menuState === 'awaiting' ? { menuState: 'done', menuRequestedAt: null } : {}
+        const snoozeClear = chat.snoozedUntil ? { snoozedUntil: null, snoozedBy: null } : {}
+        await prisma.chat.update({
+          where: { id: chatId },
+          data: {
+            status: 'resolved',
+            resolvedAt: now,
+            resolvedById: req.user.id,   // admin yang klik tombol
+            assignedToId: req.user.id,   // "di-assign ke admin" sesuai semantik Kanaka
+            messagesBeforeResolve: chat.csMessagesSent || 0,
+            ...limboClear,
+            ...snoozeClear,
+          },
+        })
+        if (Object.keys(limboClear).length) limboClearedCount++
+        // ⛔ catatan sengaja: TIDAK ada csat.createSurveyAfterResolve di sini (spec §A1)
+        clearedIds.push(chatId)
+      } catch (e) {
+        // Race: chat bisa di-take CS lain di antara findMany dan update (pola
+        // BatchResolve: tidak ada re-check assignee) → gagal menulis = skipped.
+        console.error('[ClearQueue] item error:', e.message)
+        skipped.push({ chatId, reason: 'error' })
+      }
+    }
+
+    // Emit chunked anti-flood: per 100 chat + sleep 50ms antar chunk
+    for (let i = 0; i < clearedIds.length; i += CLEAR_QUEUE_EMIT_CHUNK) {
+      for (const chatId of clearedIds.slice(i, i + CLEAR_QUEUE_EMIT_CHUNK)) {
+        broadcast.emitToTenant(req.tenantId, 'chat_update', {
+          chatId,
+          status: 'resolved',
+          resolvedAt: now,
+          resolvedById: req.user.id,
+          bulkCleared: true,
+        })
+      }
+      await new Promise((resolve) => setTimeout(resolve, CLEAR_QUEUE_EMIT_SLEEP_MS))
+    }
+    if (clearedIds.length) queue.emitQueueUpdate(req.tenantId) // SATU emit di akhir
+    if (limboClearedCount) {
+      broadcast.emitToTenant(req.tenantId, 'menu_waiting_update', { count: await menuGateway.countWaiting(req.tenantId) })
+    }
+
+    const remaining = remainingBefore + skipped.length
+    const payload = { cleared: clearedIds.length, skipped, remaining }
+    // SystemLog breadcrumb (pola v4.6.5) — best-effort: kegagalan log TIDAK
+    // PERNAH menggagalkan aksi utama. Stdout tetap via console.log (passthrough).
+    try {
+      sysLog.logInfo(`[ClearQueue] user=${req.user.username} cleared=${payload.cleared} tenant=${req.tenantId} remaining=${remaining}`, {
+        module: 'chat', tenantId: req.tenantId,
+        meta: { cleared: payload.cleared, remaining, skipped: skipped.length },
+      })
+    } catch { /* best-effort */ }
+    console.log(`[ClearQueue] user=${req.user.username} cleared=${payload.cleared} tenant=${req.tenantId} remaining=${remaining}`)
+    res.json(payload)
+  } catch (e) {
+    console.error('Clear queue error:', e) // otomatis ke-log via capture layer v4.6.4
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -1618,9 +1765,17 @@ router.post('/:id/tags', ...rt, async (req, res) => {
     if (!tag) return res.status(404).json({ error: 'Tag not found' })
 
     try {
-      await prisma.chatTag.create({
+      const created = await prisma.chatTag.create({
         data: { chatId: chat.id, tagId: parseInt(tagId, 10) },
       })
+      // v4.6.4-log (spec docs/spec-log-coverage-upgrade.md §B5) — breadcrumbs
+      // CHAT-TAG: tag benar-benar tersambung ke chat (skip bila sudah ada).
+      try {
+        sysLog.logInfo(`CHAT-TAG chat=${chat.id} tag=${tag.id}`, {
+          module: 'chat', tenantId: req.tenantId, meta: { chatId: chat.id, tagId: tag.id },
+        })
+      } catch { /* best-effort */ }
+      void created
     } catch (e) {
       // Already exists - fine
     }

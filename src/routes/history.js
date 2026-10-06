@@ -15,6 +15,9 @@ const featHistoryExportGate = plans.requireFeature('featHistoryExport') // 403 r
 const rt = [requireAuth, requireTenant, requireAdmin]  // requireTenant dulu — super_admin wajib ?tenant= sebelum cek admin
 const broadcast = require('../socket/broadcast')
 const queue = require('../socket/queue')
+// v4.6.4-log (spec docs/spec-log-coverage-upgrade.md §B6) — breadcrumbs IMPORT-DONE/
+// IMPORT-FAIL (best-effort; flood guard logInfo tetap jalan di service).
+const sysLog = require('../services/systemLog')
 const { decryptTextSafe } = require('../services/textCrypto')
 const {
   HISTORY_FORMAT,
@@ -231,7 +234,17 @@ router.post(
       if (!req.file) return res.status(400).json({ error: 'Tidak ada file yang diunggah (field "file")' })
 
       const { data, error } = parseImportPayload(req.file.buffer)
-      if (error) return res.status(400).json({ error })
+      if (error) {
+        // v4.6.4-log §B6 (deviasi mikro utk memenuhi §E kasus 6 — lihat catatan:
+        // parse-error TIDAK pernah menyentuh catch 500 karena return early di sini —
+        // tanpa ini "import rusak" invisible) — IMPORT-FAIL warn + reason detail.
+        try {
+          sysLog.logWarn(`IMPORT-FAIL tenant=${req.tenantId} reason=${error}`, {
+            module: 'chat', tenantId: req.tenantId,
+          })
+        } catch { /* best-effort */ }
+        return res.status(400).json({ error })
+      }
 
       const dryRun = ['true', '1', 'yes'].includes(String(req.query.dryRun || '').toLowerCase())
 
@@ -261,6 +274,15 @@ router.post(
 
       const result = await runHistoryImport(prisma, data, userMap, dryRun, req.tenantId)
 
+      // v4.6.4-log §B6 — breadcrumbs IMPORT-DONE: file asli TIDAK disimpan di log
+      // (privacy) — hanya jumlah rows/chats + dryRun + error internal bila ada.
+      try {
+        sysLog.logInfo(
+          `IMPORT-DONE file=backup.json rows=${result.messagesAdded} chats=${result.chatsCreated + result.chatsMerged} dryRun=${dryRun}${result.errors.length ? ` internalErrors=${result.errors.length}` : ''} tenant=${req.tenantId}`,
+          { module: 'chat', tenantId: req.tenantId, meta: { rows: result.messagesAdded, chats: result.chatsCreated + result.chatsMerged, dryRun } },
+        )
+      } catch { /* best-effort */ }
+
       // Emit sekali di akhir — JANGAN per-message (anti-spam client)
       if (!dryRun && (result.chatsCreated > 0 || result.messagesAdded > 0)) {
         broadcast.emitToTenant(req.tenantId, 'history_imported', {
@@ -274,6 +296,13 @@ router.post(
 
       res.json(result)
     } catch (e) {
+      // v4.6.4-log §B6 — breadcrumbs IMPORT-FAIL (SATU tempat di catch existing;
+      // err.message tetap diteruskan ke stdout persis seperti sebelumnya)
+      try {
+        sysLog.logWarn(`IMPORT-FAIL tenant=${req.tenantId} reason=${e.message || 'unknown'}`, {
+          module: 'chat', tenantId: req.tenantId, err: e,
+        })
+      } catch { /* best-effort */ }
       console.error('History import error:', e)
       res.status(500).json({ error: 'Internal server error' })
     }

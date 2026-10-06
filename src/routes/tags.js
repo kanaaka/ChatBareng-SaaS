@@ -8,6 +8,9 @@ const rt = [requireAuth, requireTenant]
 const broadcast = require('../socket/broadcast')
 // v4.4.0 F3 — refresh banner antrean setelah toggle exclude
 const queue = require('../socket/queue')
+// v4.6.4-log (spec docs/spec-log-coverage-upgrade.md §B4) — breadcrumbs bisnis
+// TAG-SAVE (best-effort, flood guard logInfo tetap jalan di service).
+const sysLog = require('../services/systemLog')
 
 // GET /api/tags — list all tags (any authenticated user)
 // v0.13.4 — tambah contactCount per tag (via ContactTag) — ADDITIVE:
@@ -60,6 +63,12 @@ router.post('/', ...rt, async (req, res) => {
     })
 
     broadcast.emitToTenant(req.tenantId, 'tag_created', { tag: { ...tag, contactCount: 0 } })
+    // v4.6.4-log §B4 — TAG-SAVE sukses (best-effort)
+    try {
+      sysLog.logInfo(`TAG-SAVE name="${name.trim()}" tenant=${req.tenantId}`, {
+        module: 'chat', tenantId: req.tenantId, meta: { tagId: tag.id },
+      })
+    } catch { /* best-effort */ }
     // v0.13.4 — refresh contactCount chip di Contacts.vue (tag_created tidak dipakai
     // utk itu — Contacts punya listener tags_changed sendiri)
     broadcast.emitToTenant(req.tenantId, 'tags_changed', { reason: 'tag_created', tagId: tag.id })
@@ -128,6 +137,13 @@ router.put('/:id', ...rt, requireAdmin, async (req, res) => {
     broadcast.emitToTenant(req.tenantId, 'tag_updated', { tag })
     broadcast.emitToTenant(req.tenantId, 'tags_changed', { reason: 'tag_updated', tagId: id })
 
+    // v4.6.4-log §B4 — TAG-SAVE sukses via PUT (best-effort; nama baru dgn redaksi)
+    try {
+      sysLog.logInfo(`TAG-SAVE name="${updated.name}" tenant=${req.tenantId}`, {
+        module: 'chat', tenantId: req.tenantId, meta: { tagId: id },
+      })
+    } catch { /* best-effort */ }
+
     res.json({ tag })
   } catch (e) {
     console.error('Update tag error:', e)
@@ -163,6 +179,13 @@ router.patch('/:id', ...rt, requireAdmin, async (req, res) => {
     broadcast.emitToTenant(req.tenantId, 'tag_updated', { tag })
     broadcast.emitToTenant(req.tenantId, 'tags_changed', { reason: 'tag_updated', tagId: id })
     queue.emitQueueUpdate(req.tenantId)
+
+    // v4.6.4-log §B4 — TAG-SAVE sukses via PATCH excludeFromQueue (bool → tanpa PII)
+    try {
+      sysLog.logInfo(`TAG-SAVE name="${updated.name}" tenant=${req.tenantId} excludeFromQueue=${excludeFromQueue}`, {
+        module: 'chat', tenantId: req.tenantId, meta: { tagId: id, excludeFromQueue },
+      })
+    } catch { /* best-effort */ }
 
     res.json({ tag })
   } catch (e) {
