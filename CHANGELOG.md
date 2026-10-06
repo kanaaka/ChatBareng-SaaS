@@ -1,3 +1,46 @@
+# v4.6.6 (admin clear queue) — 2026-10-06 (tombol self-serve kosongkan antrean: bulk-assign + bulk-resolve per tenant — penambahan patch line)
+
+**Latar:** pasca deploy v4.6.4/v4.6.5 di prod IT (wa.labparahita.co.id), aliran pesan
+nyata ter-trigger → 565 chat nyangkut di antrean tanpa di-take, tidak ada mekanisme
+self-serve untuk staff IT. Spec (APPROVED 2026-10-06): `docs/spec-v4.6.6-clear-queue.md`.
+Solusi: tombol **"Kosongkan Antrean"** di dashboard admin tenant — semua chat antrean
+di-assign ke admin + di-resolved (semantik legitim "resolved oleh admin": hilang dari
+antrean, muncul di history Resolved, count turun ke 0).
+
+**Perubahan (ADDITIVE murni — NO schema change/migration, NO bump struktur):**
+- **Endpoint** `POST /api/chats/clear-queue` (`src/routes/chats.js`, gate `...rt` +
+  `requireAdmin` — CS/relay → 403): body `{ confirm: true }` WAJIB (400 tanpa itu);
+  definisi antrean **SATU SUMBER KEBENARAN** = `queue.queueWhere(req.tenantId)` langsung
+  (set yang di-clear == set yang dihitung banner "565"); cap **2000** TERBARU
+  (order lastMessageAt desc; sisanya `remaining` utk rolling clear); per-chat pola
+  BatchResolve: `status resolved, resolvedAt, resolvedById, assignedToId` (admin yang
+  klik), `messagesBeforeResolve`, + safety net v3.9.8 (clear snoozedUntil/menuState
+  awaiting) — field limboClear/snoozeClear terpasang persis pola BatchResolve;
+  emit chunked per 100 chat + sleep 50ms + SATU `emitQueueUpdate` di akhir
+  (+`menu_waiting_update` bila ada limbo dibersihkan); response
+  `{cleared, skipped, remaining}`; breadcrumb `[ClearQueue]` module 'chat' (pola
+  v4.6.5, best-effort) + stdout console.log persis.
+- **⛔ CSAT SENGAJA TIDAK DIPANGGIL** — `csat.createSurveyAfterResolve` TIDAK dijalankan
+  di jalur clear-queue (spec §A1 eksplisit). Clear queue = housekeeping, BUKAN
+  pengalaman customer: 565 chat fake JANGAN jadi 565 survey CSAT nyasar ke kontak
+  nyata + meracuni dashboard CSAT. Hook CSAT tetap hidup normal di jalur single-resolve
+  & BatchResolve (dibuktikan e2e kontras).
+- **UI** (`ClearQueueDialog.vue` + `Dashboard.vue`): tombol "🧹 Kosongkan" di banner
+  antrean desktop (HANYA role admin; empty state count 0 → tangan tidak aktif);
+  modal konfirmasi 2 langkah dgn live count + penjelasan "resolusi & di-assign ke
+  kamu (admin), TIDAK mengirim pesan/CSAT ke pelanggan"; pasca-sukses toast
+  "N chat diresolusi", list refresh + count header hilang via socket `queue_update`;
+  `remaining > 0` → modal tetap terbuka dgn sisa (rolling clear).
+
+**QA:** e2e baru `scripts/e2e-clearqueue.cjs` 11 kasus (spec §B) copy-DB port 5099
+WA_DISABLED=1 (produksi tak tersentuh): **56 PASS / 0 FAIL** — termasuk **0 CSAT survey
+baru** (dgn CSAT tenant DIPAKSA enabled sbg kontras), grup @g.us & kontak
+excludeFromQueue tidak ikut ter-resolved (queueWhere dihormati), cap 2100→2000+100
+(klik kedua → 100), regresi take-next/single-resolve/batch-resolve normal.
+Detail + checklist: `docs/qa-v466-clearqueue.md`.
+
+---
+
 # v4.6.5 (log coverage upgrade) — 2026-10-05 (penambahan hotfix: breadcrumbs bisnis + middleware 4xx + retag console lama)
 
 **Latar:** temuan pasca-ship v4.6.4 — capture layer lama HANYA menangkap exception

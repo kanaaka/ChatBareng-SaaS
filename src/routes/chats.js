@@ -928,6 +928,114 @@ router.post('/batch-read', ...rt, async (req, res) => {
   }
 })
 
+// ═══ v4.6.6 — Admin Clear Queue (spec docs/spec-v4.6.6-clear-queue.md §A1) ═══
+// Kosongkan antrean tenant: SEMUA chat kriteria antrean di-assign ke admin +
+// di-resolved (semantik "resolved oleh admin"). Definisi antrean = SATU SUMBER
+// KEBENARAN: queue.queueWhere(req.tenantId) langsung (src/socket/queue.js) —
+// set yang di-clear == set yang dihitung banner/count. JANGAN tulis ulang.
+// Cap 2000 (TERBARU dulu, order lastMessageAt desc) → response `remaining`
+// untuk rolling clear (tombol UI tetap hidup utk klik berikutnya).
+// ⛔ CSAT SENGAJA TIDAK DIPANGGIL: clear queue = housekeeping, BUKAN pengalaman
+// customer — createSurveyAfterResolve TIDAK dijalankan di jalur ini (spec §A1;
+// jebakan utama: N chat fake = N survey CSAT nyasar ke kontak nyata).
+// Emit chunked per 100 chat + sleep 50ms antar chunk (anti-flood); SATU
+// emitQueueUpdate di akhir + SATU menu_waiting_update bila ada limbo dibersihkan.
+// Safety net konsisten dgn single-resolve v3.9.8: clear limbo (menuState
+// 'awaiting' → 'done') + clear snooze (snoozedUntil/snoozedBy → null).
+// Gate: ...rt + requireAdmin (CS/relay → 403; superadmin impersonate ?tenant= OK).
+const CLEAR_QUEUE_CAP = 2000
+const CLEAR_QUEUE_EMIT_CHUNK = 100
+const CLEAR_QUEUE_EMIT_SLEEP_MS = 50
+
+router.post('/clear-queue', ...rt, requireAdmin, async (req, res) => {
+  try {
+    // Benteng double-click/preview request: konfirmasi eksplisit WAJIB
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ error: 'confirmation required' })
+    }
+
+    const now = new Date()
+    const queueWhere = queue.queueWhere(req.tenantId)
+    let candidates = await prisma.chat.findMany({
+      where: queueWhere,
+      orderBy: { lastMessageAt: 'desc' }, // > cap: 2000 TERBARU diproses dulu
+      take: CLEAR_QUEUE_CAP + 1,
+      select: { id: true, csMessagesSent: true, snoozedUntil: true, menuState: true, assignedToId: true },
+    })
+    // (cap+1) probe → lebih dari cap: hitung sisa sebelum aksi utk response `remaining`
+    let remainingBefore = 0
+    if (candidates.length > CLEAR_QUEUE_CAP) {
+      remainingBefore = Math.max(0, (await prisma.chat.count({ where: queueWhere })) - CLEAR_QUEUE_CAP)
+      candidates = candidates.slice(0, CLEAR_QUEUE_CAP)
+    }
+
+    const clearedIds = []
+    const skipped = []
+    let limboClearedCount = 0
+    for (const chat of candidates) {
+      const chatId = chat.id
+      try {
+        const limboClear = chat.menuState === 'awaiting' ? { menuState: 'done', menuRequestedAt: null } : {}
+        const snoozeClear = chat.snoozedUntil ? { snoozedUntil: null, snoozedBy: null } : {}
+        await prisma.chat.update({
+          where: { id: chatId },
+          data: {
+            status: 'resolved',
+            resolvedAt: now,
+            resolvedById: req.user.id,   // admin yang klik tombol
+            assignedToId: req.user.id,   // "di-assign ke admin" sesuai semantik Kanaka
+            messagesBeforeResolve: chat.csMessagesSent || 0,
+            ...limboClear,
+            ...snoozeClear,
+          },
+        })
+        if (Object.keys(limboClear).length) limboClearedCount++
+        // ⛔ catatan sengaja: TIDAK ada csat.createSurveyAfterResolve di sini (spec §A1)
+        clearedIds.push(chatId)
+      } catch (e) {
+        // Race: chat bisa di-take CS lain di antara findMany dan update (pola
+        // BatchResolve: tidak ada re-check assignee) → gagal menulis = skipped.
+        console.error('[ClearQueue] item error:', e.message)
+        skipped.push({ chatId, reason: 'error' })
+      }
+    }
+
+    // Emit chunked anti-flood: per 100 chat + sleep 50ms antar chunk
+    for (let i = 0; i < clearedIds.length; i += CLEAR_QUEUE_EMIT_CHUNK) {
+      for (const chatId of clearedIds.slice(i, i + CLEAR_QUEUE_EMIT_CHUNK)) {
+        broadcast.emitToTenant(req.tenantId, 'chat_update', {
+          chatId,
+          status: 'resolved',
+          resolvedAt: now,
+          resolvedById: req.user.id,
+          bulkCleared: true,
+        })
+      }
+      await new Promise((resolve) => setTimeout(resolve, CLEAR_QUEUE_EMIT_SLEEP_MS))
+    }
+    if (clearedIds.length) queue.emitQueueUpdate(req.tenantId) // SATU emit di akhir
+    if (limboClearedCount) {
+      broadcast.emitToTenant(req.tenantId, 'menu_waiting_update', { count: await menuGateway.countWaiting(req.tenantId) })
+    }
+
+    const remaining = remainingBefore + skipped.length
+    const payload = { cleared: clearedIds.length, skipped, remaining }
+    // SystemLog breadcrumb (pola v4.6.5) — best-effort: kegagalan log TIDAK
+    // PERNAH menggagalkan aksi utama. Stdout tetap via console.log (passthrough).
+    try {
+      sysLog.logInfo(`[ClearQueue] user=${req.user.username} cleared=${payload.cleared} tenant=${req.tenantId} remaining=${remaining}`, {
+        module: 'chat', tenantId: req.tenantId,
+        meta: { cleared: payload.cleared, remaining, skipped: skipped.length },
+      })
+    } catch { /* best-effort */ }
+    console.log(`[ClearQueue] user=${req.user.username} cleared=${payload.cleared} tenant=${req.tenantId} remaining=${remaining}`)
+    res.json(payload)
+  } catch (e) {
+    console.error('Clear queue error:', e) // otomatis ke-log via capture layer v4.6.4
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // GET /api/chats/:id - chat detail with paginated messages
 router.get('/:id', ...rt, async (req, res) => {
   try {
