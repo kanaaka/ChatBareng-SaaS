@@ -29,6 +29,41 @@ const sysLog = require('../services/systemLog')
 // v3.0 — Isolasi tenant: SEMUA endpoint chats = tenant-scoped.
 const rt = [requireAuth, requireTenant]
 
+// ═══ v4.6.7 — Float zone chat list "Mine" (spec docs/spec-v4.6.7-floatzone.md) ═══
+// ZONA FLOAT: chat claimed yang BELUM pernah di-reply agent (firstResponseAt == null)
+// tampil DI PALING ATAS list "Mine" milik agent tsb, sort lastAssignedAt DESC
+// (terbaru take = paling atas). Begitu reply manual pertama terjadi (firstResponseAt
+// terisi di jalur reply/media — AR TIDAK pernah mengisinya), chat graduate keluar
+// zona float → masuk urutan normal existing (lastMessageAt desc, TIDAK diubah).
+// INVARIANTS (dipertahankan, tidak diubah oleh fitur ini):
+//   • v0.13.3 — AR (auto-reply) TIDAK menyentuh chat assigned (src/services/autoReply.js)
+//     dan TIDAK meng-set firstResponseAt → graduate HANYA via reply manual agent.
+//   • Re-claim (release → take lagi / transfer) meng-update lastAssignedAt ulang
+//     (sudah begitu di kode: take-next /:id/assign) → chat naik ke atas zona lagi.
+//   • Inbound pesan baru ke chat float TIDAK mengubah posisinya (tetap zona float
+//     by lastAssignedAt); unread badge jalan seperti biasa.
+// Scope: HANYA GET /api/chats?filter=mine (view agent). search-all, /:id, analytics,
+// purge, history import, socket queue_update, admin "All" = TIDAK berubah.
+// Kedua zona memakai include & take yang identik dgn list lama supaya hasil total
+// == perilaku existing (pagination take TAKE_LIMIT:100 — float dulu, normal sisanya).
+const TAKE_LIMIT = 100
+function floatZoneWhere(where) {
+  return { ...where, firstResponseAt: null }
+}
+function normalZoneWhere(where) {
+  return { ...where, firstResponseAt: { not: null } }
+}
+const CHAT_LIST_INCLUDE = {
+  assignedTo: { select: { id: true, username: true } },
+  tags: { include: { tag: true } },
+}
+function tagFloatZone(c) {
+  // Virtual field utk chip FE "🆕 Baru diambil" (D2): hilang otomatis saat graduate
+  // (server-driven — FE cukup render flag, TIDAK ada sort/state tambahan di FE).
+  c.inFloatZone = c.firstResponseAt == null && c.lastAssignedAt != null
+  return c
+}
+
 // v3.9.10b (audit LOW-2) — guard :id numerik untuk SEMUA route /:id (GET/POST/
 // PUT/PATCH/DELETE): JID @g.us masuk ke sini → 404 bersih, bukan 500 dari
 // Number(NaN) Prisma. Sebelumnya guard hanya di GET /:id.
@@ -423,10 +458,52 @@ router.get('/', ...rt, async (req, res) => {
     // v0.1.22 — sembunyikan chat yang sudah tidak punya pesan aktif (habis di-purge)
     where.messages = { some: { purged: false } }
 
+    // v4.6.7 — Float zone (spec docs/spec-v4.6.7-floatzone.md D1): "Mine" = dua zona
+    // — FLOAT dulu (claimed-unanswered: firstResponseAt null, orderBy lastAssignedAt
+    // desc, secondary id desc utk determinisme batch), lalu NORMAL (firstResponseAt
+    // terisi → logic existing lastMessageAt desc TIDAK diubah). Query dgn take per
+    // zona (total tetap 100, minimal-diff — pagination existing take:100
+    // dipertahankan 0 regresi); include + snoozed/menuState/tag/dst diwarisi `where`.
+    // Lainnya (all/unassigned/resolved/CS-fallback) = jalur existing utuh.
+    if (filter === 'mine') {
+      const [floatChats, normalChats] = await Promise.all([
+        prisma.chat.findMany({
+          where: floatZoneWhere(where),
+          orderBy: [{ lastAssignedAt: 'desc' }, { id: 'desc' }],
+          take: TAKE_LIMIT,
+          include: CHAT_LIST_INCLUDE,
+        }),
+        prisma.chat.findMany({
+          where: normalZoneWhere(where),
+          orderBy: { lastMessageAt: 'desc' },
+          take: TAKE_LIMIT,
+          include: CHAT_LIST_INCLUDE,
+        }),
+      ])
+      const chats = [...floatChats, ...normalChats].map(tagFloatZone)
+
+      // DEBUG v0.11.0 (temporary)
+      // v4.6.4-log §C — retag: logInfo module='chat' (+ tenant) → stdout tetap via
+      // console asli (passthrough); dedup 10s — 1 row/request, flood guard aman.
+      try {
+        sysLog.logInfo(`[LIST-DEBUG] filter=${req.query.filter ?? ''} role=${req.user.role} userId=${req.user.id} tenant=${req.tenantId}`, {
+          module: 'chat', tenantId: req.tenantId,
+        })
+      } catch { /* best-effort */ }
+      console.log('[LIST-DEBUG] filter=', req.query.filter, '| role=', req.user.role, '| userId=', req.user.id)
+      // v0.11.0 — preview chat list dekrip on-the-fly (DB berisi ciphertext)
+      for (const c of chats) {
+        if (c.lastMessagePreview != null) c.lastMessagePreview = decryptTextSafe(c.lastMessagePreview)
+      }
+
+      return res.json({ chats })
+    }
+
+    // (v4.6.7) jalur non-mine di bawah = logic existing persis (tidak diubah)
     const chats = await prisma.chat.findMany({
       where,
       orderBy: { lastMessageAt: 'desc' },
-      take: 100,
+      take: TAKE_LIMIT,
       include: {
         assignedTo: { select: { id: true, username: true } },
         tags: { include: { tag: true } },
