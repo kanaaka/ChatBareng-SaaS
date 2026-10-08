@@ -1,0 +1,42 @@
+PASS  S0-a server test boot di 5099 (copy DB, WA_DISABLED=1) 
+PASS  K1-a super_admin row ada di copy DB 
+PASS  K1-b superadmin login status=200 
+PASS  K1-c login admin+csA+csB (3 token) 
+PASS  K1-d 8 chat antrean terbentuk (queue-count=8) got=8
+PASS  K1-e AR-off (default: outsideHours=false greetEnabled=false — invariant v0.13.3 fixture) 
+PASS  K2-a 5 take sukses (ids=8579,8580,8581,8582,8583) 
+PASS  K2-b queue-count pasca 5 take = 3 (5 keluar antrean) — got 3 
+PASS  K2-c GET mine(csA) status=200 total 5 
+PASS  K2-d kelima chat take tampil di mine(csA) 
+PASS  K2-e semua inFloatZone=true (firstResponseAt null, lastAssignedAt terisi) 
+PASS  K2-f urutan lastAssignAt non-increasing (desc + tie id desc) [8583,8582,8581,8580,8579]
+PASS  K2-g urutan zona float ~ urutan take (first=take#5, last=take#1 — toleransi batch) got=8583 expect=8583
+PASS  K3-a firstResponseAt terisi (2 chat tereply) + by csA 
+PASS  K3-b zona float tinggal 3 (2 graduate) float=8583,8582,8581 normal=8579,8580
+PASS  K3-c 2 chat tereply graduate (inFloatZone=false) 
+PASS  K3-d struktural: zona float di atas normal normal (lastMessageAt desc) [[8583,8582,8581],[8579,8580]]
+PASS  K4-a mine(csB) = [b1 zona float, b2 normal] (got [8587,8588]) 
+PASS  K4-b isolasi csB: tidak ada chat csA bocor ke list csB 
+PASS  K4-c isolasi csA: tidak ada chat csB bocor ke list csA 
+PASS  K4-d urutan b2 normal (lastMessageAt lawas — di bawah zona b1) 
+PASS  K5-a persist: urutan list csA identik antar GET (state server, bukan client) before=[8583,8582,8581,8579,8580] after=[8583,8582,8581,8579,8580]
+PASS  K5-b zona float ids persist (3 float tetap sama) 
+PASS  K6-a posisi chat float target TIDAK geser (inbound tidak mengubah zona) pos before=1 after=1
+PASS  K6-b unreadCount naik +1 pasca inbound 
+PASS  K6-c masih zona float (inFloatZone=true) 
+PASS  K7-a admin "All" urutan lastMessageAt desc (10 chat open+nonopen tercampur by mtime) [1791426736477,1791426736449,1791426736431,1791426736424,1791426736297,1791426736296,1791426736295,1791426736294,1791426736292,1791253936442]
+PASS  K7-b admin "All" TIDAK mengurutkan zona-float dulu (timestamp normal) 
+PASS  K8-a pasca release: queue-count 4 (chat kembali antrean) — got 4 
+PASS  K8-b take-loop dapat re-claim chat released (FIFO urut antrean) got=8583 target=8583
+PASS  K8-c re-claim → lastAssignedAt baru → chat tersebut paling ATAS zona float got=8583
+PASS  K8-d masih zona float (belum dibalas) 
+PASS  K8-e lastAssignedAt baru > lastResponseAt chat lain (naik paling atas) 
+PASS  K9-a AR config tenant: off (fixture) — invariant dipertahankan 
+PASS  K9-b 0 chat Mine csA dapat firstResponseAt dari jalur AR (hanya 2 manual reply K3) got=2
+PASS  K9-c queue-count konsisten pasca semua aksi = 0 (semua item antrean habis) — got 0 
+PASS  K10-a search-all sanity 200 (200) 
+PASS  K10-b analytics sanity 200 (plan Max) — got 200 
+PASS  K10-c analytics role-gate CS = 403 unchanged by design (got 403) 
+
+=== v4.6.7 floatzone e2e: 39 PASS / 0 FAIL (1.9s) ===
+boot server test di-kill (server child) — produksi 5047 tidak tersentuh

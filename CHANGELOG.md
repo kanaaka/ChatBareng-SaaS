@@ -1,3 +1,46 @@
+# v4.6.7 (chat list take-first ordering) — 2026-10-08 (zona float "Mine": chat claimed-but-unanswered tampil paling atas — penambahan patch line)
+
+**Latar:** lapor Kanaka 09:05 — agent take 10 chat → balas semua → take chat ke-11 →
+chat ke-11 nyempil DI BAWAH (kalah timestamp dari chat yang di-reply). Posisi "baru
+take" = kejadian penting (tanggung jawab SEKARANG) tapi tidak terukur oleh
+`lastMessageAt`. Spec (APPROVED 2026-10-08 09:21): `docs/spec-v4.6.7-floatzone.md`.
+Solusi: **zona float** di list "Mine" milik agent — chat claimed yang **belum pernah
+di-reply** (`firstResponseAt == null`) tampil **DI PALING ATAS**, sort
+`lastAssignedAt` DESC; begitu reply manual pertama (firstResponseAt terisi) chat
+**graduate** keluar zona → urutan normal existing (`lastMessageAt` desc) TIDAK berubah.
+
+**Perubahan (ADDITIVE murni — NO schema change/migration, NO API baru, NO bump struktur;**
+kolom `lastAssignedAt` & `firstResponseAt` SUDAH ADA dan SUDAH di-isi jalur take/reply existing):
+- **BE** (`src/routes/chats.js`): handler GET list chats `filter=mine` → dua zona
+  dalam satu helper baru (komentar refer spec + invariants v0.13.3 di atasnya):
+  `FLOAT` = `{firstResponseAt: null}` orderBy `[{lastAssignedAt: 'desc'}, {id: 'desc'}]
+  (secondary id desc = determinisme urutan batch take), `NORMAL` = `{firstResponseAt:
+  {not: null}}` orderBy `lastMessageAt` desc (logic existing utuh); hasil merge
+  `[...FLOAT, ...NORMAL]`, total take tetap 100 per zona (0 regresi paging — list
+  memang cap 100). Virtual field`inFloatZone` (`firstResponseAt==null &&
+  lastAssignedAt!=null`) di setiap item response (server-driven, bawa FE chip).
+  Jalur lain (all/unassigned/resolved/CS-fallback, search-all, /:id, analytics,
+  purge, history import, socket queue_update, admin "All") = **tidak disentuh**.
+- **FE** (`frontend/src/views/ChatListPane.vue`): chip kecil **"🆕 Baru diambil"**
+  (amber) di card bila `chat.inFloatZone` — hilang otomatis saat graduate (refresh →
+  server kirim flag false). Render urutan ikut server; **TIDAK ada sort FE tambahan**.
+- **Invariants tetap:** AR (autoReply v0.13.3) TIDAK menyentuh chat assigned & TIDAK
+  set `firstResponseAt` → graduate HANYA via reply manual agent (teks/media/quote);
+  re-claim (release→take / transfer) meng-update `lastAssignedAt` ulang (existing) →
+  chat naik lagi ke puncak zona; inbound baru ke chat float TIDAK menggeser posisi
+  (unread badge jalan normal); admin "All" tetap urutan timestamp normal.
+
+**QA:** e2e baru `scripts/e2e-v467-floatzone.cjs` 10 kasus (spec §D3) copy-DB port
+5099 WA_DISABLED=1 (produksi 5047 tak tersentuh): **39 PASS / 0 FAIL** — batch take
+5 → urutan lastAssignedAt desc; graduate pasca 2 reply manual; isolasi csB/csA;
+persist refresh; inbound baru ke chat float (posisi tetap + unread naik); admin All
+normal; re-claim naik ke atas; invariant AR + queue-count; search-all/analytics
+sanity. Regresi e2e lama di copy-DB yang samua: v394 (22 PASS), v395 (13), v396 (15),
+v399 (10 — fallbackText timeout path, log `/tmp/saas_v3_e2e.log`), v470 systemlog
+(59), v466 clearqueue (56) — **semua 0 FAIL**. Detail: `docs/qa-v4.6.7-floatzone.md`.
+
+---
+
 # v4.6.6 (admin clear queue) — 2026-10-06 (tombol self-serve kosongkan antrean: bulk-assign + bulk-resolve per tenant — penambahan patch line)
 
 **Latar:** pasca deploy v4.6.4/v4.6.5 di prod IT (wa.labparahita.co.id), aliran pesan

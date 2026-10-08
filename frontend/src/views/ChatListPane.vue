@@ -244,6 +244,15 @@
                       class="inline-flex items-center gap-0.5 bg-purple-100 text-purple-700 text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0"
                       title="AI sudah membalas chat ini (window 24 jam)"
                     >🤖 ×{{ aiWindowCount(chat) }}</span>
+                    <!-- v4.6.7 — chip zona float (spec docs/spec-v4.6.7-floatzone.md D2):
+                         server-driven via chat.inFloatZone (BE float zone "Mine"); chip
+                         hilang otomatis saat graduate (firstResponseAt terisi → flag false
+                         pada fetch berikutnya). TIDAK ada sort FE — urutan ikut server. -->
+                    <span
+                      v-if="chat.inFloatZone"
+                      class="inline-flex items-center gap-0.5 bg-amber-100 text-amber-700 text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0"
+                      title="Baru diambil — belum dibalas, tampil paling atas"
+                    >🆕 Baru diambil</span>
                   </div>
                   <div class="flex items-center gap-1">
                     <span class="text-xs text-gray-500 truncate">{{ chat.lastMessagePreview || 'No messages' }}</span>
