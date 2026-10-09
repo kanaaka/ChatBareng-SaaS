@@ -1,0 +1,47 @@
+PASS  S0-a server test boot di 5099 (copy DB, WA_DISABLED=1) 
+PASS  K0-a super_admin row ada di copy DB 
+PASS  K0-b superadmin login status=200 
+PASS  K0-c login admin+csA+csB (3 token) 
+PASS  K0-d 10 chat antrean terbentuk (queue-count=10) got=10
+PASS  K1-a 5 take sukses FIFO (ids=8587,8588,8589,8590,8591) 
+PASS  K1-b queue-count pasca 5 take = 5 — got 5 
+PASS  K1-c GET mine(csA) status=200 total 5 
+PASS  K1-d kelima chat take tampil di mine(csA) 
+PASS  K1-e field inFloatZone TIDAK ADA lagi di response (v2 clean contract) 
+PASS  K1-f urutan = take terbaru di atas (P5..P1) got=[8591,8590,8589,8588,8587] expect=[8591,8590,8589,8588,8587]
+PASS  K1-g lastAssignedAt non-increasing (determinisme batch, tie id desc) 
+PASS  K2-a reply ke take teratas sukses (200) 
+PASS  K2-b firstResponseAt terisi (reply manual — invariant v0.13.3: AR gak menyentuh) 
+PASS  K2-c lastMessageAt reply >= lastAssignedAt (aktivitas = kandidat terbaru) 
+PASS  K2-d chat tereply TETAP paling atas (lastMessageAt terbaru; tanpa zona) got=8591 expect=8591
+PASS  K2-e 4 take lain tetap urutan take (regresi: reply gak mengubah posisi relatif lain) got=[8590,8589,8588,8587]
+PASS  K2-f key aktivitas non-increasing sepanjang list (formula tunggal) 
+PASS  K3-a follow-up chat LAMA → naik ke PALING ATAS (normalisasi menang atas semua take) got=8587 expect=8587 list=[8587,8591,8590,8589,8588]
+PASS  K3-b chat tereply K2 tetap tepat di belakangnya (aktivitas #2 terbaru) got[1]=8591 expect=8591
+PASS  K3-c lastAssignedAt chat itu TIDAK berubah (follow-up pelanggan bukan take) 
+PASS  K3-d unreadCount tercatat naik (badge jalan normal) 
+PASS  K4-pre float follow-up (lastMessageAt > lastAssignedAt-nya sendiri & semua kandidat) → PALING ATAS got=8590 expect=8590 list=[8590,8587,8591,8589,8588]
+PASS  K4-a-take take chat antrean sukses (200, id=8592) 
+PASS  K4-a take terbaru (lastAssignedAt lebih baru dari lastMessageAt float) menang — float-chat turun di bawahnya idx take=0 idx float=1 list=[8592,8590,8587,8591,8589,8588]
+PASS  K4-b float follow-up (lastMessageAt > semua kandidat) naik PALING ATAS (dua sisi) got=8590 expect=8590 list=[8590,8592,8587,8591,8589,8588]
+PASS  K5-a mine(csB) = urutan aktivitas sendiri (got [8598,8597]) 
+PASS  K5-b isolasi csB: tidak ada chat csA bocor ke list csB 
+PASS  K5-c isolasi csA: tidak ada chat csB bocor ke list csA 
+PASS  K5-d response csB juga tanpa inFloatZone 
+PASS  K6-a admin "All" urutan lastMessageAt desc (12 chat) [1791536990400,1791536990381,1791536990028,1791536990016,1791529789860,1791526189861,1791515389864,1791511789865,1791508189866,1791504589867]
+PASS  K6-b admin "All" tanpa inFloatZone (regresi kontrak) 
+PASS  K7-a ChatListPane: nama kontak = flex-1 min-w-0 truncate 
+PASS  K7-b ChatListPane: badge unread ada di kolom kanan shrink-0 
+PASS  K7-c ChatListPane: kolom kanan (timestamp/badge) shrink-0 (tidak pernah tumbuh ke kiri) 
+PASS  K7-d bundle ter-build (public/assets) TIDAK mengandung inFloatZone assets found
+PASS  K7-e bundle ter-build membawa layout fix (nama shrinkable + badge non-shrink) 
+PASS  K8-a take-FIFO habis (queue-count=0) — got 0 fifoIds=[8593,8594,8595,8596]
+PASS  K8-b FIFO order = P7..P10 (urutan antrean dipertahankan) got=[8593,8594,8595,8596]
+PASS  K8-c invariant AR: firstResponseAt hanya 1 (reply manual K2; take/AR tidak mengisi) got=8591
+PASS  K8-d search-all sanity 200 (200) 
+PASS  K8-e search-all CS TIDAK bocor chat tenant lain/CS lain (CSB-1 gak muncul) 
+PASS  K8-f analytics sanity 200 (plan Max) — got 200 
+PASS  K8-g analytics role-gate CS = 403 unchanged by design (got 403) 
+
+=== v4.6.8 floatzone-v2 e2e: 44 PASS / 0 FAIL (2.3s) ===
+boot server test di-kill (server child) — produksi 5047 tidak tersentuh

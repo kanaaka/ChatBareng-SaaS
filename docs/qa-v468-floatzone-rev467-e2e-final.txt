@@ -1,0 +1,39 @@
+PASS  S0-a server test boot di 5099 (copy DB, WA_DISABLED=1) 
+PASS  K1-a super_admin row ada di copy DB 
+PASS  K1-b superadmin login status=200 
+PASS  K1-c login admin+csA+csB (3 token) 
+PASS  K1-d 8 chat antrean terbentuk (queue-count=8) got=8
+PASS  K1-e AR-off (default: outsideHours=false greetEnabled=false — invariant v0.13.3 fixture) 
+PASS  K2-a 5 take sukses FIFO (ids=8587,8588,8589,8590,8591) 
+PASS  K2-b queue-count pasca 5 take = 3 — got 3 
+PASS  K2-c GET mine(csA) status=200 total 5 
+PASS  K2-d kelima chat take tampil di mine(csA) 
+PASS  K2-e TANPA inFloatZone di response (v2 — kontrak bersih; dulu: semua true) 
+PASS  K2-f urutan = take terbaru di atas (revisi v2) got=[8591,8590,8589,8588,8587] expect=[8591,8590,8589,8588,8587]
+PASS  K2-g lastAssignedAt non-increasing (desc + tie id desc) 
+PASS  K3-a firstResponseAt terisi (2 chat tereply) + by csA 
+PASS  K3-b 2 chat tereply naik ke ATAS (urut reply terbaru; 3 sisanya urut take) got=[8587,8588,8591,8590,8589] expect=[8587,8588,8591,8590,8589]
+PASS  K3-c TANPA inFloatZone selepas reply (dulu: graduate → false) 
+PASS  K4-a mine(csB) = [b2 tereply, b1 lawas] urutan aktivitas (got [8596,8595]) 
+PASS  K4-b isolasi csB: tidak ada chat csA bocor ke list csB 
+PASS  K4-c isolasi csA: tidak ada chat csB bocor ke list csA 
+PASS  K5-a persist: urutan list csA identik antar GET (state server, bukan client) 
+PASS  K5-b persist: mine(csB) identik antar GET 
+PASS  K6-a inbound ke chat take-belum-dibalas → naik PALING ATAS (revisi v2) got=8591 expect=8591 list=[8591,8587,8588,8590,8589]
+PASS  K6-b unreadCount naik +1 pasca inbound 
+PASS  K7-a admin "All" urutan lastMessageAt desc (10 chat) [1791536993008,1791536992976,1791536992960,1791536992953,1791526192838,1791522592838,1791515392840,1791511792841,1791508192842,1791364192969]
+PASS  K7-b admin "All" TANPA inFloatZone (regresi kontrak v2) 
+PASS  K8-a pasca release: queue-count 4 (chat kembali antrean) — got 4 
+PASS  K8-b take-loop re-claim chat released (di antara take FIFO) got=8591 target=8591
+PASS  K8-c re-claim → lastAssignedAt baru: tepat di bawah 3 take drain, di atas semua chat lama got idx=3 expect=3 list=[8594,8593,8592,8591,8587,8588,8590,8589]
+PASS  K8-c2 tiga di atasnya = hasil take drain (urut take terbalik) got=[8594,8593,8592] drain=[8592,8593,8594]
+PASS  K8-d lastAssignedAt re-claim >= aktivitas semua chat lama (kecuali take drain yang lebih baru) head=1791536993043 othersMax=1791536992960
+PASS  K9-a AR config tenant: off (fixture) — invariant dipertahankan 
+PASS  K9-b 0 chat Mine csA dapat firstResponseAt dari jalur AR (hanya 2 manual reply K3) got=2
+PASS  K9-c queue-count konsisten pasca semua aksi = 0 — got 0 
+PASS  K10-a search-all sanity 200 (200) 
+PASS  K10-b analytics sanity 200 (plan Max) — got 200 
+PASS  K10-c analytics role-gate CS = 403 unchanged by design (got 403) 
+
+=== v4.6.8 floatzone-rev e2e (revisi v467): 36 PASS / 0 FAIL (2.0s) ===
+boot server test di-kill (server child) — produksi 5047 tidak tersentuh

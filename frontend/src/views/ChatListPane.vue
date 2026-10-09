@@ -227,7 +227,11 @@
                 <div class="min-w-0">
                   <div class="flex items-center gap-1">
                     <!-- v4.1.3.1 D3 — nama font-semibold saat marker aktif (unread asli menang) -->
-                    <span :class="['text-sm truncate', isManualUnread(chat.id) && !(chat.unreadCount > 0) ? 'font-semibold' : 'font-medium']">{{ chat.contactName || chat.contactPhone }}</span>
+                    <!-- v4.6.8 D2 — nama kontak flex-1 min-w-0 truncate: SELALU
+                         terlihat penuh (ellipsis) walau di kanannya banyak badge
+                         (transfer/slot/AI) — badge shrink-0 TIDAK PERNAH memakan
+                         lebar nama (fix badge overlap v4.6.8). -->
+                    <span :class="['text-sm truncate flex-1 min-w-0', isManualUnread(chat.id) && !(chat.unreadCount > 0) ? 'font-semibold' : 'font-medium']">{{ chat.contactName || chat.contactPhone }}</span>
                     <span v-if="chat.status === 'resolved'" class="text-green-500 text-xs flex-shrink-0" title="Resolved">✓</span>
                     <!-- v0.5.1 — badge "transfer belum dibaca" -->
                     <span v-if="chat.transferUnseen" class="inline-flex items-center gap-0.5 bg-amber-100 text-amber-700 text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0">📤 Transfer</span>
@@ -244,15 +248,10 @@
                       class="inline-flex items-center gap-0.5 bg-purple-100 text-purple-700 text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0"
                       title="AI sudah membalas chat ini (window 24 jam)"
                     >🤖 ×{{ aiWindowCount(chat) }}</span>
-                    <!-- v4.6.7 — chip zona float (spec docs/spec-v4.6.7-floatzone.md D2):
-                         server-driven via chat.inFloatZone (BE float zone "Mine"); chip
-                         hilang otomatis saat graduate (firstResponseAt terisi → flag false
-                         pada fetch berikutnya). TIDAK ada sort FE — urutan ikut server. -->
-                    <span
-                      v-if="chat.inFloatZone"
-                      class="inline-flex items-center gap-0.5 bg-amber-100 text-amber-700 text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0"
-                      title="Baru diambil — belum dibalas, tampil paling atas"
-                    >🆕 Baru diambil</span>
+                    <!-- v4.6.8 — chip "🆕 Baru diambil" zona float DIHAPUS (spec
+                         docs/spec-v4.6.8-floatzone-v2.md K3): urutan Mine sudah
+                         ekspresif (take naik sekali, aktivitas menang) — chip tidak
+                         diperlukan lagi + field float-zone lama dihapus dari BE. -->
                   </div>
                   <div class="flex items-center gap-1">
                     <span class="text-xs text-gray-500 truncate">{{ chat.lastMessagePreview || 'No messages' }}</span>
@@ -270,13 +269,16 @@
                 </div>
               </div>
             </div>
-            <div class="flex flex-col items-end gap-1 ml-2">
+            <!-- v4.6.8 D2 — kolom kanan shrink-0: timestamp/badge/@user tidak pernah
+                 tumbuh ke kiri (tidak menutupi nama kontak). -->
+            <div class="flex flex-col items-end gap-1 ml-2 shrink-0">
               <!-- v3.9.22 — timestamp pesan terakhir di chat list (konvensi WA: hari ini = jam, kemarin/dst = tanggal) -->
               <span v-if="chat.lastMessageAt" class="text-[11px] text-gray-400 whitespace-nowrap">{{ formatListTime(chat.lastMessageAt) }}</span>
-              <span v-if="chat.unreadCount > 0" class="bg-wa-green text-white text-xs px-2 py-0.5 rounded-full">
+              <!-- v4.6.8 D2 — badge unread shrink-0: tidak pernah tumbuh ke kiri
+                   (tidak menutupi nama kontak walau unread>9). -->
+              <span v-if="chat.unreadCount > 0" class="shrink-0 bg-wa-green text-white text-xs px-2 py-0.5 rounded-full">
                 {{ chat.unreadCount }}
               </span>
-              <span v-if="chat.assignedTo" class="text-xs text-blue-500">@{{ chat.assignedTo.username }}</span>
             </div>
           </div>
         </div>

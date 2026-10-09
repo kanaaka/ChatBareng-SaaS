@@ -1,0 +1,17 @@
+PASS | A0 login superadmin 
+PASS | A1 impersonate t4 
+PASS | G1 slot 99 → 400 code=VALIDATION
+PASS | G2 slot 2 gak ada row → 400 code=VALIDATION
+PASS | G3 create slot-0 WA off → 503 code=WA_BELUM_TERHUBUNG
+PASS | G4 list groups numberSlot field n=2
+PASS | G5 numberSlot persist per-row (legacy 0 + slot-1) [{"id":8590,"waJid":"120399900001-98765@g.us","numberSlot":0},{"id":8591,"waJid":"120399900002-54321@g.us","numberSlot":1}]
+PASS | G6 list (admin) OK dgn fetch multi-slot 
+PASS | G7 detail orphan WA off → 503 code=WA_BELUM_TERHUBUNG
+PASS | G8 adopt orphan WA off → 503 code=WA_BELUM_TERHUBUNG
+PASS | G9 settings WA off → 503 code=WA_BELUM_TERHUBUNG
+PASS | G10 members WA off → 503 
+PASS | G11 rename WA off → 503 
+PASS | G12 reset invite WA off → 503 
+PASS | G13 leave WA off → 503 (fetchAnySlot) 
+=== RINGKASAN v3.9.6 ===
+15 PASS, 0 FAIL

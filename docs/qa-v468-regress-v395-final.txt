@@ -1,0 +1,20 @@
+PASS | A0 login superadmin | status=200
+PASS | A1 impersonate t4 | status=200
+PASS | S0 AR slot-0 triggers off → 200 | status=200
+PASS | T1 PUT Semua nomor → 200 | {"config":{"id":29,"tenantId":4,"enabled":true,"introText":"Halo {name}, pilih:","fallbackText":"Oke
+PASS | T1b semua slot punya row MG eksplisit enabled | all=[0,1] got=[0,1]
+PASS | T1c shared MG row tidak ikut enabled (anti-bocor) | shared.enabled=false
+PASS | T2 AR rows slot → menu | [0,1]
+prisma:query SELECT `main`.`MenuGatewayConfig`.`id`, `main`.`MenuGatewayConfig`.`tenantId`, `main`.`MenuGatewayConfig`.`enabled`, `main`.`MenuGatewayConfig`.`introText`, `main`.`MenuGatewayConfig`.`fallbackText`, `main`.`MenuGatewayConfig`.`fallbackTagId`, `main`.`MenuGatewayConfig`.`timeoutValue`, `main`.`MenuGatewayConfig`.`timeoutUnit`, `main`.`MenuGatewayConfig`.`repeatFrequency`, `main`.`MenuGatewayConfig`.`numberSlot`, `main`.`MenuGatewayConfig`.`aiHybrid`, `main`.`MenuGatewayConfig`.`aiThreshold`, `main`.`MenuGatewayConfig`.`updatedAt`, `main`.`MenuGatewayConfig`.`updatedById` FROM `main`.`MenuGatewayConfig` WHERE (`main`.`MenuGatewayConfig`.`tenantId` = ? AND (`main`.`MenuGatewayConfig`.`numberSlot` = ? OR `main`.`MenuGatewayConfig`.`numberSlot` IS NULL)) ORDER BY `main`.`MenuGatewayConfig`.`numberSlot` DESC LIMIT ? OFFSET ?
+prisma:query SELECT `main`.`MenuGatewayOption`.`id`, `main`.`MenuGatewayOption`.`tenantId`, `main`.`MenuGatewayOption`.`configId`, `main`.`MenuGatewayOption`.`position`, `main`.`MenuGatewayOption`.`label`, `main`.`MenuGatewayOption`.`aliases`, `main`.`MenuGatewayOption`.`replyText`, `main`.`MenuGatewayOption`.`tagId`, `main`.`MenuGatewayOption`.`aiDescription`, `main`.`MenuGatewayOption`.`answerMode`, `main`.`MenuGatewayOption`.`aiDocIds` FROM `main`.`MenuGatewayOption` WHERE `main`.`MenuGatewayOption`.`configId` IN (?) ORDER BY `main`.`MenuGatewayOption`.`position` ASC LIMIT ? OFFSET ?
+prisma:query SELECT `main`.`MenuGatewayConfig`.`id`, `main`.`MenuGatewayConfig`.`tenantId`, `main`.`MenuGatewayConfig`.`enabled`, `main`.`MenuGatewayConfig`.`introText`, `main`.`MenuGatewayConfig`.`fallbackText`, `main`.`MenuGatewayConfig`.`fallbackTagId`, `main`.`MenuGatewayConfig`.`timeoutValue`, `main`.`MenuGatewayConfig`.`timeoutUnit`, `main`.`MenuGatewayConfig`.`repeatFrequency`, `main`.`MenuGatewayConfig`.`numberSlot`, `main`.`MenuGatewayConfig`.`aiHybrid`, `main`.`MenuGatewayConfig`.`aiThreshold`, `main`.`MenuGatewayConfig`.`updatedAt`, `main`.`MenuGatewayConfig`.`updatedById` FROM `main`.`MenuGatewayConfig` WHERE (`main`.`MenuGatewayConfig`.`tenantId` = ? AND (`main`.`MenuGatewayConfig`.`numberSlot` = ? OR `main`.`MenuGatewayConfig`.`numberSlot` IS NULL)) ORDER BY `main`.`MenuGatewayConfig`.`numberSlot` DESC LIMIT ? OFFSET ?
+prisma:query SELECT `main`.`MenuGatewayOption`.`id`, `main`.`MenuGatewayOption`.`tenantId`, `main`.`MenuGatewayOption`.`configId`, `main`.`MenuGatewayOption`.`position`, `main`.`MenuGatewayOption`.`label`, `main`.`MenuGatewayOption`.`aliases`, `main`.`MenuGatewayOption`.`replyText`, `main`.`MenuGatewayOption`.`tagId`, `main`.`MenuGatewayOption`.`aiDescription`, `main`.`MenuGatewayOption`.`answerMode`, `main`.`MenuGatewayOption`.`aiDocIds` FROM `main`.`MenuGatewayOption` WHERE `main`.`MenuGatewayOption`.`configId` IN (?) ORDER BY `main`.`MenuGatewayOption`.`position` ASC LIMIT ? OFFSET ?
+PASS | T3 configSafe(slot=0) enabled | ns=0
+PASS | T3b configSafe(slot=1) enabled | ns=1
+PASS | T4 master OFF → 200 | status=200
+PASS | T4b semua row MG enabled=false | [[null,false],[0,false],[1,false]]
+PASS | T4c tidak ada AR row tersisa mode menu | []
+PASS | T5 save master-OFF tanpa tick-box → 200 | status=200
+
+=== RINGKASAN v3.9.5 ===
+SEMUA PASS ✅
