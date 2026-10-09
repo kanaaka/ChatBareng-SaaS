@@ -1,0 +1,13 @@
+PASS | A0 superadmin login | status=200
+PASS | A1 impersonate tenant-4 | status=200
+PASS | T1 PUT menu-gateway slot[1] timeout-10s → 200 | {"config":{"id":29,"tenantId":4,"enabled":true,"introText":"Intro v399 {name}","fallbackText":"FbTimeout-E2E-7788","fallbackTagId":null,"tim
+PASS | T2 pre: ada chat tenant-4 utk clone
+PASS | T2 seed slot-1 awaiting (umur 90s)
+PASS | T3 timeout release slot-1 → done | menuState=done
+PASS | T3b queuedAt terisi | queuedAt=Fri Oct 09 2026 16:11:41 GMT+0700 (Western Indonesia Time)
+PASS | T4 sweep timeout nge-claim (log releaseAwaiting timeout) | releaseAwaiting(timeout, tenant 4): 1 chat → queue tanpa tag
+PASS | T4b fallback timeout diattempt utk chat slot-1 (send-gagal = WA_DISABLED, non-fatal) | send gagal untuk chat=8595 (tenant 4): WhatsApp disabled (WA_DISABLED=1) — fitur WA mati di fase 1
+PASS | T4c tanpa row message palsu saat send gagal | n=0
+
+=== RINGKASAN v3.9.9 ===
+SEMUA PASS ✅

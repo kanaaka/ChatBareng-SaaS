@@ -1,0 +1,46 @@
+PASS ✅  chrome 18801 alive — Chrome/150.0.7871.186
+PASS ✅  API credentials fixture valid (200) — 200/200
+PASS ✅  A login form csA → dashboard — ok
+DOM A: {
+ "nameCount": 10,
+ "hasLong": true,
+ "nameClasses": "text-sm truncate flex-1 min-w-0 font-medium",
+ "ellipsis": true,
+ "rightShrink0": true,
+ "badgeShrink0": true,
+ "badgeText": "15",
+ "badge15AnyRow": true,
+ "noOverlap": true,
+ "chips": 0,
+ "overflowX": 0,
+ "totalText": true,
+ "bodyHead": "ChatBareng | Disconnected | Kontak | Grup | Blast | 🖥️ | csa_fz2_u-vmslhozuatmc | Logout | Mine | Resolved | Filters | P | P10 | No messages | 05.39 | 1 | P | P9 | No messages | 06.39 | 1 | P | P8 | No messages | 07.39 | 1 | P | P7 | No messages | 08.39 | 1 | +"
+}
+PASS ✅  A Dashboard csA + list render (rows≥3) — rows=10
+PASS ✅  A1 nama long-name ada di Mine + penuh di body text
+PASS ✅  A2 nama span = flex-1 + min-w-0 (+ truncate) — text-sm truncate flex-1 min-w-0 font-medium
+PASS ✅  A3 ellipsis aktif (scrollWidth>clientWidth)
+PASS ✅  A4 kolom kanan shrink-0
+PASS ✅  A5 badge unread (15) ada + shrink-0 (row-scoped/any-row) — rowBadge=15 badge15AnyRow=true
+PASS ✅  A6 TIDAK overlap: badge kanan nama
+PASS ✅  A7 chip "Baru diambil" tidak ada
+PASS ✅  A8 tanpa overflow-x 1280px — 0
+PASS ✅  A shot saved (md5) — ce5be041067e41a45070e16872e42508
+PASS ✅  B login form admin → dashboard — ok
+DOM B: {
+ "has": true,
+ "chips": 0,
+ "ofl": 0,
+ "head": "ChatBareng | Disconnected | Admin Panel | Kontak | Grup | Channel | Blast | 🖥️ | adm_fz2_u-ftocglljqukq | Logout | Mine | Unassigned | All | Resolved | Filters | C | CSB-2 | csb-2 replied | 15.39"
+}
+PASS ✅  B list admin All render (rows≥3) — rows=12
+PASS ✅  B admin All: nama long-name tampil + tanpa chip + tanpa overflow — {"has":true,"chips":0,"ofl":0,"head":"ChatBareng | Disconnected | Admin Panel | Kontak | Grup | Channel | Blast | 🖥️ | adm_fz2_u-ftocglljqukq | Logout | Mine | Unassigned | All | Resolved | Filters | C | CSB-2 | csb-2 replied | 15.39"}
+PASS ✅  B shot saved (md5) — ce5ffc337a11815432b9acf1c240ee4b
+PASS ✅  C login form csA (mobile) → dashboard — ok
+DOM C: {"ell":true,"flex":true,"minw":true}
+PASS ✅  C mobile: nama tetap truncate+flex-1+min-w-0
+PASS ✅  C shot saved (md5) — c3ecf4ac7e0e0a78affd7f42b65e7ea3
+PASS ✅  3 screenshot unik (md5 beda semua) — ce5be041,ce5ffc33,c3ecf4ac
+tab closed
+
+=== visual QA v4.6.8: 21 PASS / 0 FAIL (26.7s) ===
