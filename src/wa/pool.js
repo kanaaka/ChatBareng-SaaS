@@ -460,6 +460,13 @@ async function connectTenant(tenantId, opts = {}) {
   // ── messages.upsert → processIncomingMessage(tenantId, msg) ──────
   // v3.9 — slot penerima dibawa ke routing (Chat.numberSlot + born-assigned)
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    // v4.6.10 — jalur 'notify' SAJA yang digerbangi anti-ghost; jalur 'append'
+    // (replay history-sync/offline + self-upsert internal Baileys messages-send.js
+    // L1137) TETAP di-drop persis perilaku prod lama: replay masal murni untuk
+    // store internal Baileys — membiarkannya persist berisiko flood + efek samping
+    // (unread++/push/auto-reply terpicu ulang utk pesan LAMA). Dedupe/anti-flip
+    // utk replay live sudah ditutup ghost-gate di jalur notify + final race-guard
+    // sebelum persist (lihat shouldPersistIncomingMessage + processIncomingMessage).
     if (type !== 'notify') return
     for (const msg of messages) {
       try {
@@ -479,7 +486,11 @@ async function connectTenant(tenantId, opts = {}) {
           }
           continue
         }
-        if (!msg.message) continue // protocol/ephemeral control events
+        // v4.6.10 — ghost gate: protocol/empty-body/self-echo/dup/flip → skip.
+        // Menggantikan guard lama `if (!msg.message) continue` yang masih membiarkan
+        // protocol BER-message (EPHEMERAL_SYNC_RESPONSE dll — echo self-send upload)
+        // lolos jadi row [No content].
+        if (!(await shouldPersistIncomingMessage(tid, msg, slot))) continue
         await processIncomingMessage(tid, msg, { slot })
       } catch (e) {
         logErr(tid, slot, 'processIncomingMessage error:', e.message)
@@ -931,6 +942,186 @@ function extractText(msg) {
   return null
 }
 
+// ═══ v4.6.10 — [No content] ghost messages + history-sync dedupe ═══
+// Origin (lapor Kanaka + investigasi SystemLog prod, 2026-10-10): agent initiate
+// chat ke kontakt tersimpan → kirim 1 pesan teks ("ice cream", 1 bubble OUT) →
+// SEGERA muncul bubble kedua [No content] di bawahnya (padahal TIDAK ada pesan
+// lain) → chat di-close/di-buka lagi → bubble [No content] yang tadinya OUT
+// berubah jadi IN + jumlahnya 1 → 2. Terjadi untuk SEMUA initiate.
+//
+// Root cause (verifikasi kode Baileys 7.0.0-rc14, lib/Socket/messages-send.js +
+// Utils/decode-wa-message.js, dan pool.js ini):
+//   (1) SELF-ECHO UPLOADED: sendMessage() mengirim konten ke diri sendiri dalam
+//       wrapper { deviceSentMessage: { destinationJid, message } } (isMe path).
+//       WA meng-ACK stanza ini kembali ke socket → handleUpsert → cleanMessage
+//       unwrap deviceSentMessage → upsertMessage → messages.upsert type='notify'
+//       key.fromMe=true TANPA body (isi pesan TIDAK dibawa balik — hanya proto
+//       penanda { protocolMessage: { type: 'EPHEMERAL_SYNC_RESPONSE' } }).
+//       Pool lama: msg.message ada (truthy) → lolos guard existing → Message row
+//       baru direction 'out', content NULL → bubble [No content] OUT langsung
+//       setelah kirim (teori (a) Kanaka: protocol event disimpan sbg row chat).
+//   (2) HISTORY-SYNC REPLAY: pesan sama (key.id sama) kembali via history-sync
+//       / offline replay / multi-device sync dengan fromMe=true (device echo):
+//       pool lama TIDAK punya dedupe by waMessageId → row kedua muncul dobel;
+//       atau dariMe=false dgn fromMe=false (participant view) → row dobel dgn
+//       direction dibalik 'in' → [No content] tampak IN setelah reopen
+//       (teori (b) Kanaka: re-fetch dipertahankan salah / dedupe gagal — key beda).
+//
+// DUA fix, satu gerbang di processIncomingMessage + satu hard-gate di handler
+// messages.upsert (defense-in-depth):
+
+function isProtocolLikeMessage(msg) {
+  const m = msg?.message
+  if (!m) return false
+  // Semua proto penanda WA — TIDAK pernah disimpan sbg row chat (v4.6.10):
+  if (m.protocolMessage) return true            // ACK/EDT/historySyncNotification/revoke (message deleted)
+  if (m.senderKeyDistributionMessage) return true // sender-key E2E handshake (grup)
+  if (m.reactionMessage) return true            // v4.4.9 sudah menolak; tetap sbg gerbang pusat
+  if (m.pollUpdate) return true                 // vote update poll
+  if (m.ephemeralMessage?.protocolMessage) return true // ephemeral wrapper penanda
+  return false
+}
+
+function logGhostSkip(tid, slot, waId, waMessageId, reason) {
+  log(tid, slot, `[v4.6.10][ghost-guard] skip (reason=${reason}) chatJid=${waId} waMessageId=${waMessageId || '(kosong)'}`)
+  try {
+    systemLog.logInfo(`GHOST-SKIP chat=${waId} tenant=${tid} reason=${reason}`, {
+      module: 'chat',
+      tenantId: tid,
+      meta: { waJid: waId, waMessageId: waMessageId || null, reason },
+    })
+  } catch { /* best-effort */ }
+}
+
+/**
+ * v4.6.10 — Gerbang ingest: pesan WA ini boleh disimpan sbg row chat?
+ * Return: msg yang sama bila boleh persist; null bila DI-SKIP (anti-ghost).
+ * Aturan (spec v4.6.10):
+ *   S1a — body kosong/null + bukan media/typed-ext (protocol event, self-echo
+ *         upload ACK, dummy wrapper) → TIDAK jadi row chat. Pesan teks nyata
+ *         (conversation/extendedTextMessage.text) dan media tetap lolos persis
+ *         seperti jalur lama.
+ *   S1b — key.id SUDAH ada di DB (tenant sama + chat sama via waJid/phoneJid/
+ *         lidJid alternate) → SKIP dedupe by (waMessageId + chatId) — tidak
+ *         pernah dobel.
+ *   S2  — FROM-ME CONSISTENT: pesan yang lokal sudah OUT TIDAK boleh di-flip
+ *         jadi IN oleh history-sync/perangkat lain; lokal menang → skip, dan
+ *         row lama [No content] di-backfill bila sync membawa teks nyata.
+ *   opts.historySync — baileys upsert type 'append' (replay offline/history):
+ *         hanya menambah reason label; filter S1a berlaku di KEDUA jalur (notify
+ *         maupun append) supaya ghost tidak pernah masuk lewat replay.
+ */
+async function shouldPersistIncomingMessage(tenantId, msg, inboxSlot, opts = {}) {
+  const tid = Number(tenantId)
+  const key = msg?.key
+  const waId = key?.remoteJid
+  if (!Number.isFinite(tid) || tid <= 0 || !waId) return msg || null
+  const historySync = !!opts?.historySync
+
+  // S1a-0 — protocol events murni: TIDAK pernah bubble (protocolMessage/
+  // senderKeyDistribution/reaction/pollUpdate/ephemeral-wrapper). REVOKE sengaja
+  // ikut di-skip di v4.6.10: fitur delete pesan belum pernah ditangani pool (row
+  // revoke kalau terlanjur lolos malah JADI bubble [No content] — root bug ini).
+  if (isProtocolLikeMessage(msg)) {
+    logGhostSkip(tid, inboxSlot, waId, key?.id || null,
+      `protocol(${Object.keys(msg.message).find((k) => k !== 'messageContextInfo') || 'unknown'})`)
+    return null
+  }
+
+  // S1a-1 — payload tanpa objek pesan (self-echo ACK upload kadang datang dengan
+  // message={} / tidak ada): bukan chat nyata.
+  if (!msg.message || typeof msg.message !== 'object') {
+    logGhostSkip(tid, inboxSlot, waId, key?.id || null, 'no-message-object')
+    return null
+  }
+
+  // S1a-2 — body kosong AND bukan media/typed-ext → BUKAN chat nyata (echo kosong
+  // / wrapper view-once / event tanpa konten). CATATAN: extractText/detectMediaType
+  // menerima msg penuh (mereka baca msg.message.* di dalamnya).
+  const bodyText = extractText(msg)
+  const bodyMedia = detectMediaType(msg)
+  if (!bodyText && !bodyMedia) {
+    logGhostSkip(tid, inboxSlot, waId, key?.id || null, historySync ? 'empty-body-sync' : 'empty-body-non-media')
+    return null
+  }
+
+  // S1b + S2 — DEDUPE by (tenantId + waMessageId, same-chat) + anti-flip dariMe.
+  const waMessageId = key?.id
+  if (!waMessageId) return msg // tanpa key.id → perilaku prod lama (tetap persist)
+
+  let existing = null
+  try {
+    existing = await prisma.message.findFirst({
+      where: { tenantId: tid, waMessageId },
+      orderBy: { id: 'asc' },
+      select: { id: true, chatId: true, direction: true, content: true, status: true },
+    })
+  } catch (e) {
+    logErr(tid, inboxSlot, '[v4.6.10] dedupe lookup error (fail-open persist):', e.message)
+    return msg // DB error → fail-open: jangan jatuhkan pesan pelanggan nyata
+  }
+  if (!existing) return msg // belum ada → jalur persist normal
+
+  // waMessageId sudah ada di tenant ini — pastikan chat-nya SAMA (alternate-JID
+  // mapping). Bila chat BEDA → bukan duplikat (entitas lain) → persist normal.
+  let sameChat = null
+  try {
+    sameChat = await prisma.chat.findFirst({
+      where: { tenantId: tid, id: existing.chatId, OR: [{ waJid: waId }, { phoneJid: waId }, { lidJid: waId }] },
+      select: { id: true },
+    })
+  } catch (e) {
+    logErr(tid, inboxSlot, '[v4.6.10] same-chat lookup error (fail-open persist):', e.message)
+    return msg
+  }
+  if (!sameChat) return msg
+
+  const syncedFromMe = msg.key.fromMe === true
+  if (syncedFromMe && existing.direction === 'out') {
+    // S1b — echo pesan OUT lokal kembali via WA (self-echo upload/sync/notify)
+    // → lokal sudah benar → skip (TIDAK create duplikat kedua).
+    logGhostSkip(tid, inboxSlot, waId, waMessageId, historySync ? 'self-sync-dup-out' : 'dup-out')
+    return null
+  }
+  if (syncedFromMe && existing.direction !== 'out') {
+    // S2 — ANTI-FLIP: row lokal dibawa WA sbg fromMe=true (history-sync/sync
+    // perangkat lain) → JANGAN flip arah, JANGAN duplikat. Lokal menang: skip.
+    // Bila row lokal masih [No content] (bug lama) dan sync bawa teks nyata →
+    // backfill isi row (arah TIDAK diubah — konservatif, zero data mutation).
+    try {
+      if (!existing.content && bodyText) {
+        const { encryptText } = require('../services/textCrypto')
+        await prisma.message.update({ where: { id: existing.id }, data: { content: encryptText(bodyText) } })
+        log(tid, inboxSlot, `[v4.6.10][ghost-guard] backfill konten flip-guard: dbMessage=${existing.id}`)
+      }
+    } catch (e) {
+      logErr(tid, inboxSlot, '[v4.6.10] backfill konten error (non-fatal):', e.message)
+    }
+    logGhostSkip(tid, inboxSlot, waId, waMessageId, 'fromme-flip-synced')
+    return null
+  }
+  if (!syncedFromMe && existing.direction === 'out') {
+    // Participant-view (fromMe=false) utk pesan OUT lokal → konsisten: TIDAK flip,
+    // TIDAK duplikat. Bila row lokal masih [No content] (content kosong — bug lama)
+    // dan sync membawa teks nyata → backfill isi row (row lokal menang; konten
+    // sync melengkapi) — perbaiki data lama pelanggan yang sudah kejadian.
+    try {
+      if (!existing.content && bodyText) {
+        const { encryptText } = require('../services/textCrypto')
+        await prisma.message.update({ where: { id: existing.id }, data: { content: encryptText(bodyText) } })
+        log(tid, inboxSlot, `[v4.6.10][ghost-guard] backfill konten kosong dari sync peserta: dbMessage=${existing.id}`)
+      }
+    } catch (e) {
+      logErr(tid, inboxSlot, '[v4.6.10] backfill konten error (non-fatal):', e.message)
+    }
+    logGhostSkip(tid, inboxSlot, waId, waMessageId, 'participant-view-no-flip')
+    return null
+  }
+  // Sisa: fromMe=false + existing IN → plain duplicate (double-notify/ACK) → skip.
+  logGhostSkip(tid, inboxSlot, waId, waMessageId, historySync ? 'dup-in-sync' : 'dup-in')
+  return null
+}
+
 // ═══ v3.9.14 — Quote Reply (WhatsApp contextInfo) ═══
 // Ekstrak contextInfo dari pesan masuk secara generik (key pertama yang membawa
 // contextInfo — extendedTextMessage = kasus 99%). Return kolom quoted utk persist
@@ -1214,6 +1405,17 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
   if (rawJid === 'status@broadcast') return null
   if (rawJid.endsWith('@newsletter')) return null // v4.0.0c — Channel bukan chat customer (defense-in-depth)
   const inboxSlot = Number(meta?.slot) || 0
+
+  // ═══ v4.6.10 — GHOST GATE (ingest filter) ═══
+  // Protocol events / body kosong non-media / echo-self-send / dup by waMessageId /
+  // flip dariMe → TIDAK pernah jadi row chat (aturan detail: shouldPersistIncoming-
+  // Message). Gate SEBELUM chat find-or-create — ghost TIDAK boleh bikin chat baru /
+  // naikkan unread. Gagal internal guard → fail-open di dalam ( pesan pelanggan nyata
+  // tidak pernah hilang karena guard ).
+  if (!(await shouldPersistIncomingMessage(tid, msg, inboxSlot, { historySync: !!meta?.historySync }))) {
+    return null
+  }
+
   // v3.9.2 — true bila chat dibuat BARU oleh pesan ini (unread=1 sudah dihitung
   // di create — update final tidak increment lagi, cegah double-increment).
   let firstMessageCounted = false
@@ -1589,6 +1791,19 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
 
   // Save message (content terenkripsi at-rest)
   // v3.9.14 — quote-reply masuk: persist 4 kolom quoted (+ snippet terenkripsi)
+  // v4.6.10 — FINAL RACE-GUARD: antara kirim agent (route persist OUT) dan echo
+  // upload masuk (upsert → jalur ini), row dgn waMessageId sama bisa dibuat siapa
+  // duluan. Dedupe sini menutup race itu — max 1 row per (chat, waMessageId).
+  if (msg.key?.id) {
+    const dupe = await prisma.message.findFirst({
+      where: { tenantId: tid, chatId: chat.id, waMessageId: msg.key.id },
+      select: { id: true },
+    })
+    if (dupe) {
+      log(tid, inboxSlot, `[v4.6.10][ghost-guard] final race-guard: waMessageId sudah ada (dbMessage=${dupe.id}) — skip persist kedua`)
+      return { chat, message: null }
+    }
+  }
   const dbMsg = await prisma.message.create({
     data: {
       tenantId: tid,
@@ -1894,6 +2109,8 @@ module.exports = {
   getQRDataUrl,
   getWaHealthSummary: async () => [], // v3.2: belum dipakai (health page = fase 3)
   processIncomingMessage,
+  // v4.6.10 — gerbang anti-ghost diexport utk e2e unit-level (filter upsert)
+  shouldPersistIncomingMessage,
   syncContactFromChat,
   normalizePhoneForContact,
   sendMessageForTenant,

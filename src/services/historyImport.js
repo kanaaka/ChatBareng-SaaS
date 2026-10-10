@@ -186,7 +186,24 @@ async function connectTags(tx, tenantId, chatId, tags) {
 // ─── Insert messages (batch) ─────────────────────────────────────────────
 
 async function insertMessages(tx, tenantId, chatId, candidates, userMap) {
-  const rows = candidates.map(({ m, ts }) => ({
+  // v4.6.10 — return jumlah duplikat waMessageId yang di-skip (caller increment
+  // result.messagesSkipped — counter tidak boleh diakses langsung dari sini).
+  let skippedWaIdDupes = 0
+  const rowMap = []
+  for (const c of candidates) {
+    // v4.6.10 — history-sync dedupe: backup WA bawa waMessageId (key.id) asli.
+    // Bila row dgn (tenantId, chatId, waMessageId) sama sudah ada → skip (pola
+    // upsert gate — TIDAK boleh dobel; backup tanpa waMessageId tetap via dedupKey).
+    if (c.m.waMessageId != null && String(c.m.waMessageId).length > 0) {
+      const dupe = await tx.message.findFirst({
+        where: { tenantId, chatId, waMessageId: String(c.m.waMessageId) },
+        select: { id: true },
+      })
+      if (dupe) { skippedWaIdDupes++; continue }
+    }
+    rowMap.push(c)
+  }
+  const rows = rowMap.map(({ m, ts }) => ({
     tenantId,
     chatId,
     direction: m.direction === 'out' ? 'out' : 'in',
@@ -205,6 +222,7 @@ async function insertMessages(tx, tenantId, chatId, candidates, userMap) {
   for (let i = 0; i < rows.length; i += IMPORT_BATCH_SIZE) {
     await tx.message.createMany({ data: rows.slice(i, i + IMPORT_BATCH_SIZE) })
   }
+  return skippedWaIdDupes
 }
 
 // ─── Per-chat processor (dipanggil dalam transaksi) ──────────────────────
@@ -313,7 +331,13 @@ async function processChat(tx, tenantId, chatEntry, userMap, dryRun, result) {
       }
     }
     if (!dryRun) {
-      if (toInsert.length) await insertMessages(tx, tenantId, existingChat.id, toInsert, userMap)
+      if (toInsert.length) {
+        // v4.6.10 — insertMessages skip duplikat waMessageId → pesan real yang
+        // ditambahkan (bukan skipped) yang dilaporkan.
+        const skippedWa = await insertMessages(tx, tenantId, existingChat.id, toInsert, userMap)
+        result.messagesAdded += Math.max(0, toInsert.length - skippedWa)
+        if (skippedWa) result.messagesSkipped += skippedWa
+      }
       if (await upsertContact(tx, tenantId, chatEntry, dryRun)) result.contactsUpdated++
       await connectTags(tx, tenantId, existingChat.id, chatEntry.tags)
       // v0.6.2 — refresh lastMessageAt/preview dari pesan aktif terbaru
@@ -390,8 +414,13 @@ async function processChat(tx, tenantId, chatEntry, userMap, dryRun, result) {
   })
   chatEntry.chatId = createdChat.id // Int id utk Contact/ChatTag pasca-create
 
-  if (candidates.length) await insertMessages(tx, tenantId, createdChat.id, candidates, userMap)
-  result.messagesAdded += candidates.length
+  if (candidates.length) {
+    // v4.6.10 — filter duplikat waMessageId tetap jalan di chat baru (row dobel
+    // tidak mungkin di chat fresh, tapi konsistensi guard tetap dipakai).
+    const skippedWa = await insertMessages(tx, tenantId, createdChat.id, candidates, userMap)
+    result.messagesAdded += Math.max(0, candidates.length - skippedWa)
+    if (skippedWa) result.messagesSkipped += skippedWa
+  }
   if (await upsertContact(tx, tenantId, chatEntry, dryRun)) result.contactsUpdated++
   await connectTags(tx, tenantId, createdChat.id, chatEntry.tags)
 }

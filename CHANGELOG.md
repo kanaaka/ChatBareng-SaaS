@@ -1,3 +1,50 @@
+# v4.6.10 (bugfix: [No content] ghost messages + history-sync dedupe) — 2026-10-10
+
+**Latar:** lapor Kanaka — agent (Ulul) initiate chat ke kontakt tersimpan → kirim 1
+pesan teks ("ice cream", 1 bubble OUT) → SEGERA muncul bubble kedua `[No content]`
+di bawahnya (padahal agent TIDAK kirim pesan lain; WA asli juga TIDAK ada balasan)
+→ chat di-close→di-buka lagi → bubble `[No content]` yang tadinya OUT (kanan) berubah
+jadi IN (kiri) DAN jumlahnya 1 → 2. Terjadi untuk SEMUA initiate → pelanggan marah.
+
+**Root cause (verifikasi Baileys 7.0.0-rc14):**
+1. `sendMessage()` mengirim ke diri sendiri dalam wrapper `deviceSentMessage`
+   (jalur isMe, `messages-send.js`) → WA meng-ACK stanza itu kembali → upsert
+   type='notify' `fromMe=true` TANPA body (proto penanda`EPHEMERAL_SYNC_RESPONSE`) →
+   pool lama menyimpannya jadi Message row content NULL → bubble `[No content]` OUT.
+2. Reopen/history-sync me-replay pesan yang sama → pool LAMA tidak punya dedupe by
+   `waMessageId` → row dobel, dan replay participant-view `fromMe=false` → arah
+   terbalik IN (flip).
+
+**Perubahan (murni ingest-filter — ZERO kolom baru, ZERO schema change):**
+- **Gerbang anti-ghost** (`src/wa/pool.js` — `shouldPersistIncomingMessage`):
+  §1a protocol events (protocolMessage/senderKeyDistributionMessage/reactionMessage/
+  pollUpdate/message-{}_tanpa-body) TIDAK pernah jadi row; §1b dedupe by
+  (tenantId + waMessageId + same chat via waJid/phoneJid/lidJid); §2 anti-flip
+  dariMe (lokal menang — IN lokal tidak boleh di-flip oleh replay fromMe=true);
+  participant-view utk row OUT lokal di-skip + backfill konten bila row lama masih
+  `[No content]`; fail-open saat lookup error (pesan pelanggan tidak pernah hilang
+  karena guard). Terpasang di upsert handler (jalur 'notify'; jalur 'append' replay
+  history-sync TETAP di-drop — perilaku prod lama, replay masal berisiko flood +
+  efek samping unread/push/auto-reply) DAN jaga-jaga di awal `processIncomingMessage`
+  (jalur `/api/wa/inbound` juga ter-gerbang).
+- **Final race-guard** sebelum `message.create` 1:1 (`pool.js`): max 1 row per
+  (chat, waMessageId) — echo upload vs persist route tidak saling mendahului.
+- **Dedupe grup** (`src/services/groups.js`): pesan grup replay (waMessageId sama)
+  tidak jadi row kedua.
+- **Dedupe history-import** (`src/services/historyImport.js`): backup/export bawa
+  waMessageId nyata → row (tenant, chat, waMessageId) sama di-skip; count
+  `messagesAdded` hanya pesan yang benar-benar masuk.
+- **FE** TIDAK diubah — `[No content]` kini hanya mungkin utk row lama (bug lama).
+
+**QA:** e2e baru `scripts/e2e-v4610-ghost-dedupe.cjs` **37 PASS / 0 FAIL** (copy-DB,
+port 5099/5098, WA_DISABLED=1+OK_SEND+DEBUG_INBOUND — produksi 5047/5062 tidak
+tersentuh; bukti `docs/qa-v4610-ghost-dedupe-e2e-final.txt` + `docs/qa-v4.6.10-ghost-dedupe.md`)
++ regresi penuh: v3.9.4 (22/0), v3.9.5 (13/0), v3.9.6 (15/0), v3.9.9 (10/0),
+log-coverage v4.6.4 (76/0), clearqueue v4.6.6 (56/0), floatzone v4.6.7-rev (36/0),
+floatzone-v2 v4.6.8 (44/0), outside v4.6.9 (42/0 fair-copy), systemlogs v4.7.0
+(59/0 retry; run-1 57/2 flake timing client-log fire-and-forget — bukan regresi).
+**TOTAL 374 PASS / 0 FAIL.**
+
 # v4.6.9 (auto-reply C+A — outside hours marker terpisah + human-out skip hanya dalam jam kerja) — 2026-10-10
 
 **Latar:** lapor Kanaka (kasus BITE ME, chat=11810 tenant-10 wa.labparahita.co.id):
