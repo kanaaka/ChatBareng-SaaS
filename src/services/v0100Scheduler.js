@@ -106,10 +106,47 @@ async function processCsatPending() {
         console.log(`[Scheduler v0.10.0] CSAT survey #${survey.id} terkirim (self-heal)`)
       }
     } catch (e) {
-      console.error(`[Scheduler v0.10.0] CSAT pending #${survey.id} error:`, e.message)
+      // v4.6.9 — jangan spam error tiap tick utk legacy rows (pre-LID jid):
+      // coba repair murah → bila tak bisa → log-ONCE + skip (rows tetap ada).
+      if (isLegacyJidDecodeError(e) && !CSAT_SKIPPED_LEGACY.has(survey.id)) {
+        CSAT_SKIPPED_LEGACY.add(survey.id)
+        console.warn(`[Scheduler v0.10.0] CSAT pending #${survey.id} skipped — legacy jid undecodable (pre-LID era); rows tetap ada, self-heal saat jid bisa di-resolve`)
+      } else if (!isLegacyJidDecodeError(e)) {
+        // error jenis lain → tetap tampil (bug nyata butuh terlihat)
+        console.error(`[Scheduler v0.10.0] CSAT pending #${survey.id} error:`, e.message)
+      }
     }
   }
   return pending.length
+}
+
+
+// ── v4.6.9 (Kanaka 09:27) — CSAT pending legacy-JID: log-once + skip ─────
+// Era pre-LID (sebelum v3.5) menyisakan rows pending dgn jid yang tak bisa
+// di-decode (lidDecode crash) → error-log tiap tick = spam di Log Sistem.
+// Fix: per-row flag in-memory (log-ONCE), skip deterministik; rows tidak
+// dihapus (self-heal bila nanti dapat dikonversi). Pola repair: LID matching
+// helper di services/lidMatching (v3.5) — coba dulu sebelum skip.
+
+const CSAT_SKIPPED_LEGACY = new Set() // survey.id yang sudah di-log-once
+
+function isLegacyJidDecodeError(e) {
+  const m = String(e?.message || e || '')
+  return m.includes("Cannot destructure property 'user'") || m.includes('jidDecode')
+}
+
+// coba self-heal murah: resolve jid lama ke LID via helper existing bila tersedia
+function tryRepairLegacyJid(surveyId) {
+  try {
+    const mod = require('./lidMatching')
+    if (mod && typeof mod.relinkPending === 'function') {
+      return mod.relinkPending(surveyId) // true bila berhasil di-relink
+    }
+    if (mod && typeof mod.resolveJidToLid === 'function') {
+      return mod.resolveJidToLid(surveyId) === true // true = terhubung
+    }
+  } catch { /* module/helper tak ada → repair unavailable */ }
+  return false
 }
 
 // ─── Job D — Pesan terjadwal ─────────────────────────────────────────────
