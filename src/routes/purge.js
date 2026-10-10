@@ -120,6 +120,9 @@ router.post('/', ...rt, purgeValidation, async (req, res) => {
         // v0.13.4 — marker auto-reply ikut di-reset (purge = fresh start total):
         // tanpa ini QA/operasional terblokir "sudah kirim hari ini" tanpa terlihat.
         lastAutoGreetDate: null,
+        // v4.6.9 (spec docs/spec-v4.6.9-outside-priority.md) — marker OUT ikut di-reset
+        // juga (kuota outside 1×/hari segar setelah purge — fresh start total).
+        lastAutoOutDate: null,
         menuState: null,
         menuRequestedAt: null,
         menuOptionId: null,

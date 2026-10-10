@@ -7,6 +7,24 @@
 
 ---
 
+## v4.6.9 — 2026-10-10 — marker outside-hours terpisah (ADD-ONLY)
+
+- **1 kolom ADD-ONLY** (`Chat.lastAutoOutDate`) — ZERO DROP, zero destruktif; data
+  existing: NULL default, kolom lain tidak berubah.
+- Fungsi: marker "YYYY-MM-DD" (WIB) terakhir chat dapat balasan auto JALUR OUTSIDE-hours
+  (v4.6.9 C+A — anti-sunyi pasca jam kerja; kuota 1×/hari TERPISAH dari greeting
+  `lastAutoGreetDate`). Detail: `docs/spec-v4.6.9-outside-priority.md`.
+- DDL eksak:
+
+```sql
+ALTER TABLE "Chat" ADD COLUMN "lastAutoOutDate" TEXT;
+```
+
+- ATAU (RECOMMENDED, kode sudah ≥v4.6.3): `npx prisma db push --skip-generate`
+  (additive-only, idempoten, prisma menolak operasi destruktif).
+
+---
+
 ## v4.4.0 — 2026-10-01 (migrasi `2026100107400000_v440_tag_exclude_queue`) ← **GAP SAAT INI di server IT**
 
 - **1 kolom ADD-ONLY** (`Tag.excludeFromQueue`) — ZERO DROP, zero destruktif.

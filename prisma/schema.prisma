@@ -125,6 +125,12 @@ model Chat {
   transferUnseen        Boolean            @default(false) // v0.5.1: highlight "transfer belum dibaca" (additive)
   queuedAt              DateTime? // v0.1.21: kapan chat masuk antrean (FIFO key); null = assigned/taken
   lastAutoGreetDate     String? // v0.7.0: "YYYY-MM-DD" (WIB) terakhir kirim auto message (outside-hours/greeting)
+  // ═══ v4.6.9 — Marker outside-hours TERPISAH (ADDITIVE kolom, spec docs/spec-v4.6.9-outside-priority.md §D1) ═══
+  // lastAutoOutDate: "YYYY-MM-DD" (WIB) terakhir chat dapat balasan auto JALUR OUTSIDE-hours.
+  // Kuota 1×/hari per jalur masing-masing (§K2): greeting pagi (lastAutoGreetDate) + pesan
+  // outside sore/malam (lastAutoOutDate) di hari yang sama = DUA-DUANYA diizinkan.
+  // NULL default (data existing tidak berubah); kolom lain tidak disentuh.
+  lastAutoOutDate       String?
   // v0.10.0 — Snooze Chat (additive): null = tidak snooze
   snoozedUntil          DateTime?
   snoozedBy             Int?

@@ -385,8 +385,20 @@ async function hasHumanOutMessageToday(tenantId, chatId, ts = new Date()) {
  * Refactor dari jalur tunggal maybeAutoReply dulu (behavior identik — teks,
  * Message row, broadcast, receipts semua sama) supaya jalur outside-hours dan
  * greeting text bisa dipakai ulang tanpa duplikasi.
+ *
+ * v4.6.9 (spec docs/spec-v4.6.9-outside-priority.md §D2/A) — param `opts.marker`:
+ *   - default (undefined) → revert `lastAutoGreetDate` (marker greeting lama, tak berubah).
+ *   - 'out' → revert `lastAutoOutDate` SAJA (marker outside v4.6.9 — klaim jalur (a)
+ *     outside); `lastAutoGreetDate` TIDAK disentuh (kuota greeting tetap utuh).
+ * Satu fungsi (tanpa duplikasi) sesuai spec — flag marker murni urusan revert
+ * send-gagal; jalur kirim/Message/broadcast identik.
+ * @param {object} chat - row Chat
+ * @param {string} text - teks terkirim (dipersonalisasi {name})
+ * @param {string} today - "YYYY-MM-DD" WIB dari timestamp PESAN
+ * @param {{marker?: 'out'}} [opts] - marker yang di-revert bila send gagal
+ * @returns {Promise<boolean>} true bila terkirim
  */
-async function sendAutoText(chat, text, today) {
+async function sendAutoText(chat, text, today, opts = {}) {
   const chatId = chat.id
   const tenantId = chat.tenantId
   const finalText = personalizeText(text, chat.contactName)
@@ -400,11 +412,14 @@ async function sendAutoText(chat, text, today) {
     // Send gagal → revert marker + log (tidak hang selamanya).
     // Null-kan hanya jika marker masih = today (klaim kita sendiri) —
     // tidak pernah menimpa klaim proses lain yang lebih baru.
+    // v4.6.9 (A): marker 'out' → revert lastAutoOutDate (jalur outside); default →
+    // lastAutoGreetDate (greeting — behavior lama persis).
     console.error(`[AutoReply] send gagal untuk chat=${chatId} (tenant ${tenantId}):`, sendErr.message)
     void systemLog.logError(`send gagal untuk chat=${chatId}`, { module: 'auto-reply', tenantId, err: sendErr })
+    const marker = opts.marker === 'out' ? 'lastAutoOutDate' : 'lastAutoGreetDate'
     await prisma.chat.updateMany({
-      where: { id: chatId, tenantId, lastAutoGreetDate: today },
-      data: { lastAutoGreetDate: null },
+      where: { id: chatId, tenantId, [marker]: today },
+      data: { [marker]: null },
     }).catch((e) => console.error('[AutoReply] revert marker gagal:', e.message))
     return false
   }
@@ -709,6 +724,16 @@ async function cbaiReplyForMessage(chat, cfg, today, { outside = false, customer
  * Klaim marker lastAutoGreetDate (atomic updateMany, pola v0.7.0) SEBELUM matrix;
  * revert bila tidak ada jalur yang mengirim ATAU send gagal.
  *
+ * v4.6.9 (spec docs/spec-v4.6.9-outside-priority.md §K1/K2/§D2 — C+A):
+ *   (C) gate human-out (hasHumanOutMessageToday) HANYA berlaku DI DALAM jam kerja
+ *       (`!outside`) — di luar jam CS off-duty → away text tetap keluar walau CS
+ *       pernah balas manual hari itu (kasus BITE ME chat=11810 tenant-10 16:13).
+ *   (A) jalur (a) outside-hours klaim marker TERPISAH `Chat.lastAutoOutDate`
+ *       (kolom ADDITIVE baru) — kuota 1×/hari per jalur: greeting pagi +
+ *       outside sore di hari sama = DUA-DUANYA diizinkan; send gagal → revert
+ *       OUT saja (sendAutoText { marker: 'out' }). CB-AI TIDAK berubah (budget
+ *       sendiri, tidak menyentuh marker OUT). Menu/greet jalur lama tidak berubah.
+ *
  * @param {object} chat - row Chat TERBARU dari DB (dgn include contact bila ada)
  * @param {object} msg - message baileys asli
  * @returns {Promise<{sent: boolean}>} sent=true bila ada auto message terkirim
@@ -741,6 +766,12 @@ async function maybeAutoReply(chat, msg) {
     // v4.0.0 (spec §7): bila SALAH SATU mode CB-AI aktif, claim marker DILEWATI —
     // anti-spam CB-AI = budget limit+jendela 24 jam (D5), BUKAN throttle 1×/hari
     // (spec: "CB-AI in-hours TIDAK pakai repeat-gate / anti-spam = limit+window").
+    // v4.6.9 (A, spec docs/spec-v4.6.9-outside-priority.md §K2/§D2): klaim greeting
+    // HANYA untuk jalur DALAM jam kerja (menu (b)/text (c)). Jalur outside-hours (a)
+    // kini klaim marker TERPISAH `lastAutoOutDate` di jalur (a) sendiri (kuota 1×/hari
+    // per jalur) — tanpa ini, klaim greeting yang early-return (`claim.count===0`)
+    // memblokir away-text saat greeting sudah terpakai hari itu (greeting pagi +
+    // outside sore di hari sama HARUS DUA-DUANYA keluar — keputusan Kanaka §K2).
     const kbSvc0 = require('./aiKnowledge')
     const plansSvc0 = require('../services/plans')
     const plan0 = await plansSvc0.getPlan(tenantId).catch(() => null)
@@ -749,7 +780,7 @@ async function maybeAutoReply(chat, msg) {
     const cbaiActive0 = planOk0 && ((outside0 && cfg.outsideHoursMode === 'cbai') || (!outside0 && cfg.greetEnabled && cfg.greetMode === 'cbai'))
     let claimed = true // CB-AI path: tanpa marker 1×/hari (budget sendiri)
     let claimReverted = false
-    if (!cbaiActive0) {
+    if (!cbaiActive0 && !outside0) {
       const claim = await prisma.chat.updateMany({
         where: { id: chatId, tenantId, OR: [{ lastAutoGreetDate: null }, { lastAutoGreetDate: { not: today } }] },
         data: { lastAutoGreetDate: today },
@@ -759,6 +790,9 @@ async function maybeAutoReply(chat, msg) {
       // claim tercatat sebagai "sudah diklaim" — jalur CB-AI TIDAK menyentuh marker;
       // jalur lama (degrade) di bawah tetap jalan TANPA claim/revert (diem/away pun
       // tidak akan tercapai bila cbaiActive — kecuali guard CB-AI gagal, lihat bawah).
+      // v4.6.9: jalur outside-hours juga lewat sini (tanpa klaim greeting) — klaim
+      // OUT-nya sendiri ada di jalur (a); revertClaim() tetap inert (tidak men-null
+      // marker greeting/OUT milik jalur lain).
       claimReverted = true
     }
 
@@ -775,11 +809,14 @@ async function maybeAutoReply(chat, msg) {
 
     const outside = isOutsideHours(cfg, dbTimestamp)
 
-    // v3.5 (§3) — Greeting/away SKIP bila agen sudah menyapa/balas duluan hari itu
-    // (pesan out non-auto dari CS manusia di chat yang sama, hari WIB sama).
-    // Berlaku utk SEMUA jalur auto (away text, menu, greet text) — v4.0.0: CB-AI JUGA
-    // ditutup di sini (D6: human bales ≠ reset, skip SEMUA auto hari itu).
-    if (await hasHumanOutMessageToday(tenantId, chatId, dbTimestamp)) {
+    // ── v3.5 (§3) human-out skip — v4.6.9 (C, spec docs/spec-v4.6.9-outside-priority.md §K1): ──
+    // GATE HANYA BERLAKU DI DALAM JAM KERJA (`!outside`). Origin kasus BITE ME chat=11810
+    // (tenant-10): CS manual balas 15:32 → pelanggan kejar 16:13 (SUDAH luar jam MonFri=16:00)
+    // → gate mem-blok-kan away text sekali sehari meski CS off-duty → pelanggan sunyi total.
+    // Invariant baru: human-out = jam kerja only (mencegah AR nabrak CS aktif — CS off-duty
+    // di luar jam) → jalur outside-hours LEWATI gate ini dan lanjut ke jalur (a).
+    // Di LUAR jam (outside=true) → gate dilewati TANPA merubah marker apa pun.
+    if (!outside && await hasHumanOutMessageToday(tenantId, chatId, dbTimestamp)) {
       await prisma.chat.updateMany({
         where: { id: chatId, tenantId, lastAutoGreetDate: { not: today } },
         data: { lastAutoGreetDate: today },
@@ -803,16 +840,30 @@ async function maybeAutoReply(chat, msg) {
     }
 
     // v3.5 — human-out skip SUDAH di-evaluasi di atas (SEBELUM CB-AI) — jalur lama di
-    // bawah hanya dijangkau bila TIDAK ada human out hari itu (atau CB-AI idle dgn
-    // used=false → skip check tidak men-trigger; satu-satunya jalan ke sini adalah
-    // sudah lolos skip check). Marker skip tetap ter-set utk kedua jalur.
+    // bawah hanya dijangkau bila TIDAK ada human out hari itu ATAU outside=true
+    // (v4.6.9 C: gate human-out hanya di dalam jam kerja — di luar jam meski CS pernah
+    // manusiawi-balas, away tetap jalan). Marker skip tetap ter-set utk jalur dalam-jam.
 
     // ── (a) Luar jam + away ON → away text (D5). Queue TIDAK disentuh. ──
-
-    // ── (a) Luar jam + away ON → away text (D5). Queue TIDAK disentuh. ──
+    // v4.6.9 (A, spec docs/spec-v4.6.9-outside-priority.md §K2/§D2): claim marker OUT
+    // TERPISAH (Chat.lastAutoOutDate — kolom ADDITIVE) — BUKAN lastAutoGreetDate.
+    // Kuota 1×/hari per jalur: greeting pagi (marker greet lama) + away sore/malam
+    // (marker OUT) di hari yang sama = DUA-DUANYA diizinkan. Claim ATOMIK dulu
+    // (updateMany + OR null + not-today, pola v0.7.0) → kirim → send gagal → revert
+    // hanya lastAutoOutDate (sendAutoText { marker: 'out' }).
     if (cfg.outsideHoursEnabled && outside) {
-      const awaySent = await sendAutoText(chat, cfg.outsideHoursText, today)
-      // Send gagal → marker sudah di-revert di dalam sendAutoText.
+      const claimOut = await prisma.chat.updateMany({
+        where: { id: chatId, tenantId, OR: [{ lastAutoOutDate: null }, { lastAutoOutDate: { not: today } }] },
+        data: { lastAutoOutDate: today },
+      })
+      if (claimOut.count === 0) {
+        // Sudah dapat auto outside hari ini → anti-spam 1×/hari jalur OUT.
+        console.log(`[AutoReply] outside skip — marker lastAutoOutDate sudah = today: chat=${chatId}`)
+        return { sent: false }
+      }
+      const awaySent = await sendAutoText(chat, cfg.outsideHoursText, today, { marker: 'out' })
+      // Send gagal → REVERT lastAutoOutDate SAJA (di dalam sendAutoText { marker:'out' })
+      // — lastAutoGreetDate TIDAK disentuh; pelanggan berhak dapat away di pesan berikutnya.
       return { sent: !!awaySent }
     }
 

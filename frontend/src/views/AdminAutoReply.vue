@@ -93,6 +93,10 @@
             Malam dijaga AI dari dokumen KB kamu (menu ChatBareng AI). Tidak tercakup/limit habis →
             teks luar jam di bawah tetap terkirim. Teks di bawah = fallback + jawaban AI.
           </p>
+          <!-- v4.6.9 (spec docs/spec-v4.6.9-outside-priority.md §D3) — catatan kuota outside terpisah -->
+          <p class="text-xs text-gray-500">
+            💡 Pelanggan tetap dapat pesan outside-hours 1×/hari walau CS sudah membalas manual hari itu.
+          </p>
           <textarea
             v-model="form.outsideHoursText"
             rows="3"

@@ -1,3 +1,35 @@
+# v4.6.9 (auto-reply C+A — outside hours marker terpisah + human-out skip hanya dalam jam kerja) — 2026-10-10
+
+**Latar:** lapor Kanaka (kasus BITE ME, chat=11810 tenant-10 wa.labparahita.co.id):
+15:32 chat masuk → di-take CS 53 detik + dibalas manual → 16:13 pelanggan kejar (SUDAH
+luar jam kerja MonFri=16:00) → auto TIDAK jalan → skip log "[AutoReply] greeting skip —
+agent sudah menyapa duluan hari ini: chat=11810" (16:13:20) → pelanggan sunyi total → marah.
+Gate `hasHumanOutMessageToday` (v3.5) mem-blok-kan ALL auto-reply sekali sehari meski
+CS sudah off-duty. Spec APPROVED 2026-10-10 09:20 (Kanaka "okee gas"):
+`docs/spec-v4.6.9-outside-priority.md`.
+
+**Perubahan (migrasi ADD-ONLY — 1 kolom; ZERO DROP/destruktif):**
+- **BE** (`src/services/autoReply.js`): (C) gate human-out `hasHumanOutMessageToday`
+  kini hanya berlaku DI DALAM jam kerja (`!outside`) — di luar jam CS off-duty → away
+  text tetap keluar walau CS pernah balas manual hari itu. (A) jalur (a) outside-hours
+  klaim marker TERPISAH `Chat.lastAutoOutDate` (atomic updateMany + OR null + not-today,
+  pola v0.7.0; anti-spam 1×/hari per jalur) → kirim away via `sendAutoText(..., { marker: 'out' })`
+  → send gagal → revert `lastAutoOutDate` SAJA (kuota greeting tidak tersentuh). Greeting
+  menu/text + repeat gate + marker kontak (F4) TIDAK berubah; CB-AI (mode cbai + budget
+  + handoff notice) TIDAK berubah — CB-AI tidak klaim/menyentuh marker OUT.
+- **Schema** (`prisma/schema.prisma`): 1 kolom ADD-ONLY `Chat.lastAutoOutDate String?`
+  (null default, data existing tidak berubah); `db push --skip-generate` + DDL share
+  di `docs/SCHEMA-CHANGES.md`.
+- **FE** (`frontend/src/views/AdminAutoReply.vue`): catatan kecil di panel Outside Hours:
+  "Pelanggan tetap dapat pesan outside-hours 1×/hari walau CS sudah membalas manual hari itu."
+
+**QA:** e2e `scripts/e2e-v469-outside-priority.cjs` 10 kasus (copy-DB port 5099/5063
+WA_DISABLED=1, E2E_OK_SEND=1 — produksi 5047/5062 tidak tersentuh) + regresi penuh
+(e2e-v394/395/396/399, log-coverage v4.6.4, clearqueue v4.6.6, floatzone v4.6.7+revisi
+v467, floatzone-v2 v4.6.8, v470-systemlogs) — semua PASS, bukti `docs/qa-v4.6.9-outside.md`.
+
+---
+
 # v4.6.8 (float zone v2 — take lifts once, activity wins) — 2026-10-09 (chat list ordering: take lifts once, activity wins — revisi patch line di atas zona v4.6.7; + fix badge overlap)
 
 **Latar:** lapor Kanaka 14:46 (2026-10-09, 15:26 APPROVED): zona float v4.6.7 jadi
