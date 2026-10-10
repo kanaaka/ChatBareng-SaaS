@@ -1,0 +1,64 @@
+PASS  S0-a server test boot di 5099 (copy DB, WA_DISABLED=1) 
+PASS  S0-b super_admin row ada di copy DB 
+PASS  S0-c superadmin login status=200 
+PASS  S0-d admin tenant fixture login (utk take + initiate) 
+[Push] VAPID keys missing in env — push disabled
+[WA:tenant-12] [v4.6.10][ghost-guard] skip (reason=protocol(protocolMessage)) chatJid=628111111111@s.whatsapp.net waMessageId=PROTO-ECHO-1
+PASS  U1-a protocolMessage (EPHEMERAL_SYNC_RESPONSE, echo self-send) → SKIP (null) 
+[WA:tenant-12] [v4.6.10][ghost-guard] skip (reason=protocol(senderKeyDistributionMessage)) chatJid=628111111111@s.whatsapp.net waMessageId=PROTO-SKDM
+PASS  U1-b senderKeyDistributionMessage → SKIP 
+[WA:tenant-12] [v4.6.10][ghost-guard] skip (reason=protocol(reactionMessage)) chatJid=628111111111@s.whatsapp.net waMessageId=PROTO-REACT
+PASS  U1-c reactionMessage → SKIP (tidak pernah jadi bubble [No content]) 
+[WA:tenant-12] [v4.6.10][ghost-guard] skip (reason=empty-body-non-media) chatJid=628111111111@s.whatsapp.net waMessageId=PROTO-EMPTY
+PASS  U1-d message={} (echo upload tanpa body) → SKIP 
+[WA:tenant-12] [v4.6.10][ghost-guard] skip (reason=no-message-object) chatJid=628111111111@s.whatsapp.net waMessageId=PROTO-NULL
+PASS  U1-e message undefined (wrapper kosong) → SKIP 
+prisma:query SELECT `main`.`Message`.`id`, `main`.`Message`.`chatId`, `main`.`Message`.`direction`, `main`.`Message`.`content`, `main`.`Message`.`status` FROM `main`.`Message` WHERE (`main`.`Message`.`tenantId` = ? AND `main`.`Message`.`waMessageId` = ?) ORDER BY `main`.`Message`.`id` ASC LIMIT ? OFFSET ?
+prisma:query SELECT `main`.`Tenant`.`id`, `main`.`Tenant`.`name` FROM `main`.`Tenant` WHERE `main`.`Tenant`.`id` IN (?,?,?,?,?) LIMIT ? OFFSET ?
+PASS  U2-a pesan teks nyata IN → lolos (persist) 
+prisma:query SELECT `main`.`Message`.`id`, `main`.`Message`.`chatId`, `main`.`Message`.`direction`, `main`.`Message`.`content`, `main`.`Message`.`status` FROM `main`.`Message` WHERE (`main`.`Message`.`tenantId` = ? AND `main`.`Message`.`waMessageId` = ?) ORDER BY `main`.`Message`.`id` ASC LIMIT ? OFFSET ?
+PASS  U2-b pesan teks nyata OUT (initiate pertama) → lolos (persist) 
+prisma:query INSERT INTO `main`.`SystemLog` (`ts`, `level`, `source`, `module`, `tenantId`, `tenantName`, `appVersion`, `message`, `stack`, `metaJson`, `createdAt`) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING `id` AS `id`, `ts` AS `ts`, `level` AS `level`, `source` AS `source`, `module` AS `module`, `tenantId` AS `tenantId`, `tenantName` AS `tenantName`, `appVersion` AS `appVersion`, `message` AS `message`, `stack` AS `stack`, `metaJson` AS `metaJson`, `createdAt` AS `createdAt`
+prisma:query INSERT INTO `main`.`SystemLog` (`ts`, `level`, `source`, `module`, `tenantId`, `tenantName`, `appVersion`, `message`, `stack`, `metaJson`, `createdAt`) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING `id` AS `id`, `ts` AS `ts`, `level` AS `level`, `source` AS `source`, `module` AS `module`, `tenantId` AS `tenantId`, `tenantName` AS `tenantName`, `appVersion` AS `appVersion`, `message` AS `message`, `stack` AS `stack`, `metaJson` AS `metaJson`, `createdAt` AS `createdAt`
+prisma:query INSERT INTO `main`.`SystemLog` (`ts`, `level`, `source`, `module`, `tenantId`, `tenantName`, `appVersion`, `message`, `stack`, `metaJson`, `createdAt`) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING `id` AS `id`, `ts` AS `ts`, `level` AS `level`, `source` AS `source`, `module` AS `module`, `tenantId` AS `tenantId`, `tenantName` AS `tenantName`, `appVersion` AS `appVersion`, `message` AS `message`, `stack` AS `stack`, `metaJson` AS `metaJson`, `createdAt` AS `createdAt`
+prisma:query SELECT `main`.`Message`.`id`, `main`.`Message`.`chatId`, `main`.`Message`.`direction`, `main`.`Message`.`content`, `main`.`Message`.`status` FROM `main`.`Message` WHERE (`main`.`Message`.`tenantId` = ? AND `main`.`Message`.`waMessageId` = ?) ORDER BY `main`.`Message`.`id` ASC LIMIT ? OFFSET ?
+PASS  U2-c media (image + caption) → lolos (bukan ghost) 
+prisma:query INSERT INTO `main`.`SystemLog` (`ts`, `level`, `source`, `module`, `tenantId`, `tenantName`, `appVersion`, `message`, `stack`, `metaJson`, `createdAt`) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING `id` AS `id`, `ts` AS `ts`, `level` AS `level`, `source` AS `source`, `module` AS `module`, `tenantId` AS `tenantId`, `tenantName` AS `tenantName`, `appVersion` AS `appVersion`, `message` AS `message`, `stack` AS `stack`, `metaJson` AS `metaJson`, `createdAt` AS `createdAt`
+prisma:query INSERT INTO `main`.`SystemLog` (`ts`, `level`, `source`, `module`, `tenantId`, `tenantName`, `appVersion`, `message`, `stack`, `metaJson`, `createdAt`) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING `id` AS `id`, `ts` AS `ts`, `level` AS `level`, `source` AS `source`, `module` AS `module`, `tenantId` AS `tenantId`, `tenantName` AS `tenantName`, `appVersion` AS `appVersion`, `message` AS `message`, `stack` AS `stack`, `metaJson` AS `metaJson`, `createdAt` AS `createdAt`
+PASS  C1-0a take chat via route assign asli (200) body={"chat":{"id":8587,"tenantId":12,"waJid":"6289914646100@s.whatsapp.net","contactName":"Kontak Initiate e2e4610","contact
+PASS  C1-a initiate kirim "ice cream" via route reply asli sukses (200) body={"message":{"id":18629,"tenantId":12,"chatId":8587,"direction":"out","content":"ice cream","mediaPath":null,"mediaType":null,"mediaMime":null,"mediaSize":null,"
+PASS  C1-b pasca-initiate: PERSIS 1 row pesan rows=1
+PASS  C1-c row ts direction OUT + status sent + PUNYA waMessageId (E2E mock) waMessageId=E2E-OK-SEND-1791633835827
+PASS  C1-d row ts content = "ice cream" (bukan [No content]) 
+PASS  C1-e echo upload (protocol, fromMe=true, id SAMA E2E-OK-SEND-179163383582…) lewat jalur runtime asli → TIDAK jadi bubble (200) {"ok":true,"handled":false,"chatId":null,"savedMessageId":null}
+PASS  C1-f MASIH 1 row saja setelah echo (TIDAK dobel, TIDAK [No content] OUT kedua) rows=1
+PASS  C1-g ghost empty-body lain (id beda, no body) via runtime → skip {"ok":true,"handled":false,"chatId":null,"savedMessageId":null}
+PASS  C1-h chat tetap 1 pesan (ghost tidak pernah muncul / bikin chat unread) rows=1
+PASS  C2-a history-sync replay OUT (konten sama, fromMe=true) via runtime → skip {"ok":true,"handled":false,"chatId":null,"savedMessageId":null}
+PASS  C2-b participant-view (fromMe=false) utk row OUT lokal → TIDAK flip/jadi IN {"ok":true,"handled":false,"chatId":null,"savedMessageId":null}
+PASS  C2-c JUMLAH tetap 1 (close→open tidak menggandakan) rows=1
+PASS  C2-d arah tetap OUT (tidak ter-flip jadi IN) direction=out
+PASS  C2-e konten row asli tetap utuh "ice cream" 
+PASS  C3-a pesan IN nyata masuk via runtime (persist normal) {"ok":true,"handled":false,"chatId":8588,"savedMessageId":18630}
+PASS  C3-b replay IN (key.id + chat sama) → skip (tidak dobel) {"ok":true,"handled":false,"chatId":null,"savedMessageId":null}
+PASS  C3-c chat B tetap 1 pesan IN rows=1
+PASS  C4-a ghost TIDAK membuat chat baru (count sama) 1 → 1
+PASS  C5-a legacy [No content] OUT + participant sync bawa teks → backfill konten content=isi yang benar dari sync
+PASS  C5-b legacy backfill TIDAK menambah row (tetap 1 di chat C) 
+PASS  C5-c arah legacy tetap OUT (tidak flip) 
+prisma:query SELECT `main`.`Message`.`id`, `main`.`Message`.`chatId`, `main`.`Message`.`direction`, `main`.`Message`.`content`, `main`.`Message`.`status` FROM `main`.`Message` WHERE (`main`.`Message`.`tenantId` = ? AND `main`.`Message`.`waMessageId` = ?) ORDER BY `main`.`Message`.`id` ASC LIMIT ? OFFSET ?
+prisma:query SELECT `main`.`Chat`.`id` FROM `main`.`Chat` WHERE (`main`.`Chat`.`tenantId` = ? AND `main`.`Chat`.`id` = ? AND (`main`.`Chat`.`waJid` = ? OR `main`.`Chat`.`phoneJid` = ? OR `main`.`Chat`.`lidJid` = ?)) LIMIT ? OFFSET ?
+[WA:tenant-12] [v4.6.10][ghost-guard] skip (reason=dup-in-sync) chatJid=6289914646101@s.whatsapp.net waMessageId=E2E4610-IN-m-hkqohcqpxx
+PASS  C6-a replay historySync dgn konten yang sudah ada → skip (null) 
+prisma:query INSERT INTO `main`.`SystemLog` (`ts`, `level`, `source`, `module`, `tenantId`, `tenantName`, `appVersion`, `message`, `stack`, `metaJson`, `createdAt`) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING `id` AS `id`, `ts` AS `ts`, `level` AS `level`, `source` AS `source`, `module` AS `module`, `tenantId` AS `tenantId`, `tenantName` AS `tenantName`, `appVersion` AS `appVersion`, `message` AS `message`, `stack` AS `stack`, `metaJson` AS `metaJson`, `createdAt` AS `createdAt`
+prisma:query SELECT `main`.`Message`.`id`, `main`.`Message`.`chatId`, `main`.`Message`.`direction`, `main`.`Message`.`content`, `main`.`Message`.`status` FROM `main`.`Message` WHERE (`main`.`Message`.`tenantId` = ? AND `main`.`Message`.`waMessageId` = ?) ORDER BY `main`.`Message`.`id` ASC LIMIT ? OFFSET ?
+PASS  C6-b replay historySync dgn konten BARU → persist (lolos) 
+[WA:tenant-12] [v4.6.10][ghost-guard] skip (reason=empty-body-sync) chatJid=6289914646101@s.whatsapp.net waMessageId=REPLAY-GHOST-4610
+PASS  C6-c replay historySync kosong (ghost offline) → skip 
+prisma:query SELECT `main`.`Message`.`id`, `main`.`Message`.`chatId`, `main`.`Message`.`direction`, `main`.`Message`.`content`, `main`.`Message`.`status` FROM `main`.`Message` WHERE (`main`.`Message`.`tenantId` = ? AND `main`.`Message`.`waMessageId` = ?) ORDER BY `main`.`Message`.`id` ASC LIMIT ? OFFSET ?
+prisma:query INSERT INTO `main`.`SystemLog` (`ts`, `level`, `source`, `module`, `tenantId`, `tenantName`, `appVersion`, `message`, `stack`, `metaJson`, `createdAt`) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING `id` AS `id`, `ts` AS `ts`, `level` AS `level`, `source` AS `source`, `module` AS `module`, `tenantId` AS `tenantId`, `tenantName` AS `tenantName`, `appVersion` AS `appVersion`, `message` AS `message`, `stack` AS `stack`, `metaJson` AS `metaJson`, `createdAt` AS `createdAt`
+prisma:query SELECT `main`.`Chat`.`id` FROM `main`.`Chat` WHERE (`main`.`Chat`.`tenantId` = ? AND `main`.`Chat`.`id` = ? AND (`main`.`Chat`.`waJid` = ? OR `main`.`Chat`.`phoneJid` = ? OR `main`.`Chat`.`lidJid` = ?)) LIMIT ? OFFSET ?
+PASS  C7-a waMessageId sama tapi JID/chat berbeda → lolos (bukan duplikat) 
+
+=== v4.6.10 ghost/dedupe e2e: 37 PASS / 0 FAIL (1.7s) ===
+boot server test di-kill (server child) — produksi 5047/5062 tidak tersentuh
