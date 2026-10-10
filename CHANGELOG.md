@@ -1,4 +1,55 @@
-# v4.6.7 (chat list take-first ordering) — 2026-10-08 (zona float "Mine": chat claimed-but-unanswered tampil paling atas — penambahan patch line)
+# v4.6.8 (float zone v2 — take lifts once, activity wins) — 2026-10-09 (chat list ordering: take lifts once, activity wins — revisi patch line di atas zona v4.6.7; + fix badge overlap)
+
+**Latar:** lapor Kanaka 14:46 (2026-10-09, 15:26 APPROVED): zona float v4.6.7 jadi
+"klub nginep" — chat yang di-take-belum-dibalas SELALU mengalahkan chat yang dibalas
+(yang di-take selalu lebih baru `lastAssignedAt`-nya dari `lastMessageAt` reply) →
+chat "dibalas" tenggelam di bawah → agent gak aware. Plus bug visual: chip
+"🆕 Baru diambil" + badge unread menutupi nama kontak di card list.
+Spec (APPROVED 2026-10-09 15:26): `docs/spec-v4.6.8-floatzone-v2.md`.
+Solusi v2 = SEDERHANAKAN: **SEMUA aturan zona v4.6.7 DIHAPUS** (tidak ada dua zona,
+tidak ada `inFloatZone`) — list "Mine" = **SATU urutan**: kandidat timestamp
+terbaru per chat menang — `MAX(lastMessageAt, lastAssignedAt, firstAssignedAt,
+createdAt)` DESC (bentuk COALESCE-aktivitas dari spec §K2). Efek: take chat lama →
+`lastAssignedAt`=now → naik SEKALI; pelanggan follow-up (chat lama maupun float) →
+`lastMessageAt` lebih baru → naik (normalisasi menang); agent reply → `lastMessageAt`
+ter-update → lebih baru tetap/di atas, kalah turun.
+
+**Perubahan (NO schema change/migration, NO destructive DB ops — patch line murni):**
+- **BE** (`src/routes/chats.js`): handler GET list `filter=mine` — logic dua-zona
+  v4.6.7 dihapus → satu `findMany` (take TAKE_LIMIT=100, contract response `{ chats }`
+  tak diubah) + sort in-memory `activitySortKey` = kandidat terbaru per chat (Prisma
+  orderBy gak mendukung COALESCE/MAX kolom nullable di SQLite; data per agent kecil;
+  pagination/search jalur mine tak berubah). Virtual field `inFloatZone` DIHAPUS
+  dari response (grep penuh — 0 konsumen tersisa). Komentar blok header di-revisi
+  (refer spec v4.6.8; invariants v0.13.3 AR tetap). Determinisme batch (tie id desc)
+  dipertahankan. Jalur lain (all/unassigned/resolved/CS-fallback, search-all, /:id,
+  analytics, purge, socket queue_update) = TIDAK disentuh.
+- **FE** (`frontend/src/views/ChatListPane.vue`): chip "🆕 Baru diambil"
+  (v-if `chat.inFloatZone` + referensi CSS-nya) DIHAPUS; fix badge overlap: nama
+  kontak → `flex-1 min-w-0 truncate` (SELALU terlihat penuh/ellipsis) + kolom kanan
+  (timestamp/badge unread/@user) → `shrink-0` (badge `unreadCount > 0` shrink-0 —
+  tidak pernah tumbuh ke kiri) — badge tidak menutupi nama walau unread>9.
+- **e2e**: `scripts/e2e-v468-floatzone-v2.cjs` baru 8 kasus §D3 + revisi penuh
+  `scripts/e2e-v467-floatzone.cjs` ke formula baru (zona tidak ada lagi).
+
+**QA:** e2e v4.6.8 8 kasus (copy-DB port 5099 WA_DISABLED=1, produksi 5047 tak
+tersentuh): **44 PASS / 0 FAIL** — take-5 urutan (P5..P1), reply #1 tetap atas,
+follow-up chat LAMA naik paling atas (normalisasi menang), follow-up chat FLOAT dua
+sisi (kalah lastAssignedAt take lebih baru → turun; menang → naik), isolasi csB,
+admin All normal, DOM/layout badge shrink-0 + nama truncate (source + bundle
+ter-build), regresi FIFO/AR-invariant/search-all/analytics. Suite v4.6.7 direvisi:
+**36 PASS / 0 FAIL**. Regresi penuh (copi DB per suite): v394, v395, v396, v399,
+v470 systemlog, v466 clearqueue — **semua 0 FAIL** (detail angka di
+`docs/qa-v4.6.8-floatzone-v2.md`). Screenshot verifikasi (Chrome 18801 akun admin):
+`docs/qa-v4.6.8-ui-floatzone-v2.jpg` — nama panjang truncate + badge tidak overlap.
+
+**Catatan kontrak:** penghapusan `inFloatZone` = perubahan API respons minor
+(field virtual v4.6.7 umur 1 hari; FE/agent internal satu-satunya konsumen — grep
+menyatakan 0 konsumen lain setelah chip FE dihapus).
+
+---
+
+# v4.6.7 (chat list take-first ordering) — 2026-10-08 (zona float "Mine": chat claimed-but-unanswered tampil paling atas — penambahan patch line; ❗DIREVISI v4.6.8 — zona dihapus, lihat entri atas)
 
 **Latar:** lapor Kanaka 09:05 — agent take 10 chat → balas semua → take chat ke-11 →
 chat ke-11 nyempil DI BAWAH (kalah timestamp dari chat yang di-reply). Posisi "baru
