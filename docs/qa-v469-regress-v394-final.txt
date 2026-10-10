@@ -1,0 +1,25 @@
+PASS | A0 superadmin login | status=200
+PASS | A1 impersonate tenant-4 | status=200
+PASS | T1 GET autoreply 200 + numberSlots/menuManagedSlots | {"n":[],"m":[]}
+PASS | T2 mixed Semua+slot → 400 | {"error":"Pilih 'Semua nomor (linked)' ATAU slot tertentu — tidak keduanya"}
+PASS | T2b tick-box kosong → 400 | {"error":"Centang minimal satu nomor (atau Semua nomor)"}
+PASS | T3 PUT per-slot [0] → 200 | {"config":{"id":7,"tenantId":4,"numberSlot":0,"outsideHoursEnabled":true,"outsideHoursText":"Away E2E","outsideHoursMode":"text","cbaiLimit":3,"cbaiIn
+PASS | T3b persist numberSlots=[0] | [0]
+PASS | T4 menu-gw per-slot [1] → 200 | {"config":{"id":7,"tenantId":4,"enabled":true,"introText":"Intro E2E {name}","fallbackText":"Fb E2E","fallbackTagId":null,"timeoutValue":30,"timeoutUn
+PASS | T4b GET ?slot=1 enabled=true | {"e":true,"s":1}
+PASS | T4c menuManagedSlots=[1] | [1]
+PASS | T4d autoreply menuManagedSlots=[1] | [1]
+PASS | T5 autoreply slot menu-managed → 409 | {"error":"Slot 1 sedang dikelola Menu Gateway — matikan menu untuk slot itu di halaman Menu Gateway dulu, lalu simpan ulang di sini.","slots":[1]}
+PASS | T6 logout tanpa confirm → 400 | {"error":"WhatsApp disabled (WA_DISABLED=1)","disabled":true}
+PASS | T7 waMode mix → 200 | {"waMode":"mix"}
+PASS | T7b assigned agent invalid → 400 | {"error":"Agent tidak ditemukan di tenant ini (role cs/admin, aktif)"}
+PASS | T7c ada agent cs/admin utk assign
+PASS | T7d routing assigned → 200 | {"id":1,"tenantId":4,"slot":1,"label":"Regress Slot 1","waSessionDir":null,"routeMode":"assigned","assignedAgentId":5,"reassignOffline":true
+PASS | T9 pre: ada chat tenant-4 utk clone
+PASS | T9 menu-gw disable slot1 → 200 | {"config":{"id":7,"tenantId":4,"enabled":false,"introText":"Intro E2E {name}","fallbackText":"Fb E2E","fallbackTagId":nu
+PASS | T9b master-off → slot-0 awaiting ke-release (full-off) | menuState=done
+PASS | T9c master-off → slot-1 awaiting ke-release (full-off) | menuState=done
+PASS | T8 login ke-18 → 429 (limiter login terpisah) | status=429
+
+=== RINGKASAN ===
+SEMUA PASS ✅
