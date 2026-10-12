@@ -1143,6 +1143,22 @@ async function handleIncomingGroupMessage(tenantId, msg, ctx) {
     const participantJid = msg.participant || msg.key?.participant || null
     const chatId = chat.id
 
+    // v4.6.10 — dedupe grup by (tenantId, chatId, waMessageId): pesan grup yang
+    // di-sync ulang (history-sync/replay/ACK) TIDAK boleh jadi row kedua. Echo
+    // upload tanpa waMessageId TIDAK dipersist (tidak ada dedupe key — sama dgn
+    // jalur 1:1: hanya bubble nyata yang punya key.id).
+    const groupWaId = msg.key?.id || null
+    if (groupWaId) {
+      const dupe = await prisma.message.findFirst({
+        where: { tenantId, chatId, waMessageId: groupWaId },
+        select: { id: true },
+      })
+      if (dupe) {
+        console.log(`[v4.6.10][ghost-guard] grup: waMessageId sudah ada (dbMessage=${dupe.id}) — skip persist kedua`)
+        return
+      }
+    }
+
     const dbMsg = await prisma.message.create({
       data: {
         tenantId,
