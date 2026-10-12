@@ -1,3 +1,17 @@
+# v4.6.11 (FE Kontak: pilih nomor sebelum chat + satuan pill nomor) — 2026-10-12
+
+**Latar:** lapor Kanaka (15:10) dua hal di halaman Kontak (web):
+1. Klik "Chat" dari kontak selalu jatuh ke nomor slot-0 — tenant dengan nomor lebih dari satu tidak bisa memilih nomor untuk chat itu.
+2. Pill filter nomor menampilkan chatCount mentah dari /api/wa/status (mis. 649/564) yang beda satuan dengan header "746 kontak ditemukan" → terasa tidak konsisten.
+
+**Perubahan (FE murni — src/views/Contacts.vue; server TIDAK disentuh):**
+1. Tombol "Chat" kini kirim `numberSlot` eksplisit ke POST /api/contacts/:id/open — dukungan server ada sejak v3.9.2 K1-A (validasi 0..2, chat per-slot terpisah). Logika pilihan: filter slot spesifik terpilih → langsung slot itu; "Semua nomor" + tenant multi-nomor → modal "Chat pakai nomor yang mana?" (pilihan = label nomor + jumlah kontak); tenant single-slot → slot itu eksplisit.
+2. Angka di pill nomor = jumlah KONTAK per nomor (param filter identik dengan daftar kontak, minus filter nomor) → satuannya sama dengan "N kontak ditemukan"; fallback chatCount bila GET per-slot gagal.
+
+**Tidak ada perubahan:** backend, DB/migration, SystemLog (LIST-DEBUG & warn 401 dibiarkan persis seperti keputusan owner 2026-10-12).
+
+**QA:** frontend build sukses (219 modul); kode baru terverifikasi masuk bundle (Contacts-DDwbZiRf.js); kontrak /open+numberSlot diverifikasi dari source (contacts.js:735-745).
+
 # v4.6.10 (bugfix: [No content] ghost messages + history-sync dedupe) — 2026-10-10
 
 **Latar:** lapor Kanaka — agent (Ulul) initiate chat ke kontakt tersimpan → kirim 1

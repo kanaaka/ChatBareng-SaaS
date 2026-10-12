@@ -210,8 +210,24 @@
           :class="['px-3 py-1.5 text-xs font-medium rounded-full border whitespace-nowrap flex-shrink-0 flex items-center gap-1.5', selectedSlot === s.slot ? 'bg-wa-dark text-white border-wa-dark' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50']"
         >
           {{ s.label || ('Slot ' + s.slot) }}
-          <span :class="['text-[10px] rounded-full px-1.5', selectedSlot === s.slot ? 'bg-white/20' : 'bg-gray-100']">{{ s.chatCount ?? 0 }}</span>
+          <span :class="['text-[10px] rounded-full px-1.5', selectedSlot === s.slot ? 'bg-white/20' : 'bg-gray-100']">{{ s.contactCount ?? s.chatCount ?? 0 }}</span>
         </button>
+      </div>
+
+      <!-- v4.6.11 — modal pilih nomor utk mulai chat dari Kontak -->
+      <div v-if="showSlotPicker" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="showSlotPicker=false">
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-xs p-4">
+          <p class="font-semibold text-sm mb-1">Chat pakai nomor yang mana?</p>
+          <p v-if="slotPickerContact" class="text-xs text-gray-500 mb-3 truncate">{{ slotPickerContact.name || slotPickerContact.phone }}</p>
+          <div class="flex flex-col gap-2">
+            <button v-for="s in waSlots" :key="s.slot" @click="openChatOnSlot(slotPickerContact, s.slot)"
+              class="px-3 py-2 text-sm rounded-lg border border-gray-300 hover:bg-gray-50 text-left flex items-center justify-between">
+              <span class="truncate">{{ s.label || ('Slot ' + s.slot) }}</span>
+              <span class="text-[10px] text-gray-400">{{ s.contactCount ?? s.chatCount ?? 0 }}</span>
+            </button>
+          </div>
+          <button @click="showSlotPicker=false" class="mt-3 w-full text-xs text-gray-500 hover:text-gray-700">Batal</button>
+        </div>
       </div>
 
       <!-- Results count -->
@@ -771,6 +787,18 @@ async function fetchContacts() {
     })
     contacts.value = res.data.contacts
     total.value = res.data.total
+    // v4.6.11 — angka pill nomor = jumlah KONTAK per nomor (satuan sama dgn "N kontak
+    // ditemukan"), bukan chatCount mentah /api/wa/status (beda satuan — lapor Kanaka).
+    if (waSlots.value.length > 1) {
+      const baseParams = { ...params }
+      delete baseParams.numberSlot
+      for (const s of waSlots.value) {
+        axios.get(`${API}/api/contacts`, {
+          params: { ...baseParams, numberSlot: s.slot },
+          headers: { Authorization: `Bearer ${auth.token}` },
+        }).then((r) => { s.contactCount = r.data.total ?? 0 }).catch(() => {})
+      }
+    }
   } catch (e) {
     console.error('Fetch contacts error:', e)
   }
@@ -808,9 +836,33 @@ function onOpenChat(contact) {
   openChat(contact)
 }
 
+// v4.6.11 — pilih nomor sebelum chat dari Kontak: kirim numberSlot eksplisit ke
+// POST /api/contacts/:id/open (server dukung sejak v3.9.2 K1-A; default lama selalu
+// slot-0 → nyasar kalo tenant multi-nomor). Konteks: filter slot spesifik terpilih =
+// langsung pakai itu; filter "Semua nomor" + tenant multi-nomor = modal pilih dulu;
+// single-slot = slot itu eksplisit (aman utk tenant yg nomornya bukan slot-0).
+const showSlotPicker = ref(false)
+const slotPickerContact = ref(null)
+
 async function openChat(contact) {
+  const slots = waSlots.value
+  let slot = null
+  if (selectedSlot.value !== 'all') slot = Number(selectedSlot.value)
+  else if (slots.length === 1) slot = Number(slots[0].slot)
+  else if (slots.length > 1) {
+    slotPickerContact.value = contact
+    showSlotPicker.value = true
+    return
+  }
+  await openChatOnSlot(contact, slot)
+}
+
+async function openChatOnSlot(contact, slot) {
+  showSlotPicker.value = false
+  slotPickerContact.value = null
   try {
-    const res = await axios.post(`${API}/api/contacts/${contact.id}/open`, {}, {
+    const body = (slot !== null && slot !== undefined) ? { numberSlot: slot } : {}
+    const res = await axios.post(`${API}/api/contacts/${contact.id}/open`, body, {
       headers: { Authorization: `Bearer ${auth.token}` },
     })
     // Navigate to dashboard with ?chat= query
