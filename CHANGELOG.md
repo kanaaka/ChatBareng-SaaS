@@ -1,3 +1,46 @@
+# v4.6.12 (pending) — API v1.1 (choose_slot/assign_agent: numberSlot+assignTo + users endpoint; reopen consistency fix; key-creation UI checkboxes) — 2026-10-17
+
+**Latar:** kebutuhan integrasi Kreatr (spec docs/SPEC-api-v1.1-additive.md — semua keputusan
+settled dengan owner 2026-10-17): app eksternal butuh (1) pilih nomor slot pengirim saat kirim
+via Public API, (2) preset assign chat ke CS tertentu saat kirim (termasuk reopen chat resolved),
+(3) daftar agent utk dropdown pilihan. Sekaligus fix konsistensi reopen start-chat dari Kontak.
+
+**Perubahan (semua ADDITIVE — param/endpoint baru; tanpa param baru = byte-per-byte v1.0):**
+1. **Scopes baru** `choose_slot` + `assign_agent` — whitelist VALID_SCOPES di
+   src/services/apiKeys.js (+ UI create-key tenant & superadmin: 2 checkbox, label
+   "tanpa centang = behaviour v1.0: slot-0, masuk queue, bebas di-take"). CSV kolom
+   `scopes` existing → TANPA migration DB.
+2. **POST /api/v1/messages** — param opsional:
+   - `numberSlot` (int 0..2): gate scope choose_slot (tanpa → 403 SCOPE_MISSING);
+     invalid → 400 eksplisit (pattern v3.9.3 LOW-1, bukan silent-fallback slot-0);
+     tidak dikirim → slot resolve v1.0. Slot eksplisit meng-override resolve JID/nama-grup.
+   - `assignTo` (int userId CS): gate scope assign_agent; validasi 400 VALIDATION bila
+     user tidak ada / beda tenant / bukan CS / status ≠ active. Behaviour matrix:
+     chat belum ada → create open+assigned; open+unassigned → assign; open+assigned
+     CS lain → kirim SAJA TANPA menimpa assignment (client baca chatState, bisa pilih
+     slot lain); open+assigned = assignTo → no-op; resolved → REOPEN DULU (open,
+     resolvedAt null, reopenedCount+1, assignedToId=assignTo) BARU kirim.
+   - Respons sukses SELALU bawa `chatState {chatId, status, numberSlot, assignedTo:{id,username}|null, reopened:bool}`.
+   - Audit: ChatEvent `assigned_api` (source api, userId null) per assign/reopen + SystemLog
+     module 'api-keys' dgn meta {assignedToId, before, reopened} (ChatEvent tak punya kolom meta).
+3. **Endpoint baru GET /api/v1/users** — gate scope assign_agent; user tenant sama,
+   role CS/admin aktif; kolom {id, username, name, role} saja; paginasi limit/offset.
+4. **Reopen consistency fix** (src/routes/contacts.js — DUA branch start-chat): initiate
+   start-chat dari Kontak ke chat resolved → UNBIND dulu (assignedToId:null,
+   resolvedAt:null, reopenedCount+1, event 'reopened' + SystemLog meta
+   previousAssigneeId) → barulah claimIfUnassigned meng-claim ke initiator. Konsisten
+   dengan auto-reopen inbound (src/wa/pool.js ~1758). Net effect: chat resolved assigned A
+   + agent B start-chat → open milik B (A cuma di history).
+5. **Docs**: docs/API-CONSUMER-QUICKSTART.md + docs/spec-api-keys-v1.md — scopes baru,
+   params, behaviour matrix §2.3, GET /users.
+
+**Tidak berubah:** URL endpoint, auth header, rate limit 60/min per key, error-code shapes,
+`resolveTarget` v1.0 (bila numberSlot tak dikirim), jalur tanpa param baru (regression
+lock §5 spec), queue take flow, auto-reopen inbound.
+
+**QA:** unit tests_v11_check.js (pure-node: parseScopes CSV, validasi numberSlot 0..2,
+shape chatState, behaviour matrix data-driven); E2E + smoke oleh Alita (§6 spec).
+
 # v4.6.11 (FE Kontak: pilih nomor sebelum chat + satuan pill nomor) — 2026-10-12
 
 **Latar:** lapor Kanaka (15:10) dua hal di halaman Kontak (web):

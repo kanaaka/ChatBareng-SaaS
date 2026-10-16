@@ -788,16 +788,32 @@ router.post('/:id/open', ...rt, async (req, res) => {
     if (contact.chatId && contact.chat && openSlot === (Number(contact.chat.numberSlot) || 0)) {
       let chat = contact.chat
       if (chat.status === 'resolved') {
+        // v4.6.12 pending (reopen consistency fix, spec §4): sebelum reopen
+        // lepas dulu assignment lama — konsisten dengan auto-reopen inbound
+        // (src/wa/pool.js ~1758: resolved → open + assignedToId:null + queue).
+        // "resolved = chat bebas, initiate = pindah agent": tanpa unbind,
+        // claimIfUnassigned di bawah tidak meng-claim (assignedTo lama nyangkut)
+        // → corner case "open tapi label CS lama". Meta jejak: previousAssigneeId.
+        const previousAssigneeId = chat.assignedToId || null
         const reopenedCount = (chat.reopenedCount || 0) + 1
         chat = await prisma.chat.update({
           where: { id: chat.id },
-          data: { status: 'open', resolvedAt: null, reopenedCount },
+          data: { status: 'open', resolvedAt: null, reopenedCount, assignedToId: null },
           include: CHAT_FETCH_INCLUDE,
         })
         await prisma.chatEvent.create({
           data: { tenantId: req.tenantId, chatId: chat.id, userId: req.user.id, type: 'reopened' },
         })
-        broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: chat.id, status: 'open', resolvedAt: null })
+        if (previousAssigneeId) {
+          // Audit trail (§4 — "meta previousAssigneeId untuk jejak audit"):
+          // SystemLog module 'chat' — ChatEvent model tak punya kolom meta JSON.
+          systemLog.logInfo(`[Contacts] reopen start-chat unbind assignment lama: chat=${chat.id} previousAssigneeId=${previousAssigneeId} by @${req.user.username}`, {
+            tenantId: req.tenantId,
+            module: 'chat',
+            meta: { chatId: chat.id, previousAssigneeId, reopenedCount, initiatedBy: req.user.id },
+          }).catch(() => {})
+        }
+        broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: chat.id, status: 'open', resolvedAt: null, assignedTo: null })
       }
       // v0.1.25 — klaim bila CS + masih unassigned
       chat = await claimIfUnassigned(chat)
@@ -869,16 +885,29 @@ router.post('/:id/open', ...rt, async (req, res) => {
     }
 
     if (chat.status === 'resolved') {
+      // v4.6.12 pending (reopen consistency fix, spec §4) — branch findChatByAnyJid:
+      // SAMA pattern dengan branch linked-chat di atas — UNBIND dulu
+      // (assignedToId:null, resolvedAt:null, reopenedCount+1, event 'reopened'
+      // + meta previousAssigneeId) → barulah claimIfUnassigned meng-claim ke
+      // initiator (bila CS/admin → net effect: open milik initiator B).
+      const previousAssigneeId = chat.assignedToId || null
       const reopenedCount = (chat.reopenedCount || 0) + 1
       chat = await prisma.chat.update({
         where: { id: chat.id },
-        data: { status: 'open', resolvedAt: null, reopenedCount },
+        data: { status: 'open', resolvedAt: null, reopenedCount, assignedToId: null },
         include: CHAT_FETCH_INCLUDE,
       })
       await prisma.chatEvent.create({
         data: { tenantId: req.tenantId, chatId: chat.id, userId: req.user.id, type: 'reopened' },
       })
-      broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: chat.id, status: 'open', resolvedAt: null })
+      if (previousAssigneeId) {
+        systemLog.logInfo(`[Contacts] reopen start-chat unbind assignment lama: chat=${chat.id} previousAssigneeId=${previousAssigneeId} by @${req.user.username}`, {
+          tenantId: req.tenantId,
+          module: 'chat',
+          meta: { chatId: chat.id, previousAssigneeId, reopenedCount, initiatedBy: req.user.id },
+        }).catch(() => {})
+      }
+      broadcast.emitToTenant(req.tenantId, 'chat_update', { chatId: chat.id, status: 'open', resolvedAt: null, assignedTo: null })
     }
 
     // v0.1.25 — klaim bila CS + masih unassigned

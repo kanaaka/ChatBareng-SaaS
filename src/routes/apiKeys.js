@@ -32,6 +32,8 @@ router.get('/', ...rt, async (req, res) => {
 })
 
 // POST /api/api-keys { name, scopes: ['send','read'] | 'send,read', ratePerMin? }
+// v4.6.12 pending — scopes juga terima 'choose_slot' / 'assign_agent'
+// (API v1.1; whitelist + pesan error dari services/apiKeys.parseScopes).
 // → 201 { apiKey, key: RAW (sekali), warning }
 router.post('/', ...rtw, async (req, res) => {
   try {

@@ -1362,6 +1362,8 @@ router.get('/tenants/:id/api-keys', ...sa, async (req, res) => {
 })
 
 // POST /api/sa/tenants/:id/api-keys { name, scopes, ratePerMin?, planGated? }
+// v4.6.12 pending — scopes juga terima 'choose_slot' / 'assign_agent'
+// (API v1.1; validasi = services/apiKeys.parseScopes, whitelist sama).
 // → 201 { apiKey, key: RAW (SEKALI), warning } — onboarding help oleh owner platform
 router.post(
   '/tenants/:id/api-keys',

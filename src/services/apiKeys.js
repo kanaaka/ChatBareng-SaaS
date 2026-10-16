@@ -1,5 +1,9 @@
 // ═══════════════════════════════════════════════════════════════════
 // v3.9.13 — Public API v1: API key service (spec docs/spec-api-keys-v1.md).
+// v4.6.12 pending (API v1.1) — scopes baru `choose_slot` + `assign_agent`
+// (docs/SPEC-api-v1.1-additive.md §1): CSV di kolom `scopes` existing —
+// TANPA migration DB. Scope = capability saja; behaviour per-request
+// ditentukan param (`numberSlot`/`assignTo` di POST /api/v1/messages).
 //
 // Aturan KEAMANAN (locked):
 // - Raw key TIDAK PERNAH disimpan di DB/log — hanya sha256 hex.
@@ -13,7 +17,7 @@ const crypto = require('crypto')
 const prisma = require('../prisma')
 
 const KEY_PREFIX_LIVE = 'cbk_live_'
-const VALID_SCOPES = ['send', 'read'] // P1; P2 tambah 'groups', 'webhook'
+const VALID_SCOPES = ['send', 'read', 'choose_slot', 'assign_agent'] // P1 + API v1.1 (2026-10-17); P2 tambah 'groups', 'webhook'
 const DEFAULT_RATE_PER_MIN = 60
 const MAX_RATE_PER_MIN = 600
 

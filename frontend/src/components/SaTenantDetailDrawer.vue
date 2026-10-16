@@ -52,6 +52,10 @@ const apiKeysRows = ref([])
 const apiKeysLoading = ref(false)
 const apiKeysNewName = ref('')
 const apiKeysNewScopes = ref('send,read')
+// v4.6.12 pending (API v1.1) — checkbox shortcut 2 scope baru; digabung ke
+// CSV saat create (dedup kanonik), validasi tetap server-side (parseScopes).
+const apiKeysNewChooseSlot = ref(false)
+const apiKeysNewAssignAgent = ref(false)
 const apiKeysCreating = ref(false)
 const apiKeysError = ref('')
 const apiKeysRawKey = ref('') // show-once
@@ -83,13 +87,24 @@ async function createApiKey(tenant) {
   apiKeysError.value = ''
   apiKeysRawKey.value = ''
   try {
+    // v4.6.12 pending (API v1.1) — gabungkan scopes CSV dgn checkbox shortcut
+    // choose_slot/assign_agent (dedup + urutan kanonik ala service).
+    const baseScopes = String(apiKeysNewScopes.value || 'read').split(',').map((s) => s.trim()).filter(Boolean)
+    const extra = []
+    if (apiKeysNewChooseSlot.value) extra.push('choose_slot')
+    if (apiKeysNewAssignAgent.value) extra.push('assign_agent')
+    const CANON = ['send', 'read', 'choose_slot', 'assign_agent']
+    const merged = CANON.filter((sc) => baseScopes.includes(sc) || extra.includes(sc))
     const { data } = await axios.post(`${API}/api/sa/tenants/${tenant.id}/api-keys`, {
       name: apiKeysNewName.value.trim() || 'API Key',
-      scopes: String(apiKeysNewScopes.value || 'read').split(',').map((s) => s.trim()).filter(Boolean),
+      scopes: merged,
     })
     apiKeysRawKey.value = data.key || ''
     apiKeysWarn.value = data.warning || ''
     apiKeysNewName.value = ''
+    apiKeysNewScopes.value = 'send,read'
+    apiKeysNewChooseSlot.value = false
+    apiKeysNewAssignAgent.value = false
     await refreshApiKeys(tenant)
   } catch (e) {
     apiKeysError.value = e.response?.data?.error || 'Gagal membuat API key'
@@ -558,6 +573,8 @@ function initForms() {
   purgeError.value = ''
   apiKeysNewName.value = ''
   apiKeysNewScopes.value = 'send,read'
+  apiKeysNewChooseSlot.value = false
+  apiKeysNewAssignAgent.value = false
   apiKeysLoading.value = false
   apiKeysRows.value = []
   apiKeysRawKey.value = ''
@@ -909,7 +926,21 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           </div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
             <M3TextField v-model="apiKeysNewName" label="Nama key" type="text" />
-            <M3TextField v-model="apiKeysNewScopes" label="Scopes (send,read)" type="text" />
+            <M3TextField v-model="apiKeysNewScopes" label="Scopes (send,read,choose_slot,assign_agent)" type="text" />
+          </div>
+          <!-- v4.6.12 pending (API v1.1, docs/SPEC-api-v1.1-additive.md §1):
+               shortcut checkbox 2 scope baru — menulis token ke field Scopes
+               di atas (validasi tetap di server; parseScopes whitelist).
+               TANPA scope baru = behaviour v1.0 (slot-0, masuk queue, bebas di-take). -->
+          <div class="flex items-center gap-4 mt-2 flex-wrap">
+            <label class="flex items-center gap-2">
+              <input v-model="apiKeysNewChooseSlot" type="checkbox" class="w-4 h-4" />
+              <span class="text-sm">choose_slot — Pilih nomor slot (app kirim numberSlot 0–2)</span>
+            </label>
+            <label class="flex items-start gap-2">
+              <input v-model="apiKeysNewAssignAgent" type="checkbox" class="w-4 h-4" />
+              <span class="text-sm">assign_agent — Pilih agent auto-assign (assignTo + GET /users)</span>
+            </label>
           </div>
           <div v-if="apiKeysError" class="text-sm mt-3" style="color: var(--md-sys-color-error);">{{ apiKeysError }}</div>
           <div class="flex gap-2 justify-end mt-4">
