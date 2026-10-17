@@ -120,6 +120,18 @@
                 <input v-model="form.read" type="checkbox" class="w-4 h-4" />
                 <span class="text-sm">read — baca daftar chat</span>
               </label>
+              <!-- v4.6.12 pending (API v1.1, docs/SPEC-api-v1.1-additive.md §1):
+                   2 scope baru. TANPA centang = behaviour v1.0 (slot-0, masuk
+                   queue, bebas di-take). Centang = capability saja; behaviour
+                   per-request ditentukan param yang dikirim aplikasi. -->
+              <label class="flex items-start gap-2 py-1">
+                <input v-model="form.chooseSlot" type="checkbox" class="w-4 h-4" />
+                <span class="text-sm">choose_slot — Pilih nomor slot: app boleh kirim param <code>numberSlot</code> (0–2) saat mengirim pesan</span>
+              </label>
+              <label class="flex items-start gap-2 py-1">
+                <input v-model="form.assignAgent" type="checkbox" class="w-4 h-4" />
+                <span class="text-sm">assign_agent — Pilih agent auto-assign: app boleh assign chat ke CS (<code>assignTo</code>) &amp; lihat daftar agent via API</span>
+              </label>
             </div>
             <div v-if="createError" class="text-sm mb-2" style="color: var(--md-sys-color-error);">{{ createError }}</div>
             <div class="flex gap-2 justify-end mt-4">
@@ -154,7 +166,9 @@ const keys = ref([])
 const createOpen = ref(false)
 const creating = ref(false)
 const createError = ref('')
-const form = ref({ name: '', send: true, read: true })
+// v4.6.12 pending — default tetap v1.0 (send+read); 2 scope baru default OFF
+// (backward compat: key tanpa centang = behaviour v1.0 penuh).
+const form = ref({ name: '', send: true, read: true, chooseSlot: false, assignAgent: false })
 
 const createdRaw = ref('')
 
@@ -171,7 +185,7 @@ async function fetchKeys() {
 }
 
 function openCreate() {
-  form.value = { name: '', send: true, read: true }
+  form.value = { name: '', send: true, read: true, chooseSlot: false, assignAgent: false }
   createError.value = ''
   createdRaw.value = ''
   createOpen.value = true
@@ -186,6 +200,8 @@ async function create() {
   const scopes = []
   if (form.value.send) scopes.push('send')
   if (form.value.read) scopes.push('read')
+  if (form.value.chooseSlot) scopes.push('choose_slot')
+  if (form.value.assignAgent) scopes.push('assign_agent')
   if (!form.value.name.trim()) { createError.value = 'Nama key wajib diisi'; return }
   if (scopes.length === 0) { createError.value = 'Pilih minimal 1 scope'; return }
   creating.value = true
