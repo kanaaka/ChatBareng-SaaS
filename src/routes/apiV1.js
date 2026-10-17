@@ -3,7 +3,8 @@
 // v4.6.12 pending — API v1.1 additive (docs/SPEC-api-v1.1-additive.md):
 // scopes baru choose_slot + assign_agent; param opsional numberSlot &
 // assignTo di POST /messages; endpoint baru GET /users; response sukses
-// selalu bawa chatState. Param tidak dikirim = byte-per-byte v1.0 (§5 lock).
+// selalu bawa chatState (§2.4). Param tidak dikirim = behavior v1.0 (§5 lock) —
+// response tambah chatState (minor #4 audit Kimi r1: docs dikoreksi serupa).
 // Mount: app.use('/api/v1', apiV1Routes) di server.js — TIDAK menyentuh
 // route lama. Autentikasi = API key per-tenant (requireApiKey), BUKAN JWT.
 //
@@ -120,7 +121,7 @@ router.get('/health', (req, res) => {
 // WA off → 503 WA_BELUM_TERHUBUNG (konsisten dengan route CS lama).
 //
 // v4.6.12 pending (API v1.1, spec docs/SPEC-api-v1.1-additive.md §2) — ADDITIVE,
-// param tidak dikirim = byte-per-byte v1.0:
+// param tidak dikirim = behavior v1.0 (response tetap tambah chatState §2.4):
 // - `numberSlot` (opsional int 0..2): gate scope choose_slot (tanpa → 403
 //   SCOPE_MISSING); invalid → 400 VALIDATION eksplisit (pattern v3.9.3 LOW-1,
 //   bukan silent-fallback slot-0). Tidak dikirim → slot-0 (resolveTarget v1.0).
@@ -167,7 +168,12 @@ router.post('/messages', requireApiKey, requireScope('send'), async (req, res) =
     // Pattern v3.9.3 fix LOW-1 (contacts.js): invalid → 400 VALIDATION,
     // JANGAN silent-fallback ke slot-0. Tidak dikirim → slot-0 (resolveTarget
     // v1.0 tak berubah). Slot memilih chat terpisah per slot (v3.9.2 K1-A).
-    const numberSlotRaw = body.numberSlot === undefined || body.numberSlot === null ? null : Number(body.numberSlot)
+    const nsIn = body.numberSlot
+    if (nsIn !== undefined && nsIn !== null && (typeof nsIn === 'boolean' || typeof nsIn === 'object')) {
+      // audit Kimi r1 #5: booleans/objek DITOLAK (Number(false)=0 nyaris menyusup)
+      return res.status(400).json({ error: 'numberSlot harus integer 0..2', code: 'VALIDATION' })
+    }
+    const numberSlotRaw = nsIn === undefined || nsIn === null ? null : Number(nsIn)
     const numberSlotInvalid =
       numberSlotRaw !== null && (!Number.isFinite(numberSlotRaw) || !Number.isInteger(numberSlotRaw) || numberSlotRaw < 0 || numberSlotRaw > 2)
     if (numberSlotInvalid) {
@@ -176,7 +182,11 @@ router.post('/messages', requireApiKey, requireScope('send'), async (req, res) =
     const numberSlot = numberSlotRaw === null ? 0 : Math.trunc(numberSlotRaw)
 
     // ═══ §2.2 — assignTo: userId agent tenant (validasi 400 di bawah) ═══
-    const assignToRaw = body.assignTo === undefined || body.assignTo === null ? null : Number(body.assignTo)
+    const atIn = body.assignTo
+    if (atIn !== undefined && atIn !== null && (typeof atIn === 'boolean' || typeof atIn === 'object')) {
+      return res.status(400).json({ error: 'assignTo harus integer userId yang valid', code: 'VALIDATION' })
+    }
+    const assignToRaw = atIn === undefined || atIn === null ? null : Number(atIn)
     const assignToInvalid =
       assignToRaw !== null && (!Number.isFinite(assignToRaw) || !Number.isInteger(assignToRaw) || assignToRaw <= 0)
     if (assignToInvalid) {
@@ -273,13 +283,16 @@ router.post('/messages', requireApiKey, requireScope('send'), async (req, res) =
             module: 'api-keys',
             meta: { assignedToId: assignToId, before: existing.assignedToId || null, reopened: true, chatId: updated.id, jid, slot },
           })
+          // audit Kimi CB r1 #3: reopen via API WAJIB broadcast — tanpa ini UI CS
+          // tidak melihat chat yang reopen/assign via API (inkonsisten dgn cabang lain).
+          broadcast.emitToTenant(tid, 'chat_update', { chatId: updated.id, status: 'open', resolvedAt: null, assignedTo: { id: assignToId, username: assignAgent.username }, queuedAt: null })
           chatAfterAssign = updated
           reopened = true
         } else if (!existing.assignedToId) {
           // Open + unassigned → assign ke agent (keluar dari queue-eligible).
           const updated = await prisma.chat.update({
             where: { id: existing.id },
-            data: { assignedToId: assignToId, lastAssignedAt: new Date(), queuedAt: null },
+            data: { assignedToId: assignToId, lastAssignedAt: new Date(), firstAssignedAt: existing.firstAssignedAt || new Date(), queuedAt: null },
           })
           await prisma.chatEvent.create({
             data: { tenantId: tid, chatId: updated.id, userId: null, type: 'assigned_api', source: 'api', createdAt: new Date() },
@@ -349,7 +362,26 @@ router.post('/messages', requireApiKey, requireScope('send'), async (req, res) =
           })
         } catch (e) {
           if (e?.code === 'P2002') {
+            // audit Kimi CB r1 #2: race P2002 — chat bisa sudah dibuat oleh request
+            // lain (unassigned ATAU assigned CS lain ATAU resolved). Re-apply matrix
+            // supaya assignTo tidak hilang diam-diam (kecuali Edge 1: open+assigned
+            // CS lain → kirim saja tanpa menimpa).
             chatBeforeSend = await prisma.chat.findFirst({ where: { tenantId: tid, waJid: jid, numberSlot: slot }, orderBy: { id: 'asc' } })
+            if (chatBeforeSend) {
+              if (chatBeforeSend.status === 'resolved') {
+                chatBeforeSend = await prisma.chat.update({
+                  where: { id: chatBeforeSend.id },
+                  data: { status: 'open', resolvedAt: null, reopenedCount: (chatBeforeSend.reopenedCount || 0) + 1, assignedToId: assignToId, lastAssignedAt: new Date(), firstAssignedAt: chatBeforeSend.firstAssignedAt || new Date(), queuedAt: null },
+                })
+                reopened = true
+              } else if (!chatBeforeSend.assignedToId) {
+                chatBeforeSend = await prisma.chat.update({
+                  where: { id: chatBeforeSend.id },
+                  data: { assignedToId: assignToId, lastAssignedAt: new Date(), firstAssignedAt: chatBeforeSend.firstAssignedAt || new Date(), queuedAt: null },
+                })
+              }
+              // open+assigned CS lain → biarkan (Edge 1 contract — kirim tanpa timpa)
+            }
           } else throw e
         }
       }
@@ -379,7 +411,16 @@ router.post('/messages', requireApiKey, requireScope('send'), async (req, res) =
     // AKTUAL SETELAH send (bukan hanya assignTo yang diminta) — Edge 1:
     // client menampilkan catatan "chat lagi di-handle CS X" bila beda. Chat
     // belum ada di DB (grup/API-pertama tanpa assignTo) → chatId = null.
-    const stateChat = chatAfterAssign || chatBeforeSend
+    // audit Kimi CB r1 #1: jalur v1.0 (tanpa assignTo) WAJIB lookup juga —
+    // chatState harus mencerminkan holder aktual (termasuk open+assigned CS).
+    let stateChat = chatAfterAssign || chatBeforeSend
+    if (!stateChat && !jid.endsWith('@g.us')) {
+      stateChat =
+        (await prisma.chat.findFirst({ where: { tenantId: tid, waJid: jid, numberSlot: slot }, orderBy: { id: 'asc' } })) ||
+        (await prisma.chat.findFirst({ where: { tenantId: tid, phoneJid: jid, numberSlot: slot }, orderBy: { id: 'asc' } })) ||
+        (await prisma.chat.findFirst({ where: { tenantId: tid, lidJid: jid, numberSlot: slot }, orderBy: { id: 'asc' } })) ||
+        null
+    }
     let assignedHolder = null
     if (stateChat?.assignedToId) {
       if (assignAgent && stateChat.assignedToId === assignAgent.id) {
@@ -545,13 +586,17 @@ router.get('/users', requireApiKey, requireScope('assign_agent'), async (req, re
   try {
     const tid = req.tenantId
     // Paginasi sederhana: limit 1..100 (default 100), offset >= 0 (default 0).
-    const limitRaw = parseInt(req.query.limit || '100', 10)
-    const offsetRaw = parseInt(req.query.offset || '0', 10)
-    const limit = Math.max(1, Math.min(100, Number.isFinite(limitRaw) ? limitRaw : 100))
-    const offset = Math.max(0, Number.isFinite(offsetRaw) ? offsetRaw : 0)
+    const limitQ = String(req.query.limit ?? '100')
+    const offsetQ = String(req.query.offset ?? '0')
+    // audit Kimi CB r1 #7: regex ketat (parseInt('10abc') nyaris lolos)
+    if (!/^\d+$/.test(limitQ) || !/^\d+$/.test(offsetQ)) {
+      return res.status(400).json({ error: 'limit/offset harus angka non-negatif', code: 'VALIDATION' })
+    }
+    const limit = Math.max(1, Math.min(100, parseInt(limitQ, 10)))
+    const offset = Math.max(0, parseInt(offsetQ, 10))
 
     const users = await prisma.user.findMany({
-      where: { tenantId: tid, role: { in: ['cs', 'admin'] }, status: 'active' },
+      where: { tenantId: tid, role: 'cs', status: 'active' },
       orderBy: [{ id: 'asc' }],
       skip: offset,
       take: limit,
