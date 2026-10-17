@@ -1,4 +1,4 @@
-# v4.6.12 (pending) — API v1.1 (choose_slot/assign_agent: numberSlot+assignTo + users endpoint; reopen consistency fix; key-creation UI checkboxes) — 2026-10-17
+# v4.6.12 (Public API v1.1: choose_slot/assign_agent + reopen consistency fix) — 2026-10-17 — API v1.1 (choose_slot/assign_agent: numberSlot+assignTo + users endpoint; reopen consistency fix; key-creation UI checkboxes) — 2026-10-17
 
 **Latar:** kebutuhan integrasi Kreatr (spec docs/SPEC-api-v1.1-additive.md — semua keputusan
 settled dengan owner 2026-10-17): app eksternal butuh (1) pilih nomor slot pengirim saat kirim
