@@ -200,7 +200,7 @@ router.post('/messages', requireApiKey, requireScope('send'), async (req, res) =
     if (assignToId !== null) {
       const agent = await prisma.user.findFirst({
         where: { id: assignToId, tenantId: tid, role: 'cs', status: 'active' },
-        select: { id: true, username: true, name: true, role: true, tenantId: true, status: true },
+        select: { id: true, username: true, role: true, tenantId: true, status: true },
       })
       if (!agent) {
         return res.status(400).json({
@@ -600,7 +600,7 @@ router.get('/users', requireApiKey, requireScope('assign_agent'), async (req, re
       orderBy: [{ id: 'asc' }],
       skip: offset,
       take: limit,
-      select: { id: true, username: true, name: true, role: true },
+      select: { id: true, username: true, role: true },
     })
     return res.status(200).json({ users })
   } catch (e) {
