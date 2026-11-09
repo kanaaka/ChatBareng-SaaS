@@ -121,8 +121,8 @@ Frontend build: ✓ built (Dashboard chunk mengandung "Hapus permanen chat" + ch
 Snapshot: cp -r public public-pre-build-20260923-0316  (lihat Deviasi D1)
 Restart: kill 60757 (by PID, 1x) → nohup node src/server.js → LISTEN :5047 (pid 64285)
 curl health: 200 | curl root: 200
-[WA:tenant-4] Connected sebagai +6281133326888
-[WA:tenant-8] Connected sebagai +62881080702624
+[WA:tenant-4] Connected sebagai +6281xxxx6888
+[WA:tenant-8] Connected sebagai +6288xxxx02624
 ```
 Port 5030 tetap mati, 8770 tidak disentuh. Total restart: **1x** (sesuai batas).
 

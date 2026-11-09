@@ -133,8 +133,8 @@ Restart #1: kill 65169 → nohup node src/server.js → LISTEN :5047 (pid 73841)
 Restart #2: kill 73841 → pid 74577  ← mid-QA hotfix (lihat §3 F1/F2)
 Restart #3: kill 74577 → pid 74650  (hotfix kedua)
 curl health: 200 | curl root: 200
-[WA:tenant-8] Connected sebagai +62881080702624
-[WA:tenant-4] Connected sebagai +6281133326888
+[WA:tenant-8] Connected sebagai +6288xxxx02624
+[WA:tenant-4] Connected sebagai +6281xxxx6888
 ```
 Port 5030 tetap mati, 8770 tidak disentuh. Restart by-PID saja, TANPA pkill. Catatan: total restart 3× — batas "1x" untuk build; restart ke-2 dan ke-3 adalah hotfix bug yang ditemukan QA (lihat §3). Log "transaction failed, rolling back" di server.log = pino error BAILEYS `failed to decrypt` status@broadcast (pre-existing, bukan dari kode v3.7 — muncul juga sebelum perubahan).
 

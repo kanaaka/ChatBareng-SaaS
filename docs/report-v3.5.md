@@ -75,8 +75,8 @@ Counts before → after (identik, additive murni):
 
 **§6.2 Boot + health:** `{"status":"ok","timestamp":"2026-09-22T13:30:08.616Z"}`; WA reconnect < 10s:
 ```
-[WA:tenant-8] Connected sebagai +62881080702624
-[WA:tenant-4] Connected sebagai +6281133326888
+[WA:tenant-8] Connected sebagai +6288xxxx02624
+[WA:tenant-4] Connected sebagai +6281xxxx6888
 ```
 
 **§6.3 Routing (tenant QA #14, di-purge setelahnya) — 4/4 PASS:**
