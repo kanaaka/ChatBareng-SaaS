@@ -54,3 +54,11 @@ TROUBLESHOOT
    folder install bila perlu.
  - WhatsApp gagal connect → cek internet PC, jalankan ulang
    shortcut, scan QR ulang.
+
+
+UNINSTALL
+ 1. Backup dulu folder data\ kalau data chat masih mau disimpan!
+ 2. Settings → Apps → Installed apps → ChatBareng → Uninstall
+    (atau: Control Panel → Programs and Features → ChatBareng → Uninstall)
+ 3. Installer menghapus semua file app + shortcut. Data chat ikut hilang
+    (folder data\ dihapus) — itu sebabnya backup dulu di langkah 1.

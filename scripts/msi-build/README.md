@@ -25,3 +25,19 @@ Alat build installer Windows dijalankan di LINUX (wixl/msitools).
 - First-run: `cb-first-run.js` menulis .env (JWT/kunci AES-GCM/password superadmin
   acak per-PC + KREDENSIAL-ADMIN.txt).
 - Belum: code signing (SmartScreen warning saat pertama jalan — "More info → Run anyway").
+
+## Revision History v2 (2026-11-09)
+- **BUG 2704 (root directory undefined)**: struktur lama `LocalAppDataFolder\Programs\INSTALLDIR` tidak
+  konvensional untuk wixl per-user dual-mode; shortcut target double-bracket `[[SystemFolder]cmd.exe]`
+  + RegistryValue Key double-backslash ikut disangka penyebab. **Fix v2**:
+  - Directory root = **ProgramFilesFolder** langsung → INSTALLDIR (ALLUSERS=2 + MSIINSTALLPERUSER=1
+    otomatis redirect ke `%LOCALAPPDATA%\Programs\ChatBareng` per-user, tetap ProgramFiles per-machine)
+  - Shortcut Target bracket TUNGGAL `[SystemFolder]cmd.exe`, args `/c "[INSTALLDIR]start.bat"`
+  - Registry `Key="Software\ChatBareng"` satu backslash
+- 🔴 **PURGE RULE (wajib): JANGAN pernah cp -r folder `prisma/` utuh — `prisma/data/*.db`
+  berisi DB dev nyata (PII pelanggan: nama + no HP). Payload prisma/ = schema + migrations SAJA.
+  data/ = WAJIB kosong selain data/wa-cs-hub.db schema kosong (db push build-time).
+  Verify: `find <extract> -name "*.db"` → HARUS 1 file saja.
+- Migrate deploy GAGAL untuk DB mutlak baru (ordered-migration no-such-table TenantPlan) →
+  fresh install = DB pre-pushed bundling + start server LANGSUNG (tanpa prestart-migrate).
+- uninstall: menghapus seluruh folder app termasuk data\ (PANDUAN sudah menyatakan backup folder data dulu kalau mau menyimpan chat).
