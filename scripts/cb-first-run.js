@@ -1,39 +1,40 @@
 #!/usr/bin/env node
-// v4.6.13 (MSI v1) — first-run env generator ChatBareng (Windows paket) — ADDITIVE
-// Menulis .env dengan secret acak per-install (JWT + kunci media AES-GCM base64 32B
-// + password superadmin acak). Kredensial ditulis ke KREDENSIAL-ADMIN.txt di root app
-// (peringatan: simpan lalu hapus). OFFLINE — tidak ada fetch jaringan.
+// v4.6.14 (MSI v4) — first-run env generator ChatBareng Windows — ADDITIVE
+// .env ditulis di %ALLUSERSPROFILE%\ChatBareng (ProgramData — writable runtime, tidak di
+// Program Files). Secret acak per-install. Kredensial → KREDENSIAL-ADMIN.txt di folder sama.
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
 
-const ROOT = path.join(__dirname, '..')
-const b64_32 = () => crypto.randomBytes(32).toString('base64')
-const isAdminPass = () => crypto.randomBytes(9).toString('base64url') // ±12 karakter
+const appData = process.env.ALLUSERSPROFILE || 'C:\\ProgramData'   // ProgramData
+const PDIR = path.join(appData, 'ChatBareng')
+const envPath = path.join(PDIR, '.env')
 
 function main() {
-  const envPath = path.join(ROOT, '.env')
+  fs.mkdirSync(path.join(PDIR, 'data', 'media'), { recursive: true })
+  fs.mkdirSync(path.join(PDIR, 'data', 'wa-session'), { recursive: true })
   if (fs.existsSync(envPath)) {
     console.log('[first-run] .env sudah ada — skip (kredensial tidak diregenerasi).')
     process.exit(0)
   }
   const adminUser = 'superadmin'
-  const adminPass = isAdminPass()
+  const adminPass = crypto.randomBytes(9).toString('base64url')
+  const pd = PDIR.split('\\').join('/') // path windows style forward-slash utk file: URL
   const env = [
-    '# Dibuat otomatis saat instalasi pertama (cb-first-run.js). Secret = acak per install.',
+    '# ChatBareng — dibuat otomatis saat jalankan pertama (data di ProgramData, bukan Program Files)',
     'PORT=5030',
     'NODE_ENV=production',
-    'DATABASE_URL=file:./data/wa-cs-hub.db',
+    `DATABASE_URL=file:${pd}/data/wa-cs-hub.db`,
     `JWT_SECRET=${crypto.randomBytes(48).toString('base64')}`,
-    'MEDIA_DIR=./data/media',
-    `MEDIA_ENCRYPTION_KEY=${b64_32()}`,
+    `MEDIA_DIR=${pd}/data/media`,
+    `MEDIA_ENCRYPTION_KEY=${crypto.randomBytes(32).toString('base64')}`,
     'MAX_MEDIA_SIZE_MB=10',
     'CORS_ORIGIN=*',
-    'WA_SESSION_DIR=./data/wa-session',
+    `WA_SESSION_DIR=${pd}/data/wa-session`,
     `SUPERADMIN_USERNAME=${adminUser}`,
     `SUPERADMIN_PASSWORD=${adminPass}`,
     'RATE_LIMIT_PER_MIN=300',
-    '# Push notifikasi (opsional) — isi via: npx web-push generate-vapid-keys, lalu tempel di bawah:',
+    '# Push notifikasi (opsional) — isi via: npx web-push generate-vapid-keys',
     'VAPID_PUBLIC_KEY=',
     'VAPID_PRIVATE_KEY=',
     'VAPID_SUBJECT=mailto:',
@@ -41,19 +42,19 @@ function main() {
   ].join('\n')
   fs.writeFileSync(envPath, env, { mode: 0o600 })
   const cred = [
-    'Kredensial ChatBareng (dibuat otomatis saat instalasi pertama)',
+    'Kredensial ChatBareng (dibuat otomatis saat jalankan pertama)',
     `Tanggal: ${new Date().toLocaleString('id-ID')}`,
     'URL:  http://localhost:5030',
     `Superadmin: ${adminUser}`,
     `Password:   ${adminPass}`,
     '',
-    'SIMPAN FILE INI DI TEMPAT AMAN, lalu HAPUS setelah login beres',
-    '(file ini berisi password akun superadmin).',
+    'SIMPAN FILE INI DI TEMPAT AMAN, lalu HAPUS setelah login beres.',
+    `Semua data app: ${PDIR} (backup = copy folder ini).`,
     '',
   ].join('\n')
-  fs.writeFileSync(path.join(ROOT, 'KREDENSIAL-ADMIN.txt'), cred, { mode: 0o600 })
-  console.log('[first-run] ✅ .env dibuat + password superadmin acak di KREDENSIAL-ADMIN.txt')
-  console.log('[first-run] Baca KREDENSIAL-ADMIN.txt SEKARANG (simpan, lalu hapus filenya).')
+  fs.writeFileSync(path.join(PDIR, 'KREDENSIAL-ADMIN.txt'), cred, { mode: 0o600 })
+  console.log('[first-run] ✅ .env dibuat di ' + envPath)
+  console.log('[first-run] ✅ Kredensial superadmin: ' + path.join(PDIR, 'KREDENSIAL-ADMIN.txt') + ' — baca sekarang, simpan, lalu hapus filenya.')
 }
 
 main()

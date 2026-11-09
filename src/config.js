@@ -6,7 +6,10 @@ const path = require('path')
 const fs = require('fs')
 
 // Load .env
-dotenv.config()
+// v4.6.14 (msi v4) — override path: CHATBARENG_ENV_FILE (paket MSI Windows menaruh .env di
+// %ALLUSERSPROFILE%\ChatBareng — folder Program Files tidak bisa ditulis runtime;
+// ADDITIVE: tanpa env var = perilaku lama persis).
+dotenv.config({ path: process.env.CHATBARENG_ENV_FILE || undefined })
 
 // v3.9.12c (audit I3) — path RELATIF di env di-anchor ke ROOT APP (src/..),
 // bukan CWD — supaya `node /path/app/src/server.js` dari folder manapun tetap

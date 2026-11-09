@@ -41,3 +41,18 @@ Alat build installer Windows dijalankan di LINUX (wixl/msitools).
 - Migrate deploy GAGAL untuk DB mutlak baru (ordered-migration no-such-table TenantPlan) →
   fresh install = DB pre-pushed bundling + start server LANGSUNG (tanpa prestart-migrate).
 - uninstall: menghapus seluruh folder app termasuk data\ (PANDUAN sudah menyatakan backup folder data dulu kalau mau menyimpan chat).
+
+## Revision v4 (FINAL shape — 2026-11-10)
+- **2704 root cause (bukti):** dual-mode per-user (ALLUSERS=2 + MSIINSTALLPERUSER=1)
+  = di Windows asli selalu ERROR 2704 "Root directory property undefined"
+  (di Wine diabaikan → install sukses; jangan harapkan Wine merepro).
+- **Shape FINAL:** per-machine murni (**ALLUSERS=1**, tanpa MSIINSTALLPERUSER) +
+  data (DB/media/sesi/.env/credential) di **CommonAppDataFolder\ChatBareng**
+  (ProgramData — writable untuk semua user saat runtime, TIDAK di Program Files:
+  runtime non-admin tak berhak menulis PF).
+- config.js ADDITIVE: `dotenv.config({ path: process.env.CHATBARENG_ENV_FILE || undefined })`
+  → start.bat set CHATBARENG_ENV_FILE=%ALLUSERSPROFILE%\ChatBareng\.env.
+  Tanpa env var = perilaku lama persis (aman utk IT prod).
+- DB pre-migrated = CommonAppData component (payload-predata/wa-cs-hub.db, 45 tabel).
+- cb-first-run.js: mkdir ProgramData data dirs + .env ABSOLUTE path + KREDENSIAL-ADMIN.txt di ProgramData.
+- Uninstall = app+shortcut hilang; ProgramData\ChatBareng TETAP (data aman) — hapus manual kalau total.
