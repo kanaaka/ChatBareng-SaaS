@@ -1,7 +1,7 @@
 {
   "name": "wa-cs-hub",
   "version": "1.0.0",
-  "description": "WhatsApp CS Hub \u2014 multi-agent WhatsApp customer service interface",
+  "description": "WhatsApp CS Hub — multi-agent WhatsApp customer service interface",
   "main": "src/server.js",
   "scripts": {
     "prestart": "node scripts/prestart-migrate.js",
@@ -20,6 +20,7 @@
     "bcryptjs": "^2.4.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.0",
+    "exceljs": "^4.4.0",
     "express": "^4.19.0",
     "express-rate-limit": "^7.0.0",
     "express-validator": "^7.0.0",

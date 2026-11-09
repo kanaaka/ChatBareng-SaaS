@@ -69,6 +69,14 @@
           >
             ⬇ JSON
           </button>
+          <button
+            @click="exportExcel"
+            :disabled="exportingExcel"
+            class="px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-40 self-start sm:self-auto"
+            title="Laporan bulanan format Excel — per nomor WA + pesan per CS (12 bulan)"
+          >
+            ⬇ Excel
+          </button>
         </div>
       </div>
 
@@ -679,6 +687,24 @@ function exportAllJson() {
     csat: csatStats.value,
   }
   downloadBlob(JSON.stringify(payload, null, 2), `analytics-export-${exportSuffix()}.json`, 'application/json')
+}
+
+// ─── v4.6.13 (pending) — Excel bulanan: backend generate .xlsx (file binary, tombol hanya unduh) ───
+const exportingExcel = ref(false)
+async function exportExcel() {
+  exportingExcel.value = true
+  try {
+    const res = await axios.get(`${API}/api/analytics/excel?months=12`, { responseType: 'blob' })
+    let filename = null
+    const cd = res.headers && res.headers['content-disposition']
+    const m = cd ? /filename="([^"]+)"/.exec(cd) : null
+    if (m) filename = m[1]
+    downloadBlob(res.data, filename || `report-chatbareng-excel-${Date.now()}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  } catch (e) {
+    console.error('Export excel error:', e)
+  } finally {
+    exportingExcel.value = false
+  }
 }
 
 watch(range, () => {
