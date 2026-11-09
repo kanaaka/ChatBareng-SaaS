@@ -1,0 +1,29 @@
+@echo off
+title ChatBareng Server
+cd /d "%~dp0"
+set "PATH=%~dp0node;%PATH%"
+set "CBPRODATA=%ALLUSERSPROFILE%\ChatBareng"
+rem ── ChatBareng start.bat (MSI v4) ──────────────────────────────────
+rem Data (DB/media/sesi/secret) di ProgramData\ChatBareng — bukan Program Files.
+if not exist "%CBPRODATA%\.env" (
+  node "scripts\cb-first-run.js"
+  if errorlevel 1 (
+    echo [ChatBareng] GAGAL menyiapkan data — lihat pesan di atas.
+    pause
+    exit /b 1
+  )
+  start "" notepad "%CBPRODATA%\KREDENSIAL-ADMIN.txt"
+)
+if not exist "%CBPRODATA%\data\wa-cs-hub.db" (
+  echo [ChatBareng] %CBPRODATA%\data\wa-cs-hub.db HILANG — restore dari backup folder data.
+  pause
+  exit /b 1
+)
+set "CHATBARENG_ENV_FILE=%CBPRODATA%\.env"
+rem Auto-buka browser setelah server jalan
+start /b cmd /c "timeout /t 5 /nobreak >nul & start "" http://localhost:5030"
+rem Jalankan server (port dari .env, default 5030)
+node "src\server.js"
+echo.
+echo [ChatBareng] Server berhenti. Cek pesan error di atas bila ada.
+pause

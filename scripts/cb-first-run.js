@@ -6,8 +6,8 @@ const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
 
-const appData = process.env.ALLUSERSPROFILE || 'C:\\ProgramData'   // ProgramData
-const PDIR = path.join(appData, 'ChatBareng')
+// Basis data: CB_DATA_DIR (set installer) | default = folder app root (dev/NSIS per-user)
+const PDIR = process.env.CB_DATA_DIR || path.join(__dirname, '..')
 const envPath = path.join(PDIR, '.env')
 
 function main() {

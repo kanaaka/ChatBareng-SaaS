@@ -56,3 +56,10 @@ Alat build installer Windows dijalankan di LINUX (wixl/msitools).
 - DB pre-migrated = CommonAppData component (payload-predata/wa-cs-hub.db, 45 tabel).
 - cb-first-run.js: mkdir ProgramData data dirs + .env ABSOLUTE path + KREDENSIAL-ADMIN.txt di ProgramData.
 - Uninstall = app+shortcut hilang; ProgramData\ChatBareng TETAP (data aman) — hapus manual kalau total.
+
+## EXE route (FINAL pilihan, teruji Wine): NSIS
+- **Riwayat:** MSI selalu 2704 di Windows asli (v3 LocalAppData-shape, v4 per-machine + ProgramData) — walau Wine install sukses dua-duanya. Kandungan MSI valid; ENGINE Windows Installer menolak sesuatu yang wine lenient. Jangan habiskan waktu — **pakai NSIS (.exe)**.
+- **NSIS (apt nsis; makensis):** per-user, RequestExecutionLevel user (TANPA admin/UAC), install ke `$LOCALAPPDATA\ChatBareng`, data di `$INSTDIR\data` (writable), .env first-run di ROOT app (cb-first-run default — CB_DATA_DIR tak diset = root app), MUI2 (Welcome/Directory/InstFiles/Finish-run=start.bat + ShowREADME panduan), Start Menu 2 shortcut, uninstall entry HKCU + Uninstaller: prompt "hapus juga data?" (NO = data aman).
+- Build: `makensis -DROOT=/tmp/cb-msi/payload -DOUTFILE=/tmp/cb-msi/ChatBareng-Install.exe chb.nsi` → 70MB (LZMA dari 319MB).
+- Wine verify: install /S → AppData\Local\ChatBareng penuh (node/db/bat/Uninstall.exe ✓).
+- cb-first-run.js versi terakhir: CB_DATA_DIR-aware (NSIS/dev = root app; MSI v4 = ProgramData).
