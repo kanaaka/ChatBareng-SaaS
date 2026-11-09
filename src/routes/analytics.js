@@ -258,12 +258,12 @@ router.get('/hourly', ...rt, featAnalyticsGate, async (req, res) => {
       const msgWhere = buildRawWhere(window, 'm.timestamp')
       const eventWhere = buildRawWhere(window, 'e.createdAt')
       byMessagesRaw = await prisma.$queryRawUnsafe(
-        `SELECT CAST(strftime('%w', m.timestamp) AS INTEGER) AS dow, CAST(strftime('%H', m.timestamp) AS INTEGER) AS hour, COUNT(*) AS count
+        `SELECT CAST(strftime('%w', m.timestamp / 1000.0, 'unixepoch') AS INTEGER) AS dow, CAST(strftime('%H', m.timestamp / 1000.0, 'unixepoch') AS INTEGER) AS hour, COUNT(*) AS count
          FROM Message m WHERE m.tenantId = ${tid} AND m.direction = 'out' AND m.isAuto = 0 AND m.senderId = ${cs} ${msgWhere}
          GROUP BY dow, hour`
       )
       byNewChatsRaw = await prisma.$queryRawUnsafe(
-        `SELECT CAST(strftime('%w', e.createdAt) AS INTEGER) AS dow, CAST(strftime('%H', e.createdAt) AS INTEGER) AS hour, COUNT(*) AS count
+        `SELECT CAST(strftime('%w', e.createdAt / 1000.0, 'unixepoch') AS INTEGER) AS dow, CAST(strftime('%H', e.createdAt / 1000.0, 'unixepoch') AS INTEGER) AS hour, COUNT(*) AS count
          FROM ChatEvent e WHERE e.tenantId = ${tid} AND e.type = 'assigned' AND e.userId = ${cs} ${eventWhere}
          GROUP BY dow, hour`
       )
@@ -271,12 +271,12 @@ router.get('/hourly', ...rt, featAnalyticsGate, async (req, res) => {
       const msgWhere = buildRawWhere(window, 'm.timestamp')
       const chatWhere = buildRawWhere(window, 'c.firstIncomingAt')
       byMessagesRaw = await prisma.$queryRawUnsafe(
-        `SELECT CAST(strftime('%w', m.timestamp) AS INTEGER) AS dow, CAST(strftime('%H', m.timestamp) AS INTEGER) AS hour, COUNT(*) AS count
+        `SELECT CAST(strftime('%w', m.timestamp / 1000.0, 'unixepoch') AS INTEGER) AS dow, CAST(strftime('%H', m.timestamp / 1000.0, 'unixepoch') AS INTEGER) AS hour, COUNT(*) AS count
          FROM Message m WHERE m.tenantId = ${tid} AND m.direction = 'in' ${msgWhere}
          GROUP BY dow, hour`
       )
       byNewChatsRaw = await prisma.$queryRawUnsafe(
-        `SELECT CAST(strftime('%w', c.firstIncomingAt) AS INTEGER) AS dow, CAST(strftime('%H', c.firstIncomingAt) AS INTEGER) AS hour, COUNT(*) AS count
+        `SELECT CAST(strftime('%w', c.firstIncomingAt / 1000.0, 'unixepoch') AS INTEGER) AS dow, CAST(strftime('%H', c.firstIncomingAt / 1000.0, 'unixepoch') AS INTEGER) AS hour, COUNT(*) AS count
          FROM Chat c WHERE c.tenantId = ${tid} AND c.firstIncomingAt IS NOT NULL ${chatWhere}
          GROUP BY dow, hour`
       )
@@ -306,9 +306,10 @@ router.get('/hourly', ...rt, featAnalyticsGate, async (req, res) => {
 })
 
 function buildRawWhere(window, column) {
+  // v4.6.13 fix — kolom DateTime SQLite = INTEGER ms (bukan TEKS ISO): banding numerik ms
   if (!window || !window.since) return ''
-  const parts = [`${column} >= '${window.since.toISOString()}'`]
-  if (window.until) parts.push(`${column} <= '${window.until.toISOString()}'`)
+  const parts = [`${column} >= ${window.since.getTime()}`]
+  if (window.until) parts.push(`${column} <= ${window.until.getTime()}`)
   return `AND ${parts.join(' AND ')}`
 }
 
@@ -372,6 +373,305 @@ router.get('/chats', ...rt, featAnalyticsGate, async (req, res) => {
     res.json({ ...rangeResponseFields(window), total, page, chats: result })
   } catch (e) {
     console.error('Analytics chats error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ─── v4.6.13 (pending) — Laporan bulanan Excel (gaya laporan Kantor; per nomor WA + pesan per CS) ───
+// GET /api/analytics/excel?months=N → file .xlsx, blok gaya REPORT_*:
+//   (1) Performance overview per bulan (avg first response / resolution / wait + MAU)
+//   (2) Conversation overview per bulan (total/assigned/unassigned/resolved/campaign:0)
+//   (3) Messages Sent per CS per bulan (matrix agen × bulan + total)
+// Sheet = "Semua Nomor" + 1 sheet per nomor WA (TenantNumber). ADDITIVE — file/endpoint
+// lain tidak disentuh; tanpa kolom DB baru (numberSlot existing dipakai).
+
+const MONTH_LABELS_ID = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
+const WIB_OFFSET_MS = 7 * 60 * 60 * 1000
+
+function pad2Num(n) { return String(n).padStart(2, '0') }
+
+// Bulan kalender WIB terakhir N: {key:'2026-02', label:'Februari', startISO, endISO} (end eksklusif)
+function buildExcelMonths(monthsRaw, endRaw) {
+  const count = Math.min(Math.max(parseInt(monthsRaw, 10) || 12, 1), 24)
+  let baseWib = null
+  if (endRaw && DATE_RE.test(endRaw)) {
+    const d = parseLocalDate(endRaw)
+    baseWib = d ? new Date(d.getTime() + WIB_OFFSET_MS) : null
+  }
+  if (!baseWib) baseWib = new Date(Date.now() + WIB_OFFSET_MS)
+  const months = []
+  for (let i = 0; i < count; i++) {
+    const firstUtc = new Date(Date.UTC(baseWib.getUTCFullYear(), baseWib.getUTCMonth() - i, 1))
+    const days = new Date(Date.UTC(firstUtc.getUTCFullYear(), firstUtc.getUTCMonth() + 1, 1) - firstUtc.getTime()) / 86400000
+    months.push({
+      key: firstUtc.getUTCFullYear() + '-' + pad2Num(firstUtc.getUTCMonth() + 1),
+      label: MONTH_LABELS_ID[firstUtc.getUTCMonth()],
+      startMs: firstUtc.getTime() - WIB_OFFSET_MS,
+      endMs: firstUtc.getTime() - WIB_OFFSET_MS + days * 86400000,
+      startISO: new Date(firstUtc.getTime() - WIB_OFFSET_MS).toISOString(),
+      endISO: new Date(firstUtc.getTime() - WIB_OFFSET_MS + days * 86400000).toISOString(),
+    })
+  }
+  return months.reverse()
+}
+
+function durationHMS(min) {
+  if (min == null || min === undefined || Number.isNaN(min)) return '—'
+  let totalSec = Math.max(0, Math.round(Number(min) * 60))
+  const h = Math.floor(totalSec / 3600)
+  totalSec -= h * 3600
+  const m = Math.floor(totalSec / 60)
+  totalSec -= m * 60
+  return pad2Num(h) + 'h ' + pad2Num(m) + 'm ' + pad2Num(totalSec) + 's'
+}
+
+function xlNum(n) { return n == null ? 0 : Math.round(Number(n)) }
+
+async function excelAggregates(tid, slot, win, months) {
+  const numberClause = slot == null ? '' : ' AND c.numberSlot = ' + parseInt(slot, 10)
+  const [perfRaw, convRaw, resolvedRaw, mauRaw] = await Promise.all([
+    prisma.$queryRawUnsafe(
+      "SELECT strftime('%Y-%m', c.resolvedAt / 1000.0, 'unixepoch', '+7 hours') AS mk, " +
+      "AVG((julianday(c.firstResponseAt / 1000.0, 'unixepoch') - julianday(c.firstIncomingAt / 1000.0, 'unixepoch')) * 86400.0) AS frSec, " +
+      "AVG((julianday(c.resolvedAt / 1000.0, 'unixepoch') - julianday(c.firstAssignedAt / 1000.0, 'unixepoch')) * 86400.0) AS rsSec, " +
+      "AVG((julianday(c.firstAssignedAt / 1000.0, 'unixepoch') - julianday(c.firstIncomingAt / 1000.0, 'unixepoch')) * 86400.0) AS wtSec " +
+      'FROM Chat c ' +
+      "WHERE c.tenantId = " + tid + " AND c.status = 'resolved' AND c.resolvedAt >= " + win.startMs + " AND c.resolvedAt < " + win.endMs + "" + numberClause + ' ' +
+      'GROUP BY mk'
+    ),
+    prisma.$queryRawUnsafe(
+      "SELECT strftime('%Y-%m', c.firstIncomingAt / 1000.0, 'unixepoch', '+7 hours') AS mk, COUNT(*) AS total, " +
+      'SUM(CASE WHEN c.firstAssignedAt IS NOT NULL THEN 1 ELSE 0 END) AS assigned, ' +
+      'SUM(CASE WHEN c.firstAssignedAt IS NULL THEN 1 ELSE 0 END) AS unassigned ' +
+      'FROM Chat c ' +
+      "WHERE c.tenantId = " + tid + " AND c.firstIncomingAt >= " + win.startMs + " AND c.firstIncomingAt < " + win.endMs + "" + numberClause + ' ' +
+      'GROUP BY mk'
+    ),
+    prisma.$queryRawUnsafe(
+      "SELECT strftime('%Y-%m', c.resolvedAt / 1000.0, 'unixepoch', '+7 hours') AS mk, COUNT(*) AS resolved " +
+      'FROM Chat c ' +
+      "WHERE c.tenantId = " + tid + " AND c.status = 'resolved' AND c.resolvedAt >= " + win.startMs + " AND c.resolvedAt < " + win.endMs + "" + numberClause + ' ' +
+      'GROUP BY mk'
+    ),
+    prisma.$queryRawUnsafe(
+      "SELECT strftime('%Y-%m', c.lastMessageAt / 1000.0, 'unixepoch', '+7 hours') AS mk, COUNT(DISTINCT c.contactPhone) AS mau " +
+      'FROM Chat c ' +
+      "WHERE c.tenantId = " + tid + " AND c.lastMessageAt >= " + win.startMs + " AND c.lastMessageAt < " + win.endMs + "" + numberClause + ' ' +
+      'GROUP BY mk'
+    ),
+  ])
+  const mapOf = (rows, valMap) => Object.fromEntries(rows.map((r) => [r.mk, valMap(r)]))
+  const toNumOrNull = (v) => (v == null || Number.isNaN(Number(v)) ? null : Number(v))
+  const perf = mapOf(perfRaw, (r) => ({ frSec: toNumOrNull(r.frSec), rsSec: toNumOrNull(r.rsSec), wtSec: toNumOrNull(r.wtSec) }))
+  const conv = mapOf(convRaw, (r) => ({ total: xlNum(r.total), assigned: xlNum(r.assigned), unassigned: xlNum(r.unassigned) }))
+  const resolved = mapOf(resolvedRaw, (r) => ({ resolved: xlNum(r.resolved) }))
+  const mau = mapOf(mauRaw, (r) => ({ mau: xlNum(r.mau) }))
+  return months.map((m) => {
+    const p = perf[m.key] || {}
+    const c = conv[m.key] || {}
+    return {
+      month: m.label,
+      firstRespSec: p.frSec != null && !Number.isNaN(p.frSec) ? p.frSec : null,
+      resolutionSec: p.rsSec != null && !Number.isNaN(p.rsSec) ? p.rsSec : null,
+      waitSec: p.wtSec != null && !Number.isNaN(p.wtSec) ? p.wtSec : null,
+      mau: (mau[m.key] || {}).mau || 0,
+      total: c.total || 0,
+      assigned: c.assigned || 0,
+      unassigned: c.unassigned || 0,
+      resolved: (resolved[m.key] || {}).resolved || 0,
+      campaign: 0,
+    }
+  })
+}
+
+// GET /api/analytics/excel?months=N[&end=YYYY-MM-DD][&number=0..2] → .xlsx
+router.get('/excel', ...rt, featAnalyticsGate, async (req, res) => {
+  let ExcelJS
+  try {
+    ExcelJS = require('exceljs')
+  } catch (e) {
+    return res.status(500).json({ error: 'Library exceljs belum ter-install pada server' })
+  }
+  try {
+    const tid = Number(req.tenantId)
+    if (!Number.isFinite(tid)) return res.status(400).json({ error: 'tenant tidak valid' })
+    const months = buildExcelMonths(req.query.months, req.query.end)
+    const win = { startISO: months[0].startISO, endISO: months[months.length - 1].endISO, startMs: months[0].startMs, endMs: months[months.length - 1].endMs }
+
+    // filter nomor eksplisit (opsional): kalau ada, hanya 1 sheet nomor itu (+ pesan per CS tetap global)
+    let onlyNumber = null
+    if (req.query.number !== undefined && req.query.number !== '') {
+      onlyNumber = parseInt(req.query.number, 10)
+      if (Number.isNaN(onlyNumber) || onlyNumber < 0 || onlyNumber > 2) {
+        return res.status(400).json({ error: 'number harus integer 0..2' })
+      }
+    }
+
+    const [tenant, tenantNumbers, msgRaw] = await Promise.all([
+      prisma.tenant.findUnique({ where: { id: tid }, select: { name: true, waPhone: true, brandName: true } }),
+      prisma.tenantNumber.findMany({ where: { tenantId: tid }, orderBy: { slot: 'asc' } }),
+      prisma.$queryRawUnsafe(
+        "SELECT u.username AS username, u.role AS role, strftime('%Y-%m', m.timestamp / 1000.0, 'unixepoch', '+7 hours') AS mk, COUNT(*) AS n " +
+        'FROM Message m JOIN User u ON u.id = m.senderId ' +
+        "WHERE m.tenantId = " + tid + " AND m.isAuto = 0 AND m.direction = 'out' AND m.senderId IS NOT NULL " +
+        "AND m.timestamp >= " + win.startMs + " AND m.timestamp < " + win.endMs + " " +
+        "AND u.tenantId = " + tid + " AND u.role != 'super_admin' " +
+        'GROUP BY m.senderId, mk ORDER BY u.username ASC'
+      ),
+    ])
+
+    const numbers = tenantNumbers.length > 0
+      ? tenantNumbers.map((n) => ({ slot: n.slot, label: n.label || null }))
+      : [{ slot: 0, label: tenant && tenant.waPhone ? 'Nomor ' + tenant.waPhone : null }]
+    const scopedNumbers = onlyNumber == null ? numbers : numbers.filter((n) => n.slot === onlyNumber)
+
+    const allScope = await excelAggregates(tid, null, win, months)
+    const perNumber = []
+    for (const n of scopedNumbers) {
+      perNumber.push({ slot: n.slot, label: n.label, rows: await excelAggregates(tid, n.slot, win, months) })
+    }
+
+    // Matrix pesan per CS × bulan (global semua nomor)
+    const agentMap = new Map()
+    const monthTotals = new Map(months.map((m) => [m.key, 0]))
+    for (const r of msgRaw) {
+      if (!months.some((m) => m.key === r.mk)) continue
+      if (!agentMap.has(r.username)) {
+        agentMap.set(r.username, { username: r.username, role: r.role, perMonth: new Map(months.map((m) => [m.key, 0])), total: 0 })
+      }
+      const a = agentMap.get(r.username)
+      const n = xlNum(r.n)
+      a.perMonth.set(r.mk, (a.perMonth.get(r.mk) || 0) + n)
+      a.total += n
+      monthTotals.set(r.mk, (monthTotals.get(r.mk) || 0) + n)
+    }
+    const agents = Array.from(agentMap.values()).sort((a, b) => b.total - a.total)
+
+    const wb = new ExcelJS.Workbook()
+    wb.creator = 'ChatBareng'
+    const usedNames = new Set()
+    function nextSheetName(base) {
+      const clean = String(base || '').replace(/[\\/?*[\]:]/g, ' ').trim().slice(0, 28) || 'Sheet'
+      let name = clean
+      let i = 2
+      while (usedNames.has(name)) name = clean.slice(0, 25) + ' ' + i++
+      usedNames.add(name)
+      return name
+    }
+    const nowWib = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour12: false })
+    const periodLabel = months[0].label + ' ' + months[0].key.slice(0, 4) + ' s/d ' + months[months.length - 1].label + ' ' + months[months.length - 1].key.slice(0, 4)
+    const brandName = tenant && (tenant.brandName || tenant.name) ? (tenant.brandName || tenant.name) : 'ChatBareng'
+
+    function styleHeader(cell) {
+      cell.font = { bold: true }
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } }
+    }
+
+    function addScopeSheet(baseTitle, rows) {
+      const ws = wb.addWorksheet(nextSheetName(baseTitle))
+      ws.getCell('A1').value = brandName + ' — ' + baseTitle
+      ws.getCell('A1').font = { bold: true, size: 12 }
+      ws.getCell('B2').value = 'Laporan: ' + periodLabel + ' (' + months.length + ' bulan)'
+      ws.getCell('A3').value = 'Dibuat: ' + nowWib + ' WIB · sumber: Analytics ChatBareng'
+      ws.getCell('A3').font = { size: 9, color: { argb: 'FF6B7280' } }
+      let r = 6
+      ws.getCell('A' + r).value = 'Bulan'
+      ws.getCell('A' + r).font = { bold: true }
+      ws.getCell('B' + r).value = 'Performance overview'
+      ws.getCell('B' + r).font = { bold: true }
+      r++
+      const perfCols = ['Average First Response Time', 'Average Resolution Time', 'Average Wait Time', 'Monthly Active Users']
+      for (let i = 0; i < perfCols.length; i++) {
+        const cell = ws.getCell(r, 2 + i)
+        cell.value = perfCols[i]
+        styleHeader(cell)
+      }
+      r++
+      rows.forEach((row) => {
+        ws.getCell('A' + r).value = row.month
+        ws.getCell('B' + r).value = durationHMS(row.firstRespSec != null ? row.firstRespSec / 60 : null)
+        ws.getCell('C' + r).value = durationHMS(row.resolutionSec != null ? row.resolutionSec / 60 : null)
+        ws.getCell('D' + r).value = durationHMS(row.waitSec != null ? row.waitSec / 60 : null)
+        ws.getCell('E' + r).value = row.mau
+        r++
+      })
+      r += 1
+      ws.getCell('A' + r).value = 'Conversation overview'
+      ws.getCell('A' + r).font = { bold: true }
+      r++
+      const convCols = ['Total Conversations', 'Assigned', 'Unassigned', 'Resolved', 'Campaign']
+      for (let i = 0; i < convCols.length; i++) {
+        const cell = ws.getCell(r, 1 + i)
+        cell.value = convCols[i]
+        styleHeader(cell)
+      }
+      r++
+      rows.forEach((row) => {
+        ws.getCell('A' + r).value = row.month
+        ws.getCell('B' + r).value = row.total
+        ws.getCell('C' + r).value = row.assigned
+        ws.getCell('D' + r).value = row.unassigned
+        ws.getCell('E' + r).value = row.resolved
+        ws.getCell('F' + r).value = row.campaign
+        r++
+      })
+      ws.getColumn('A').width = 20
+      ws.getColumn('B').width = 26
+      ws.getColumn('C').width = 26
+      ws.getColumn('D').width = 20
+      ws.getColumn('E').width = 20
+      ws.getColumn('F').width = 12
+    }
+
+    addScopeSheet(onlyNumber == null ? 'Semua Nomor' : (scopedNumbers[0] && scopedNumbers[0].label) || 'Nomor slot ' + onlyNumber, allScope)
+    for (const n of perNumber) {
+      addScopeSheet(n.label || 'Nomor slot ' + n.slot, n.rows)
+    }
+
+    const wsMsg = wb.addWorksheet(nextSheetName('Pesan per CS'))
+    wsMsg.getCell('A1').value = brandName + ' — Messages Sent per CS'
+    wsMsg.getCell('A1').font = { bold: true, size: 12 }
+    wsMsg.getCell('B2').value = 'Periode: ' + periodLabel
+    wsMsg.getCell('A3').value = 'Dibuat: ' + nowWib + ' WIB · hanya pesan keluar CS manusia (auto-reply tidak dihitung)'
+    wsMsg.getCell('A3').font = { size: 9, color: { argb: 'FF6B7280' } }
+    let rm = 6
+    styleHeader(wsMsg.getCell('A' + rm))
+    wsMsg.getCell('A' + rm).value = 'Agen'
+    months.forEach((m, i) => {
+      styleHeader(wsMsg.getCell(rm, 2 + i))
+      wsMsg.getCell(rm, 2 + i).value = m.label
+    })
+    const totCol = 2 + months.length
+    styleHeader(wsMsg.getCell(rm, totCol))
+    wsMsg.getCell(rm, totCol).value = 'Total'
+    rm++
+    agents.forEach((a) => {
+      wsMsg.getCell('A' + rm).value = a.username
+      months.forEach((m, i) => { wsMsg.getCell(rm, 2 + i).value = a.perMonth.get(m.key) || 0 })
+      wsMsg.getCell(rm, totCol).value = a.total
+      rm++
+    })
+    if (agents.length > 0) {
+      wsMsg.getCell('A' + rm).value = 'Total'
+      wsMsg.getCell('A' + rm).font = { bold: true }
+      months.forEach((m, i) => {
+        const c = wsMsg.getCell(rm, 2 + i)
+        c.value = monthTotals.get(m.key) || 0
+        c.font = { bold: true }
+      })
+      const tc = wsMsg.getCell(rm, totCol)
+      tc.value = Array.from(monthTotals.values()).reduce((s, v) => s + v, 0)
+      tc.font = { bold: true }
+    }
+    wsMsg.getColumn('A').width = 16
+    for (let i = 2; i <= totCol; i++) wsMsg.getColumn(i).width = 12
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', 'attachment; filename="report-chatbareng-' + periodLabel.replace(/[^A-Za-z0-9]+/g, '-') + '.xlsx"')
+    const buf = await wb.xlsx.writeBuffer()
+    res.send(Buffer.from(buf))
+  } catch (e) {
+    console.error('Analytics excel error:', e)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
