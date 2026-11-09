@@ -1,5 +1,9 @@
 ; ChatBareng SAAS — NSIS installer v2 (portable-launcher engine ala build teruji 2026-09-23)
 Unicode true
+!define MUI_ICON "${ROOT}\branding\chatbareng.ico"
+!define MUI_UNICON "${ROOT}\branding\chatbareng.ico"
+Icon "${ROOT}\branding\chatbareng.ico"
+UninstallIcon "${ROOT}\branding\chatbareng.ico"
 !include "MUI2.nsh"
 
 !define APPNAME "ChatBareng"
@@ -33,10 +37,11 @@ Section "Install"
   File "${ROOT}\Mulai-ChatBareng.exe"
   File "${ROOT}\cloudflared.exe"
   File "${ROOT}\CARA-PAKAI.txt"
+  File "${ROOT}\branding\chatbareng.ico"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   CreateDirectory "$SMPROGRAMS\ChatBareng"
-  CreateShortcut "$SMPROGRAMS\ChatBareng\ChatBareng.lnk" "$INSTDIR\Mulai-ChatBareng.exe" "" "$INSTDIR"
+  CreateShortcut "$SMPROGRAMS\ChatBareng\ChatBareng.lnk" "$INSTDIR\Mulai-ChatBareng.exe" "" "$INSTDIR\chatbareng.ico" 0 SW_SHOWNORMAL "" "Jalankan ChatBareng"
   CreateShortcut "$SMPROGRAMS\ChatBareng\CARA PAKAI.lnk" "$INSTDIR\CARA-PAKAI.txt"
 
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayName" "ChatBareng (WhatsApp CS Hub)"
@@ -62,6 +67,7 @@ Section "Uninstall"
     Delete "$INSTDIR\Mulai-ChatBareng.exe"
     Delete "$INSTDIR\cloudflared.exe"
     Delete "$INSTDIR\CARA-PAKAI.txt"
+    Delete "$INSTDIR\chatbareng.ico"
     Delete "$INSTDIR\Uninstall.exe"
     Delete "$SMPROGRAMS\ChatBareng\*.*"
     RMDir "$SMPROGRAMS\ChatBareng"

@@ -63,3 +63,8 @@ Alat build installer Windows dijalankan di LINUX (wixl/msitools).
 - Build: `makensis -DROOT=/tmp/cb-msi/payload -DOUTFILE=/tmp/cb-msi/ChatBareng-Install.exe chb.nsi` → 70MB (LZMA dari 319MB).
 - Wine verify: install /S → AppData\Local\ChatBareng penuh (node/db/bat/Uninstall.exe ✓).
 - cb-first-run.js versi terakhir: CB_DATA_DIR-aware (NSIS/dev = root app; MSI v4 = ProgramData).
+
+## Icon (2026-11-10): chatbareng.ico
+- Sumber: `public/icons/icon-512.png` (asset PWA) → magick multi-size `icon:auto-resize=256,128,64,48,32,16`.
+- Terpasang di: installer exe (MUI_ICON/Icon), uninstaller, Start Menu shortcut (arg icon + index 0 — urutan positional: link target params icon index showmode hotkey desc — parameters WAJIB "" placeholder), DisplayIcon registry, + file copy `branding\chatbareng.ico` di install dir.
+- Gotcha NSIS: `File <singlefile>` mendarat di $OUTPATH memakai NAMA file saja (bukan subfolder) → jangan salah rujuk `branding\` di runtime path.
