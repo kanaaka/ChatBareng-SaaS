@@ -1,0 +1,69 @@
+================================================================
+  CARA PAKAI — ChatBareng (SAAS installer .exe)
+  (WhatsApp Customer Service Hub — installer Windows per-user)
+================================================================
+
+CARA MULAI:
+
+  1. Double-click "ChatBareng-Install.exe" → ikuti wizard
+     (Next → pilih folder → Install → Finish).
+     TIDAK perlu admin / password Windows.
+  2. Di layar Finish biarkan tercentang "Run ChatBareng" → Finish.
+     (atau nanti: Start Menu → ChatBareng → ChatBareng)
+
+  3. Muncul window hitam (console launcher). Tunggu 1-2 menit.
+     Launcher otomatis:
+        - Menyiapkan database pertama kalinya
+        - Membuat password superadmin acak → NOTEPAD AKAN
+          OTOMATIS MUNCUL: simpan username/passwordnya
+          (file KREDENSIAL-ADMIN.txt di folder data\ —
+          baca, simpan, lalu HAPUS), lalu HAPUS file itu
+        - Menjalankan server + membuat TUNNEL PUBLIC otomatis
+
+  4. Window hitam menampilkan:
+        - Status server & tunnel
+        - URL publik https://xxxx.trycloudflare.com —
+          otomatis tersalin ke clipboard (tinggal Ctrl+V)
+          untuk akses dari komputer/HP lain
+        - Akses lokal: http://localhost:5030
+
+  5. Buka URL-nya → login pakai KREDENSIAL SUPERADMIN
+     → buat tenant/akun CS dari Superadmin console
+     → klik "Hubungkan WhatsApp" → scan QR (HP yang
+       jadi nomor CS) → siap dipakai!
+
+  6. URL tunnel BERUBAH tiap restart (quick tunnel Cloudflare).
+     Selalu lihat window hitam ini (atau data\url.txt).
+     Watchdog: kalau tunnel mati, otomatis bikin URL baru
+     (coba 3x, berulang beberapa saat kemudian).
+
+PENTING:
+
+  * Window hitam JANGAN ditutup selama ChatBareng dipakai.
+  * SmartScreen "Windows protected your PC" kalau muncul saat
+    install/double-click: More info → Run anyway (normal, installer
+    belum code-signed).
+  * Semua data di folder data\ (backup = copy folder itu ke
+    tempat aman). JANGAN bagikan file secret.txt / msgkey.txt /
+    KREDENSIAL-ADMIN.txt ke siapa pun.
+
+UNINSTALL
+
+  Settings → Apps → Installed apps → ChatBareng → Uninstall.
+  Uninstaller bertanya: hapus juga DATA chat?
+    - NO  = data tetap di folder install (aman untuk reinstall)
+    - YES = semuanya terhapus total
+
+================================================================
+  Detail teknis:
+  - Server: Node.js v24 (app\node.exe), port lokal 5030 (CB_PORT bisa diubah)
+  - Multi-tenant SAAS: superadmin = pemilik platform; tenant + user CS
+    dibuat via Superadmin console; nomor WA per tenant (slot 0-2)
+  - URL publik: Cloudflare quick tunnel (cloudflared.exe ikut di dalam)
+  - Database: SQLite data\wa-cs-hub.db (auto dibuat first-run)
+  - URL terbaru: data\url.txt | log tunnel: data\tunnel.log
+  - Secret: data\secret.txt & data\msgkey.txt (+ kredensial superadmin
+    saat first-run) — JANGAN dihapus/dibagikan
+  - Isi pesan & media Terenkripsi at-rest (AES-256-GCM) — kunci di
+    data\msgkey.txt. Data gak dikirim ke manapun; semuanya lokal PC kamu.
+================================================================
