@@ -20,6 +20,14 @@
 - **Scheduled Messages & Blast** — kirim terjadwal + blast massal dengan progress & template
 - **CSAT** — survey kepuasan otomatis pasca-resolve
 
+### AI Assistant (CB-AI)
+- **AI Reply dari Knowledge Base** — upload dokumentasi produk/SOP (file) → balasan otomatis ter-grounded pada knowledge base per-tenant, lengkap dengan **trial & aktif/nonaktif per knowledge**
+- **AI Persona & Gaya Bicara** — persona + end-text penutup + disclaimer upsell & **handoff mulus ke CS manusia** kalau AI tidak yakin
+- **AI Summary** — ringkasan percakapan otomatis, CS langsung paham riwayat tanpa scroll panjang
+- **Hybrid Routing** — cloud model utama + fallback model lokal: hemat & tetap jalan saat cloud down; **kompatibel Ollama API** (cloud dengan API key, atau Ollama lokal di server kamu sendiri — datanya tetap di tangan kamu)
+- **AI Usage metering** — pemakaian token/latensi/estimasi biaya per tenant, rapi di admin
+- Gate per-plan (Pro/Max) — Lite tetap jalan tanpa AI
+
 ### Data & Privacy
 - **Contacts CRM** — kontak persistent, import/export CSV, Tag Manager
 - **Enkripsi at-rest** — isi pesan **AES-256-GCM** (`MSG_ENCRYPTION_KEY`), media terenkripsi
@@ -28,7 +36,7 @@
 
 ### Platform
 - **Multi-tenant SaaS** — plan quota per tenant (Lite/Pro/Max), branding per tenant, superadmin console + audit log
-- **Public API v1** — API key scoped (`send`, `read`, `choose_slot`, `assign_agent`), integrasi mudah
+- **Public API v1** — API key scoped (`send`, `read`, `choose_slot`, `assign_agent`) + `GET /users` & `chatState` responsenya (v1.1), untuk integrasi website/cart/agent eksternal
 - **PWA** — installable, service worker push, dark mode
 - **Windows Installer (MSI)** — Node portabel + DB pre-migrated ikut di dalam; tanpa install Node
 - **Docker Ready** — Dockerfile + docker-compose
