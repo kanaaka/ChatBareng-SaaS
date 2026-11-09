@@ -1,0 +1,28 @@
+@echo off
+title ChatBareng Server
+cd /d "%~dp0"
+set "PATH=%~dp0node;%PATH%"
+rem ── ChatBareng start.bat (MSI v1) ──────────────────────────────────
+rem 1) .env pertama kali? (secret acak per-install + password superadmin)
+if not exist ".env" (
+  node "scripts\cb-first-run.js"
+  if errorlevel 1 (
+    echo [ChatBareng] GAGAL membuat .env — lihat pesan di atas.
+    pause
+    exit /b 1
+  )
+  notepad "KREDENSIAL-ADMIN.txt"
+)
+rem 2) DB harus ada (schema sudah ikut installer)
+if not exist "data\wa-cs-hub.db" (
+  echo [ChatBareng] data\wa-cs-hub.db HILANG — restore dari backup / jalankan ulang installer.
+  pause
+  exit /b 1
+)
+rem 3) Auto-buka browser setelah server jalan
+start /b cmd /c "timeout /t 5 /nobreak >nul & start "" http://localhost:5030"
+rem 4) Jalankan server (port dari .env, default 5030)
+node "src\server.js"
+echo.
+echo [ChatBareng] Server berhenti. Cek pesan error di atas bila ada.
+pause

@@ -1,0 +1,56 @@
+════════════════════════════════════════════════════════════════
+ CHATBARENG — PANDUAN INSTALL WINDOWS (MSI v1) — v4.6.13
+════════════════════════════════════════════════════════════════
+
+APA INI?
+ Installer Windows untuk ChatBareng (WhatsApp CS Hub) — sekali install,
+ server berjalan 100% LOKAL di PC kamu (portable Node.js ikut di dalam,
+ TIDAK perlu install Node, TIDAK perlu internet setelah installer
+ diunduh). Semua data tersimpan di folder install, bukan cloud.
+
+SYARAT
+ - Windows 10 / 11 (x64)
+ - ±600 MB ruang disk
+ - Port 5030 bebas (bisa diubah di file .env)
+
+INSTALL
+ 1. Double-click "ChatBareng-Setup.msi".
+ 2. Jika muncul "Windows protected your PC" (installer belum
+    bertanda tangan digital) → klik "More info" → "Run anyway".
+ 3. Selesai — shortcut "ChatBareng" ada di Start Menu.
+
+JALANKAN SERVER
+ 1. Klik shortcut "ChatBareng" (Start Menu) → jendela console muncul.
+ 2. Saat PERTAMA kali jalan, installer membuat:
+    - .env (secret acak khusus PC kamu)
+    - KREDENSIAL-ADMIN.txt → NOTEPAD otomatis terbuka: simpan
+      username & password superadmin, LALU HAPUS FILE ITU.
+ 3. Browser membuka http://localhost:5030 otomatis.
+ 4. Login → tambah tenant/akun CS → klik "Hubungkan WhatsApp"
+    (scan QR dari WhatsApp Web HP kamu) → siap pakai.
+
+BIARKAN SERVER JALAN
+ Jendela console HARUS tetap terbuka selama dipakai (ini server).
+ Kalau PC dimatikan, klik shortcut lagi untuk menjalankan ulang.
+ (Auto-start saat boot bisa dengan Windows Task Scheduler:
+   triggger = "At log on", action = start "...\start.bat".)
+
+DATA KAMU
+ Semua chat/media/DB ada di folder install: data\ — backup cukup
+ dengan meng-copy folder ini. JANGAN share folder berisi .env atau
+ KREDENSIAL-ADMIN.txt ke orang lain.
+
+UBAH PORT / SETTING
+ Edit file ".env" → PORT=5030 (atau nilai lain) → jalankan ulang
+ shortcut. JANGAN edit baris JWT_SECRET / MEDIA_ENCRYPTION_KEY /
+ SUPERADMIN_PASSWORD kalau tidak paham (merusak data terenkripsi).
+
+TROUBLESHOOT
+ - "Windows protected your PC" → More info → Run anyway (normal utk
+   installer tanpa tanda tangan).
+ - Browser gak buka otomatis → buka manual: http://localhost:5030
+ - Port terpakai (EADDRINUSE) → ubah PORT di .env, jalankan ulang.
+ - Antivirus ikut suara? app = Node.js lokal + file SQLite; whitelist
+   folder install bila perlu.
+ - WhatsApp gagal connect → cek internet PC, jalankan ulang
+   shortcut, scan QR ulang.

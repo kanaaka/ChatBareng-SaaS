@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  binaryTargets = ["native", "windows"]
 }
 
 // CATATAN v3.4: spec §2 menulis tkQuotaBytes Int?, tapi preset Max = 10 GB
