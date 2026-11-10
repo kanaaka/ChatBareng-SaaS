@@ -1,3 +1,23 @@
+# v4.6.13 — Analytics: export laporan bulanan Excel (⬇ Excel; per nomor WA + pesan per CS) + bugfix heatmap — 2026-11-09
+
+**Latar:** kontrak kantor minta laporan format Excel (contoh REPORT_CHANNEL_* / REPORT_QONTAK_*).
+Model dipetakan ke data yang ADA (tanpa kolom DB baru — numberSlot existing dipakai).
+
+1. **Endpoint baru GET /api/analytics/excel?months=N** (default 12, maks 24; `end` & `number`=opsional)
+   → tulis .xlsx langsung dari server (exceljs NEW dep, additive; tanpa exceljs = 500 ramah).
+   - Sheet "Semua Nomor" + 1 sheet per nomor WA (TenantNumber.label, fallback "Nomor slot N").
+   - Blok per sheet: Performance overview (avg first response = firstIncoming→firstResponse,
+     resolution = firstAssigned→resolved, wait = firstIncoming→firstAssigned, MAU = distinct
+     contactPhone aktif bulan itu; semua bulan kalender WIB '+7 hours', dihitung atas chat
+     resolved dalam bulan tsb — konsisten endpoint overview) + Conversation overview
+     (total = chat masuk, assigned/unassigned = firstAssignedAt, resolved = resolvedAt,
+     campaign = 0 — ChatBareng tak punya konsep campaign).
+   - Sheet "Messages Sent per CS": matrix agen × bulan (out, bukan auto-reply) + total.
+   - Durasi format '00h 00m 00s' gaya contoh kantor.
+2. **UI:** tombol ⬇ Excel di Analytics (header export, samping ⬇ JSON) — unduh langsung.
+3. ADDITIVE: endpoint/fitur lain byte-per-byte tidak berubah; v4.6.12 (pending) ikut tree
+   sesuai doktrin mirror full-snapshot.
+
 # v4.6.12 (Public API v1.1: choose_slot/assign_agent + reopen consistency fix) — 2026-10-17 — API v1.1 (choose_slot/assign_agent: numberSlot+assignTo + users endpoint; reopen consistency fix; key-creation UI checkboxes) — 2026-10-17
 
 **Latar:** kebutuhan integrasi Kreatr (spec docs/SPEC-api-v1.1-additive.md — semua keputusan
