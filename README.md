@@ -5,6 +5,16 @@
 > **Current: v4.6.13** — [CHANGELOG.md](CHANGELOG.md) (semua rilis user-verified)
 > Windows? Download installer siap pakai: **[ChatBareng-Install.exe (installer)](https://github.com/kanaaka/ChatBareng-SaaS/releases/download/installer-v1.0.0/ChatBareng-Install.exe)** (~85 MB) — sekali install, server jalan 100% lokal di PC kamu + URL tunnel buat diakses dari mana aja. Lihat [PANDUAN-INSTALL-WINDOWS.txt](PANDUAN-INSTALL-WINDOWS.txt).
 
+## 🖼️ Tampilan
+
+<p align="center">
+  <img src="docs/screenshots/screenshot-chat-workspace.jpg" alt="Chat Workspace" width="49.6%">
+  <img src="docs/screenshots/screenshot-admin-panel.jpg" alt="Admin Panel" width="49.6%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/screenshot-blast-kirim.jpg" alt="Blast — kirim pesan ke kontak terpilih" width="49.6%">
+</p>
+
 ## ✨ Highlights
 
 ### Core
