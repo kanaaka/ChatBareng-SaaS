@@ -5,6 +5,11 @@
 > **Current: v4.6.13** — [CHANGELOG.md](CHANGELOG.md) (semua rilis user-verified)
 > Windows? Download installer siap pakai: **[ChatBareng-Install.exe (installer)](https://github.com/kanaaka/ChatBareng-SaaS/releases/download/installer-v1.0.0/ChatBareng-Install.exe)** (~85 MB) — sekali install, server jalan 100% lokal di PC kamu + URL tunnel buat diakses dari mana aja. Lihat [PANDUAN-INSTALL-WINDOWS.txt](PANDUAN-INSTALL-WINDOWS.txt).
 
+## 🎬 Trailer (15 detik)
+
+<video src="docs/trailer-15s.mp4" controls muted width="100%"></video>
+<p align="center"><sub>Trailer product — bisa juga di-download di <a href="docs/trailer-15s.mp4">docs/trailer-15s.mp4</a></sub></p>
+
 ## 🖼️ Tampilan
 
 <p align="center">
