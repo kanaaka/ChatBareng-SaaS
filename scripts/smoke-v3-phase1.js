@@ -31,7 +31,8 @@ async function main() {
   check('health 200', health.status === 200)
 
   console.log('── 2. Login superadmin (env auto-seed, no default tenant) ──')
-  const saLogin = await api('POST', '/api/auth/login', null, { username: 'superadmin', password: 'xXCDu7jPGJsCIM' })
+  // 2026-11-11: password QA jangan di-hardcode — set via env CB_SMOKE_PASSWORD
+  const saLogin = await api('POST', '/api/auth/login', null, { username: 'superadmin', password: process.env.CB_SMOKE_PASSWORD })
   check('superadmin login 200', saLogin.status === 200, JSON.stringify(saLogin.data))
   const sa = saLogin.data.token
   check('super_admin role', saLogin.data.user?.role === 'super_admin')
