@@ -13,6 +13,7 @@
 </p>
 <p align="center">
   <img src="docs/screenshots/screenshot-blast-kirim.jpg" alt="Blast — kirim pesan ke kontak terpilih" width="49.6%">
+<img src="docs/screenshots/screenshot-superadmin.jpg" alt="Superadmin Dashboard — ringkasan platform (contoh data)" width="49.6%">
 </p>
 
 ## ✨ Highlights
