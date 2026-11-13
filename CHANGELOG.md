@@ -1,3 +1,31 @@
+# v4.6.14 — Composer UX: Slash Template Anywhere, Auto-Focus Desktop, Mobile QueueBanner Guard & Media Attach Preview Modal — 2026-11-13
+
+**Latar:** 4 UX improvements untuk composer chat (request Kanaka 2026-11-13 10:55 & 11:07).
+
+1. **D1 — Quick Message `/` Trigger di Mana Saja** (`Dashboard.vue`):
+   - Helper `findSlashToken(text, cursorPos)` mendeteksi `/keyword` di awal teks, setelah spasi,
+     setelah newline (`\n` Shift+Enter), di tengah/akhir kalimat, dan menempel di akhir kata.
+   - Guard URL: tidak trigger pada `http://` / `https://`.
+   - `insertTemplateFromFlyout` hanya mengganti bagian `/keyword` (dari `slashIdx` s.d. `cursorPos`)
+     dengan `tpl.content`, teks sebelum & sesudah kursor tetap utuh.
+
+2. **D2 — Auto-Focus Typing Box Desktop** (`Dashboard.vue`, `ChatDetail.vue`, `Groups.vue`):
+   - `focusReply()` di `ChatDetail.vue` dengan guard `if (isMobile.value) return`.
+   - Dipanggil di `selectChat()`, `handleAssign()` (Dashboard), `watch(() => props.chat?.id)` dan
+     `onMounted()` (ChatDetail), serta `fetchGroupChat()` (Groups) — semua hanya di desktop.
+   - Mobile tidak auto-focus supaya keyboard tidak pop-up menutupi layar.
+
+3. **D3 — Sembunyikan QueueBanner di Mobile Detail** (`Dashboard.vue`):
+   - `v-if="!auth.isRelay && !isMobileDetail"` pada `<QueueBanner>` — konsisten dengan
+     `<Homerow :visible="!isMobileDetail" />`.
+
+4. **D4 — Modal Preview + Caption Saat Attach File/Gambar** (`ChatDetail.vue`, `Dashboard.vue`, `Groups.vue`):
+   - Pemilihan file (`<input type="file">`) dan paste (`@paste`) di textarea tidak langsung kirim.
+   - Modal preview: gambar (`<img>`) atau kartu info (ikon + nama + ukuran) untuk non-image.
+   - Input caption prefill dari `props.replyText`. Enter (tanpa Shift) atau klik **Kirim** → emit
+     `upload-media` dengan `{ file, caption, target }`. Escape/Batal/backdrop → batalkan + bersihkan ObjectURL.
+   - Parent (`Dashboard.vue` & `Groups.vue`) mendukung payload object baru dengan backward compatibility.
+
 # v4.6.13 — Analytics: export laporan bulanan Excel (⬇ Excel; per nomor WA + pesan per CS) + bugfix heatmap — 2026-11-09
 
 **Latar:** kontrak kantor minta laporan format Excel (contoh REPORT_CHANNEL_* / REPORT_QONTAK_*).

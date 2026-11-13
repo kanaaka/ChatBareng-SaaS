@@ -59,6 +59,7 @@
             </div>
             <div class="flex-1 overflow-hidden min-h-0">
               <ChatDetail
+                ref="chatDetailRef"
                 :chat="activeChat"
                 :messages="activeMessages"
                 :loading-messages="false"
@@ -143,7 +144,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import axios from 'axios'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
@@ -177,6 +178,7 @@ const mobileManageOpen = ref(false)
 // v0.14.2 — Tangan Kanan di halaman Grup (desktop rail; lapor Kanaka 09:41)
 const tkOpen = ref(false)
 const listPanelRef = ref(null)
+const chatDetailRef = ref(null)
 const autoAssignChatId = ref(null)
 // v0.14.0 — favoritedMsgIds wajib ada utk ChatDetail (Set immutable kosong;
 // favorit fitur 1:1 — tidak dipakai grup)
@@ -222,6 +224,10 @@ async function fetchGroupChat(chatId) {
     // v0.14.2 — buka grup = baca: clear badge "N baru" di list (fire-and-forget;
     // server broadcast chat_update unreadCount:0 → GroupListPanel update realtime).
     try { axios.post(`${API}/api/chats/${encodeURIComponent(chatId)}/read`, {}, { headers: { Authorization: `Bearer ${auth.token}` } }) } catch (e) { /* non-fatal */ }
+    // D2 — Auto-focus reply box on desktop when opening group chat
+    if (!isMobileViewport()) {
+      nextTick(() => chatDetailRef.value?.focusReply())
+    }
   } catch (e) {
     console.error('Fetch group chat error:', e)
     // 503 dkk → banner ramah; 403 → toast + kembali ke list
@@ -271,14 +277,16 @@ function onGroupReplyKeydown(e) {
   }
 }
 
-// Media: ChatDetail emit upload-media (event) — grup v0.14: arahkan ke toast ramah
-// (upload media grup lewat endpoint /api/chats/:id/media existing; input file di
-// composer tetap jalan — kita handle minimal tanpa merusak ChatDetail).
-function onUploadMedia(event) {
-  const file = event?.target?.files?.[0]
+// D4 — Media: ChatDetail emit upload-media (payload { file, caption, target }) — preview modal di ChatDetail
+function onUploadMedia(payload) {
+  const file = payload?.file || payload?.target?.files?.[0]
   if (!file || !activeChat.value) return
+  const caption = payload?.caption !== undefined ? payload.caption : replyText.value.trim()
   const form = new FormData()
   form.append('file', file)
+  if (caption) {
+    form.append('caption', caption)
+  }
   axios.post(`${API}/api/chats/${encodeURIComponent(activeChat.value.id)}/media`, form, {
     headers: { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'multipart/form-data' },
   })
@@ -286,6 +294,7 @@ function onUploadMedia(event) {
       const msg = res.data.message
       const exists = activeMessages.value.some(m => m.id === msg.id)
       if (!exists) activeMessages.value.push(msg)
+      replyText.value = ''
       toast.show({ icon: '📎', title: 'Media terkirim' })
     })
     .catch((e) => {
@@ -293,7 +302,7 @@ function onUploadMedia(event) {
       toast.show({ icon: '⚠️', title: 'Gagal mengirim media', message: friendlyGroupError(e, 'Gagal mengirim media.') })
     })
     .finally(() => {
-      if (event?.target) event.target.value = ''
+      if (payload?.target) payload.target.value = ''
     })
 }
 
