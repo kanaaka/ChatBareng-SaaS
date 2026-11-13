@@ -294,7 +294,8 @@
 
     <!-- Mobile Queue Banner — fixed bottom DI ATAS homerow (keputusan Kanaka 18:41) -->
     <!-- v0.5.0 — hidden untuk relay (Cabang): tidak bisa take -->
-    <QueueBanner v-if="!auth.isRelay" :count="queueCount" :taking="chats.taking" @take="handleTakeNext" />
+    <!-- D3 — hidden di mobile saat user sudah masuk ke dalam ruang chat (isMobileDetail) -->
+    <QueueBanner v-if="!auth.isRelay && !isMobileDetail" :count="queueCount" :taking="chats.taking" @take="handleTakeNext" />
 
     <!-- Homerow — hanya mobile, list-level (hilang di chat detail) -->
     <Homerow :visible="!isMobileDetail" />
@@ -787,6 +788,10 @@ async function selectChat(chat, opts = {}) {
   } else {
     scrollToBottom()
   }
+  // D2 — Auto-focus reply box on desktop when selecting chat from list
+  if (!isMobile.value) {
+    nextTick(() => chatDetailRef.value?.focusReply())
+  }
 }
 
 // Mobile route-driven select: /chat/:id masuk → fetch chat by id
@@ -891,23 +896,27 @@ async function sendReply() {
   }
 }
 
-async function handleFileUpload(event) {
-  const file = event.target.files?.[0]
+async function handleFileUpload(payload) {
+  // D4 — support both legacy event object and new payload { file, caption, target }
+  const file = payload?.file || payload?.target?.files?.[0]
   if (!file) return
 
   // v3.8 — tenant locked → JANGAN kirim media (backend juga 403)
   if (tenantLocked.value) {
     toastStore.show({ icon: '🔒', title: 'Masa aktif tenant', message: lockBanner.value || 'Masa aktif tenant habis.', timeout: 6000 })
-    event.target.value = ''
+    if (payload?.target) payload.target.value = ''
     return
   }
+
+  // D4 — caption from payload or fallback to replyText
+  const caption = payload?.caption !== undefined ? payload.caption : replyText.value.trim()
 
   sendingMedia.value = true
   try {
     const formData = new FormData()
     formData.append('file', file)
-    if (replyText.value.trim()) {
-      formData.append('caption', replyText.value.trim())
+    if (caption) {
+      formData.append('caption', caption)
     }
 
     const res = await axios.post(
@@ -936,7 +945,7 @@ async function handleFileUpload(event) {
   } finally {
     sendingMedia.value = false
     // Clear file input so same file can be selected again
-    event.target.value = ''
+    if (payload?.target) payload.target.value = ''
   }
 }
 
@@ -1035,15 +1044,40 @@ function insertTemplateFromFlyout(tpl) {
   const cursorPos = input.selectionStart
   const beforeCursor = replyText.value.substring(0, cursorPos)
   const afterCursor = replyText.value.substring(cursorPos)
-  const lastSpace = beforeCursor.lastIndexOf(' ') + 1
-  replyText.value = beforeCursor.substring(0, lastSpace) + tpl.content + afterCursor
+
+  // D1 — find slash token at cursor position
+  const token = findSlashToken(replyText.value, cursorPos)
+  const slashIdx = token ? token.slashIdx : Math.max(beforeCursor.lastIndexOf(' '), beforeCursor.lastIndexOf('\n')) + 1
+
+  replyText.value = beforeCursor.substring(0, slashIdx) + tpl.content + afterCursor
   showTemplateFlyout.value = false
   templateMatches.value = []
   nextTick(() => {
     input.focus()
-    const newPos = lastSpace + tpl.content.length
+    const newPos = slashIdx + tpl.content.length
     input.setSelectionRange(newPos, newPos)
   })
+}
+
+// D1 — Helper: find `/keyword` token at cursor position.
+// Detects slash at start of text, after whitespace (space/newline), or at end of word
+// (as long as not part of URL http:// or https://).
+function findSlashToken(text, cursorPos) {
+  const beforeCursor = text.substring(0, cursorPos)
+  const slashIdx = beforeCursor.lastIndexOf('/')
+  if (slashIdx === -1) return null
+  const token = beforeCursor.substring(slashIdx)
+  // Token must not contain whitespace (space closes flyout)
+  if (/\s/.test(token)) return null
+  // Guard: don't trigger inside URLs (http:// or https://)
+  // Check if the character before the slash is part of :// or / (protocol separator)
+  if (slashIdx > 0) {
+    const prevChar = beforeCursor[slashIdx - 1]
+    if (prevChar === ':' || prevChar === '/') return null
+    // Also check if the text before the slash ends with http:// or https://
+    if (/https?:\/\/\S*$/i.test(beforeCursor.substring(0, slashIdx))) return null
+  }
+  return { slashIdx, query: token.toLowerCase(), rawToken: token }
 }
 
 function handleReplyKeydown(e) {
@@ -1093,22 +1127,21 @@ function handleReplyKeydown(e) {
   onTyping()
 }
 
-// Watch replyText for slash command detection
+// Watch replyText for slash command detection (D1 — slash anywhere)
 watch(replyText, (newVal) => {
   if (!newVal) { showTemplateFlyout.value = false; return }
   if (!allTemplates.value.length) return
 
   const input = chatDetailRef.value?.replyInputRef
   const cursorPos = input?.selectionStart || newVal.length
-  const beforeCursor = newVal.substring(0, cursorPos)
-  const lastSpace = beforeCursor.lastIndexOf(' ') + 1
-  const currentWord = beforeCursor.substring(lastSpace)
+  const token = findSlashToken(newVal, cursorPos)
 
-  if (currentWord.startsWith('/') && currentWord.length >= 1) {
-    const query = currentWord.toLowerCase()
+  if (token && token.query.length >= 1) {
+    const q = token.query.substring(1) // text after '/'
     const matches = allTemplates.value.filter(t =>
-      t.keyword.toLowerCase().includes(query) ||
-      t.name.toLowerCase().includes(query.substring(1))
+      t.keyword.toLowerCase().includes(token.query) ||
+      t.keyword.toLowerCase().replace(/^\//, '').includes(q) ||
+      t.name.toLowerCase().includes(q)
     ).slice(0, 5)
 
     if (matches.length > 0) {
@@ -1146,6 +1179,10 @@ async function handleAssign() {
     currentChat.value.assignedTo = { id: auth.user.id, username: auth.user.username }
     currentChat.value.assignedToId = auth.user.id
     chats.fetchChats(chats.filterParams)
+    // D2 — Auto-focus reply box on desktop after taking chat
+    if (!isMobile.value) {
+      nextTick(() => chatDetailRef.value?.focusReply())
+    }
   } catch (e) {
     console.error(e)
     toastStore.show({ icon: '⚠️', title: 'Gagal mengambil chat', message: e.response?.data?.error || 'Failed to take chat' })

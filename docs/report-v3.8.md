@@ -170,7 +170,7 @@ POST-PURGE tenant=2 user=9 ✓
 ```
 
 ### Catatan WA reconnect t4/t8 (bisa diulang oleh owner)
-- Sesi WA tenant 4 (+6281133326888) & 8 (+62881080702624) **perlu scan QR ulang**: sesi revoked di
+- Sesi WA tenant 4 (+6281xxxx6888) & 8 (+6288xxxx02624) **perlu scan QR ulang**: sesi revoked di
   sisi WA (408 timedOut berulang setelah QR emitted; device sudah unpair dari server WA).
 - 408-loop ini SUDAH ADA sejak boot app SEBELUM v3.8 (boot 12:38, terlihat di log yang sama
   sebelum restart v3.8 — bukan regresi perubahan ini; kode koneksi pool tidak disentuh).
