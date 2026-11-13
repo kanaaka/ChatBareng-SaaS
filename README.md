@@ -3,23 +3,7 @@
 **Multi-agent WhatsApp customer service hub.** Satu (atau banyak) nomor WhatsApp, banyak CS agent, antrean rapi, otomasi yang enak. Dibangun untuk operasi CS yang serius: Node.js + Baileys + Express + Vue 3 (PWA) + Socket.IO + Prisma/SQLite.
 
 > **Current: v4.6.13** — [CHANGELOG.md](CHANGELOG.md) (semua rilis user-verified)
-> Windows? Download installer siap pakai: **[ChatBareng-Install.exe (installer)](https://github.com/kanaaka/ChatBareng-SaaS/releases/download/installer-v1.0.0/ChatBareng-Install.exe)** (~85 MB) — sekali install, server jalan 100% lokal di PC kamu + URL tunnel buat diakses dari mana aja. Lihat [PANDUAN-INSTALL-WINDOWS.txt](PANDUAN-INSTALL-WINDOWS.txt).
-
-## 🎬 Trailer (15 detik)
-
-<video src="docs/trailer-15s.mp4" controls muted width="100%"></video>
-<p align="center"><sub>Trailer product — bisa juga di-download di <a href="docs/trailer-15s.mp4">docs/trailer-15s.mp4</a></sub></p>
-
-## 🖼️ Tampilan
-
-<p align="center">
-  <img src="docs/screenshots/screenshot-chat-workspace.jpg" alt="Chat Workspace" width="49.6%">
-  <img src="docs/screenshots/screenshot-admin-panel.jpg" alt="Admin Panel" width="49.6%">
-</p>
-<p align="center">
-  <img src="docs/screenshots/screenshot-blast-kirim.jpg" alt="Blast — kirim pesan ke kontak terpilih" width="49.6%">
-<img src="docs/screenshots/screenshot-superadmin.jpg" alt="Superadmin Dashboard — ringkasan platform (contoh data)" width="49.6%">
-</p>
+> Windows? Download installer siap pakai: **[ChatBareng-Setup.msi (v4.6.13)](https://github.com/kanaaka/ChatBareng-SaaS/releases/download/v4.6.13/ChatBareng-Setup.msi)** — sekali install, server jalan lokal di PC kamu. Lihat [PANDUAN-INSTALL-WINDOWS.txt](PANDUAN-INSTALL-WINDOWS.txt) versi installer.
 
 ## ✨ Highlights
 
@@ -54,17 +38,17 @@
 - **Multi-tenant SaaS** — plan quota per tenant (Lite/Pro/Max), branding per tenant, superadmin console + audit log
 - **Public API v1** — API key scoped (`send`, `read`, `choose_slot`, `assign_agent`) + `GET /users` & `chatState` responsenya (v1.1), untuk integrasi website/cart/agent eksternal
 - **PWA** — installable, service worker push, dark mode
-- **Windows Installer (.exe)** — launcher portable (Node20 embedded + cloudflared tunnel + DB); tanpa admin, tanpa install Node
+- **Windows Installer (MSI)** — Node portabel + DB pre-migrated ikut di dalam; tanpa install Node
 - **Docker Ready** — Dockerfile + docker-compose
 
 ## 🚀 Quick Start
 
-### Windows (paling gampang — .exe installer, [installer-v1.0.0](https://github.com/kanaaka/ChatBareng-SaaS/releases/tag/installer-v1.0.0))
-1. Download & jalankan `ChatBareng-Install.exe` → wizard (tanpa admin)
-2. Setelah selesai: Notepad membuka kredensial superadmin — simpan
-3. Jalankan **Mulai-ChatBareng.exe** → window launcher → copy URL tunnel → buka di browser
-4. Login (kredensial dari Notepad) → **Hubungkan WhatsApp** (scan QR)
-5. Done — server 100% lokal di PC kamu, bisa diakses dari HP/luar via URL tunnel
+### Windows (paling gampang — MSI)
+1. Download `ChatBareng-Setup.msi` dari [Releases](https://github.com/kanaaka/ChatBareng-SaaS/releases)
+2. Install → shortcut **ChatBareng** di Start Menu → klik
+3. Notepad membuka kredensial superadmin — simpan, hapus file-nya
+4. Browser: `http://localhost:5030` → login → **Hubungkan WhatsApp** (scan QR)
+5. Done — server 100% lokal di PC kamu
 
 *(Klik pertama: SmartScreen "More info → Run anyway" — installer belum code-signed.)*
 

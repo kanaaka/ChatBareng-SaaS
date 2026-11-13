@@ -580,7 +580,7 @@
         type="file"
         accept="image/*,video/*,audio/*,.pdf"
         class="hidden"
-        @change="$emit('upload-media', $event)"
+        @change="onFileSelected($event)"
       />
       <!-- v0.10.2 — MOBILE: tombol "+" M3 (4 aksi dalam 1 menu list vertikal, lapor Kanaka: text field sempit) -->
       <div v-if="isMobile" class="relative flex-shrink-0">
@@ -761,6 +761,7 @@
           :value="replyText"
           @input="$emit('update:replyText', $event.target.value); autoGrow($event.target)"
           @keydown="$emit('reply-keydown', $event)"
+          @paste="onReplyPaste($event)"
           :placeholder="replyPlaceholder"
           :disabled="sendingMedia"
           class="w-full px-4 py-2.5 border border-[var(--md-sys-color-outline)] rounded-2xl text-[var(--md-sys-color-on-surface)] placeholder:text-[var(--md-sys-color-on-surface-variant)] bg-transparent focus:ring-2 focus:ring-wa-green focus:border-transparent disabled:opacity-50 resize-none overflow-y-auto leading-snug"
@@ -798,6 +799,71 @@
       :download-url="mediaUrl(viewerMsg)"
       @close="viewerMsg = null"
     />
+
+    <!-- D4 — Modal Preview + Caption saat attach file/gambar -->
+    <Teleport to="body">
+      <div
+        v-if="pendingMediaFile"
+        class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+        @click="cancelSendMedia"
+      >
+        <div
+          class="bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface)] rounded-xl shadow-xl w-96 max-w-full p-4"
+          @click.stop
+        >
+          <!-- Header -->
+          <div class="flex items-center justify-between mb-3">
+            <span class="font-semibold text-sm">
+              Kirim {{ pendingMediaFile.type.startsWith('image/') ? 'gambar' : 'file' }} ke {{ chat.contactName || chat.contactPhone }}?
+            </span>
+            <button @click="cancelSendMedia" class="p-1 rounded-full hover:bg-black/5 text-gray-500">✕</button>
+          </div>
+
+          <!-- Preview -->
+          <div v-if="pendingMediaPreviewUrl" class="mb-2">
+            <img
+              :src="pendingMediaPreviewUrl"
+              class="w-full max-h-56 object-contain bg-black/5 rounded-lg"
+              :alt="pendingMediaFile.name"
+            />
+            <div class="text-xs text-gray-400 mt-1 truncate">{{ pendingMediaFile.name }} · {{ formatFileSize(pendingMediaFile.size) }}</div>
+          </div>
+          <div v-else class="flex items-center gap-3 bg-black/5 rounded-lg p-3 mb-2">
+            <span class="text-2xl flex-shrink-0">
+              {{ pendingMediaFile.type.startsWith('video/') ? '🎬' : pendingMediaFile.type.startsWith('audio/') ? '🎵' : '📄' }}
+            </span>
+            <div class="min-w-0">
+              <div class="text-sm font-medium truncate">{{ pendingMediaFile.name }}</div>
+              <div class="text-xs text-gray-400">{{ formatFileSize(pendingMediaFile.size) }}</div>
+            </div>
+          </div>
+
+          <!-- Caption input -->
+          <label class="block text-xs font-medium text-gray-500 mb-1">Caption (opsional)</label>
+          <textarea
+            ref="captionInputRef"
+            v-model="pendingMediaCaption"
+            rows="2"
+            placeholder="Tambahkan caption..."
+            @keydown="onCaptionKeydown"
+            class="w-full px-3 py-2 text-sm border border-[var(--md-sys-color-outline)] rounded-lg bg-transparent text-[var(--md-sys-color-on-surface)] focus:ring-2 focus:ring-wa-green focus:border-transparent resize-none mb-3"
+          ></textarea>
+
+          <!-- Actions -->
+          <div class="flex gap-2">
+            <button
+              @click="cancelSendMedia"
+              class="bg-gray-200 text-gray-700 rounded-lg px-4 py-2 text-sm hover:bg-gray-300"
+            >Batal</button>
+            <button
+              @click="confirmSendMedia"
+              :disabled="sendingMedia"
+              class="bg-wa-green text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-green-600 disabled:opacity-50 flex-1"
+            >{{ sendingMedia ? 'Mengirim…' : 'Kirim' }}</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -1268,6 +1334,76 @@ function onSenderMenuKeydown(e) {
   if (e.key === 'Escape' && senderMenu.value.msgId) closeSenderMenu()
 }
 
+// ═══════════════════════════════════════════════════════
+// D4 — Media Preview Modal (attach file/paste → preview + caption → send)
+// ═══════════════════════════════════════════════════════
+const pendingMediaFile = ref(null)
+const pendingMediaPreviewUrl = ref(null)
+const pendingMediaCaption = ref('')
+const captionInputRef = ref(null)
+
+function formatFileSize(bytes) {
+  if (!bytes) return '0 B'
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
+}
+
+function onFileSelected(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  if (props.sendDisabled || props.sendingMedia) { event.target.value = ''; return }
+  openMediaPreview(file)
+  event.target.value = '' // reset so same file can be re-selected
+}
+
+function onReplyPaste(event) {
+  const files = event.clipboardData?.files
+  if (!files || files.length === 0) return
+  event.preventDefault()
+  if (props.sendDisabled || props.sendingMedia) return
+  openMediaPreview(files[0])
+}
+
+function openMediaPreview(file) {
+  pendingMediaFile.value = file
+  pendingMediaCaption.value = props.replyText || ''
+  if (file.type.startsWith('image/')) {
+    pendingMediaPreviewUrl.value = URL.createObjectURL(file)
+  } else {
+    pendingMediaPreviewUrl.value = null
+  }
+  nextTick(() => captionInputRef.value?.focus())
+}
+
+function confirmSendMedia() {
+  const file = pendingMediaFile.value
+  const caption = pendingMediaCaption.value.trim()
+  // Sync caption to parent replyText
+  emit('update:replyText', caption)
+  emit('upload-media', { file, caption, target: { files: [file], value: '' } })
+  cancelSendMedia()
+}
+
+function cancelSendMedia() {
+  if (pendingMediaPreviewUrl.value) {
+    URL.revokeObjectURL(pendingMediaPreviewUrl.value)
+  }
+  pendingMediaFile.value = null
+  pendingMediaPreviewUrl.value = null
+  pendingMediaCaption.value = ''
+}
+
+function onCaptionKeydown(e) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault()
+    confirmSendMedia()
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    cancelSendMedia()
+  }
+}
+
 // ── Scroll management ────────────────────────────────
 function scrollToBottom() {
   nextTick(() => {
@@ -1318,7 +1454,13 @@ watch(() => props.chat?.id, () => {
   showScrollButton.value = false
   // v0.14.4 — popover peserta ditutup saat pindah chat
   closeSenderMenu()
+  // D4 — tutup modal preview media saat pindah chat
+  cancelSendMedia()
   measureComposer()
+  // D2 — Auto-focus reply box on desktop when chat changes
+  if (!isMobile.value) {
+    nextTick(() => focusReply())
+  }
 })
 
 // New message → auto scroll (kalau sudah near bottom)
@@ -1385,6 +1527,10 @@ onMounted(() => {
   socketStore.on('wa_status', onWaStatusChanged)
   // v4.1.5 — pastikan tinggi textarea benar saat pertama mount (1 baris)
   nextTick(() => autoGrow(replyInputRef.value))
+  // D2 — Auto-focus reply box on desktop on mount
+  if (!isMobile.value) {
+    nextTick(() => focusReply())
+  }
 })
 onUnmounted(() => {
   window.removeEventListener('resize', onWindowResize)
@@ -1405,11 +1551,21 @@ function onDocClickDismiss() {
   showTemplateDropdown.value = false
 }
 
+// D2 — Focus reply box (desktop only; mobile: no auto-focus to avoid keyboard pop-up)
+function focusReply() {
+  if (isMobile.value) return // Mobile: jangan auto-focus supaya keyboard tidak pop-up menutupi layar
+  nextTick(() => {
+    if (replyInputRef.value && !replyInputRef.value.disabled) {
+      replyInputRef.value.focus()
+    }
+  })
+}
+
 // Expose untuk parent (Dashboard) — scrollToBottom setelah aksi kirim/jump
 defineExpose({
   scrollToBottom,
   replyInputRef,
   messagesContainer,
-  focusReply: () => replyInputRef.value?.focus(),
+  focusReply,
 })
 </script>
