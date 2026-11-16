@@ -4,7 +4,25 @@
     komponen. Dipakai Dashboard (mobile: full pane; desktop: sidebar split).
     Semua state list (filter/search/tags/filters) tetap di sini — logika identik.
   -->
-  <div class="flex flex-col h-full bg-white">
+  <div class="flex flex-col h-full bg-white relative">
+    <!-- ═══ v4.6.16 bug #3 — overlay batch processing (layer transparan + progress
+         circle) menutup list saat batch berjalan; list berhenti "kelip kelip" ═══ -->
+    <transition name="fade">
+      <div
+        v-if="batchBusy && batchProgress.total > 0"
+        class="absolute inset-0 z-40 flex items-center justify-center bg-white/60 backdrop-blur-[1px]"
+        style="pointer-events: all"
+      >
+        <div class="flex flex-col items-center gap-3 px-6 py-4 bg-white/90 rounded-2xl shadow-lg border border-gray-100">
+          <svg class="animate-spin w-9 h-9 text-wa-green" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle class="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-90" d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round"></path>
+          </svg>
+          <div class="text-sm font-medium text-gray-700">Memproses batch…</div>
+          <div class="text-xs text-gray-400">{{ batchProgress.done }}/{{ batchProgress.total }} chat</div>
+        </div>
+      </div>
+    </transition>
     <!-- Search — v0.13.6 r6: pill ala admin sidebar (M3 Expressive, request Kanaka 11:51) -->
     <div class="p-3 border-b border-gray-200">
       <div class="chat-search">
@@ -720,6 +738,10 @@ const selectionMode = ref(false)
 const selectedIds = ref(new Set())
 const hoveredChatId = ref(null)
 const batchBusy = ref(false)
+// v4.6.16 bug #3 — overlay batch processing: layer transparan menutup list +
+// progress circle (daripada list "kelip kelip" tiap item di-emit socket)
+const batchProgress = ref({ done: 0, total: 0 })
+const BATCH_CHUNK = 100
 // tickbox hover = desktop viewport saja (mobile: entry via long-press menu)
 const isDesktopVP = ref(typeof window !== 'undefined' ? window.innerWidth >= 768 : true)
 
@@ -751,10 +773,9 @@ function toggleSelectAll() {
     // v4.5.0 audit L-3 — de-select semua = keluar mode (konsisten dgn toggle row)
     selectionMode.value = false
   } else {
-    // Select-all = SEMUA chat yang TAMPIL di list — honoring filter aktif + search
-    // (filteredChats); server list sendiri di-cap 100 → by construction ≤100.
+    // v4.6.16 bug #2 — select-all: 100 → 500 (cap TAKE_LIMIT server).
     selectionMode.value = true
-    selectedIds.value = new Set(filteredChats.value.slice(0, 100).map(c => c.id))
+    selectedIds.value = new Set(filteredChats.value.slice(0, 500).map(c => c.id))
   }
 }
 function enterSelectionModeFromMenu() {
@@ -763,6 +784,38 @@ function enterSelectionModeFromMenu() {
   if (!chat?.id || selectionMode.value) return
   selectionMode.value = true
   selectedIds.value.add(chat.id)
+}
+
+// v4.6.16 bug #3 — batch dipecah ke slice BATCH_CHUNK (100/call) supaya progress
+// tampil; server emit chat_update per item membuat list "kelip kelip" → overlay
+// layer transparan menutupinya selama proses.
+// audit Kimi r2 [MED]: chunk gagal → hasil parsial tetap dilaporkan (jangan dibuang)
+async function runBatchChunked(fnCall) {
+  const ids = [...selectedIds.value]
+  let done = 0
+  let err = null
+  const agg = { resolved: [], marked: [], skipped: [] }
+  try {
+    for (let i = 0; i < ids.length; i += BATCH_CHUNK) {
+      const chunk = ids.slice(i, i + BATCH_CHUNK)
+      batchProgress.value = { done, total: ids.length }
+      try {
+        const data = await fnCall(chunk)
+        if (data.resolved) agg.resolved.push(...(data.resolved || []))
+        if (data.marked) agg.marked.push(...(data.marked || []))
+        agg.skipped.push(...(data.skipped || []))
+      } catch (e) {
+        err = e
+        throw e
+      } finally {
+        done += chunk.length
+        batchProgress.value = { done, total: ids.length }
+      }
+    }
+  } catch (e) {
+    // rethrow setelah progress final — caller pakai agg parsial utk toast
+  }
+  return { agg, total: ids.length, err }
 }
 
 async function batchResolveSelected() {
@@ -776,12 +829,12 @@ async function batchResolveSelected() {
   })
   if (!ok) return
   batchBusy.value = true
+  batchProgress.value = { done: 0, total: ids.length }
   try {
-    const data = await chats.batchResolve(ids)
-    const n = (data.resolved || []).length
-    const skipped = data.skipped || []
-    const m = skipped.length
-    const skipNote = m === 0 ? '' : ` — ${m} dilewati (${skipped[0]?.reason === 'not_allowed' ? 'chat agent lain' : skipped[0]?.reason || 'tidak bisa'})`
+    const { agg } = await runBatchChunked((chunk) => chats.batchResolve(chunk), 'resolve')
+    const n = agg.resolved.length
+    const m = agg.skipped.length
+    const skipNote = m === 0 ? '' : ` — ${m} dilewati (${agg.skipped[0]?.reason === 'not_allowed' ? 'chat agent lain' : agg.skipped[0]?.reason || 'tidak bisa'})`
     toastStore.show({ icon: '✓', title: 'Batch resolve', message: `${n} chat resolved${skipNote}` })
     await fetchChatsWithFilters()
     exitSelectionMode()
@@ -789,6 +842,7 @@ async function batchResolveSelected() {
     toastStore.show({ icon: '⚠️', title: 'Batch resolve gagal', message: e.response?.data?.error || e.message })
   } finally {
     batchBusy.value = false
+    batchProgress.value = { done: 0, total: 0 }
   }
 }
 
@@ -796,10 +850,11 @@ async function batchMarkReadSelected() {
   const ids = [...selectedIds.value]
   if (!ids.length || batchBusy.value) return
   batchBusy.value = true
+  batchProgress.value = { done: 0, total: ids.length }
   try {
-    const data = await chats.batchMarkRead(ids)
-    const n = (data.marked || []).length
-    const m = (data.skipped || []).length
+    const { agg } = await runBatchChunked((chunk) => chats.batchMarkRead(chunk), 'read')
+    const n = agg.marked.length
+    const m = agg.skipped.length
     toastStore.show({ icon: '📖', title: 'Batch dibaca', message: m === 0 ? `${n} chat ditandai dibaca` : `${n} dibaca, ${m} dilewati` })
     await fetchChatsWithFilters()
     exitSelectionMode()
@@ -807,6 +862,7 @@ async function batchMarkReadSelected() {
     toastStore.show({ icon: '⚠️', title: 'Gagal', message: e.response?.data?.error || e.message })
   } finally {
     batchBusy.value = false
+    batchProgress.value = { done: 0, total: 0 }
   }
 }
 
@@ -920,3 +976,15 @@ function onWaStatusChanged() {
   waStatusDebounce = setTimeout(fetchWaSlots, 500)
 }
 </script>
+
+<style scoped>
+/* v4.6.16 bug #3 — transisi overlay batch */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.18s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+</style>
