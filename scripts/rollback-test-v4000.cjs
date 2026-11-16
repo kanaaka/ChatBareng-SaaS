@@ -17,7 +17,7 @@
  * Output per-step di-log; exit 0 = sukses.
  */
 const { execSync, spawn } = require('child_process')
-const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
 const DB_ROLLBACK = '/tmp/saas-v3-rollback.db'
 const DB_NEW = process.env.E2E_CBAI_DB || '/tmp/saas-v3-e2e.db' // DB dgn kolom v4 (2-lapis bonus)
 const WORKTREE_ROOT = '/tmp/saas-v3-rollback-src' // worktree = ROOT workspace (repo git)

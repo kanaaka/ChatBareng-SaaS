@@ -20,7 +20,7 @@
  *   S3 — sibling TANPA contact sendiri → move masih jalan. (D3 — regressi lama)
  *   S4 — no sibling → orphan chatId=null. (D4 — regressi)
  */
-const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 // KRITIS (lesson v4.1.x): dotenv .env berisi DATABASE_URL PROD → DATABASE_URL dipaksa
 // ke copy SETELAH dotenv — seluruh proses satu DB copy (service tidak menembak PROD).

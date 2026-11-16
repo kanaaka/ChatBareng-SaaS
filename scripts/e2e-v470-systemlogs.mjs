@@ -25,7 +25,7 @@
  * instance service yang sama persis dgn runtime server (unit-of-service di proses
  * test, DB shared); ke responsivitas server dinyatakan via /api/health.
  */
-const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5098'
 // KRITIS (lesson v4.1.x): dotenv .env berisi DATABASE_URL PROD → DATABASE_URL dipaksa
 // ke copy SETELAH dotenv — seluruh proses satu DB copy (service tidak menembak PROD).

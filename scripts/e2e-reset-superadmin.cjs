@@ -1,5 +1,5 @@
 // Reset password superadmin di DB COPY (BUKAN produksi) — biar E2E bisa login
-const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
 require(REPO + '/node_modules/dotenv').config({ path: REPO + '/.env' })
 process.env.DATABASE_URL = 'file:/tmp/saas-v3-e2e.db'
 const { PrismaClient } = require(REPO + '/node_modules/@prisma/client')

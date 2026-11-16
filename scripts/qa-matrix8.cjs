@@ -17,7 +17,7 @@
  * BEFORE tiap re-test: resetCounter(slot) null-kan Chat.lastAutoGreetDate/aiReplyCount/lastAiReplyAt.
  * Pola: scripts/e2e-v420.cjs + incoming() helper dari e2e-v3925.cjs.
  */
-const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 // v4.4.0 audit L6 — HARD GUARD: script ini mutasikan config via API. Salah set
 // E2E_BASE ke prod = kerusakan data produksi. Tolak keras bila BASE menyebut 5047.

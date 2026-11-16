@@ -2,7 +2,7 @@
  * E2E v3.9.4 — verifikasi 6 fix QA Kanaka 24 Sep
  * Jalan terhadap DB COPY di port 5099 (WA_DISABLED=1) — produksi tidak tersentuh.
  */
-const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 // Kredensial superadmin dari .env repo (HANYA untuk login di E2E server copy)
 require(REPO + '/node_modules/dotenv').config({ path: REPO + '/.env' })

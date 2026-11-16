@@ -26,7 +26,7 @@
  * N11 DELETE tag A2 (admin) → 200; GET → hilang.
  * R12 regresi: scripts/e2e-v4121.cjs terhadap copy db yang sama — 61/61 PASS (dijalankan terpisah).
  */
-const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 // KRITIS (lesson v4.1.0/v4.1.1/v4.1.2): dotenv .env berisi DATABASE_URL PROD → DATABASE_URL
 // DIPAKSA ke copy SETELAH dotenv (seluruh proses satu DB copy — service tidak menembak PROD).

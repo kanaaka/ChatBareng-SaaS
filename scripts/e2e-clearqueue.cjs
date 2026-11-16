@@ -30,7 +30,7 @@
  *  11  Regresi: take-next + single-resolve + batch-resolve tetap jalan normal
  *      (CSAT hook di jalur manual TETAP hidup — kontras dgn clear-queue yang 0 survey)
  */
-const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 // KRITIS (lesson v4.1.x / v470): .env berisi DATABASE_URL PROD (ABSOLUTE path) →
 // DATABASE_URL dipaksa ke copy SETELAH dotenv — seluruh proses satu DB copy (service

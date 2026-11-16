@@ -3,7 +3,7 @@
  * Fokus: (A) menuGatewayConfigSafe slot-aware; (B) master-off full-off;
  * (C) "Semua nomor" = expand ke row per-slot eksplisit. DB COPY, port 5099.
  */
-const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
 require(REPO + '/node_modules/dotenv').config({ path: REPO + '/.env' })
 process.env.DATABASE_URL = 'file:/tmp/saas-v3-e2e.db'
 const BASE = 'http://127.0.0.1:5099'
