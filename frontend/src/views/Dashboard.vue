@@ -1671,11 +1671,15 @@ function onChatUpdate(data) {
     if (listChat) listChat.contactName = data.contactName
   }
   // v4.6.16 bug #1 — chat tak ada di list + punya unread/status baru → refetch
-  const listHas = chats.chats.some(c => c.id === data.chatId)
+  const listChat = chats.chats.find(c => c.id === data.chatId)
+  if (listChat && data.unreadCount !== undefined) listChat.unreadCount = data.unreadCount
+  const listHas = Boolean(listChat)
   const nowMs = Date.now()
-  if (data.chatId != null && !listHas && nowMs - _hiddenLiftFetchLast > 8000) {
+  const relevant = data.status !== 'resolved' && (data.unreadCount !== undefined || data.hiddenInboundLift)
+  if (data.chatId != null && !listHas && relevant && nowMs - _hiddenLiftFetchLast > 8000) {
     _hiddenLiftFetchLast = nowMs
-    if (typeof fetchChatsWithFilters === 'function') fetchChatsWithFilters().catch(() => {})
+    // audit Gemini r1 [HIGH]: scope Dashboard TIDAK punya fetchChatsWithFilters
+    chats.fetchChats(chats.filterParams).catch(() => {})
   }
   if (currentChat.value && data.chatId === currentChat.value.id) {
     if (data.unreadCount !== undefined) currentChat.value.unreadCount = data.unreadCount

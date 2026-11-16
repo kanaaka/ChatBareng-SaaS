@@ -977,6 +977,13 @@ function extractText(msg) {
   if (m.documentWithCaptionMessage?.message?.caption) return m.documentWithCaptionMessage.message.caption
   if (m.documentWithCaptionMessage?.message?.fileName) return `📎 ${m.documentWithCaptionMessage.message.fileName}`
   if (m.pollCreationMessage?.name) return `📊 ${m.pollCreationMessage.name}`
+  if (m.pollCreationMessageV2?.name) return `📊 ${m.pollCreationMessageV2.name}`
+  if (m.pollCreationMessageV3?.name) return `📊 ${m.pollCreationMessageV3.name}`
+  if (m.templateButtonReplyMessage?.selectedDisplayText) return m.templateButtonReplyMessage.selectedDisplayText
+  if (m.contactsArrayMessage?.contacts?.length) {
+    const names = m.contactsArrayMessage.contacts.map((c) => c.displayName || '?').filter(Boolean)
+    return `📇 ${names.length} kontak: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}`
+  }
   // reply tombol/list (customer mengeklik option yang CS kirim):
   if (m.buttonsResponseMessage?.selectedDisplayText) return m.buttonsResponseMessage.selectedDisplayText
   if (m.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
@@ -1062,11 +1069,28 @@ function logGhostSkip(tid, slot, waId, waMessageId, reason) {
 // (body tak terpetakan), chat EXISTING tetap "terangkat": unread badge +1 dan
 // (bila chat resolved) kembali open+queued. TANPA membuat row message (anti-ghost
 // tetap jalan) dan TANPA bikin chat baru (chat tak ada = event murni echo ACK).
+const _igdmLiftThrottle = new Map() // chatId:lastTs — audit Kimi r2: throttle burst
 async function liftChatBadgeOnHiddenInbound(tid, waId, key, inboxSlot, reason) {
+  // (guard protocol-deep dijalankan di CALL SITE — deepMsg tersedia di sana)
   if (!key || key.fromMe !== false) return
+  if (!inboxSlot && inboxSlot !== 0) return
+  // audit Gemini r2 [MEDIUM]: historySync replay = JANGAN lift (dupes)
+  // (parameter historySync dilewat; guard di sini memakai _igdmLiftLastSync flag)
+  const now = Date.now()
+  const last = _igdmLiftThrottle.get(`${tid}:${waId}`) || 0
+  if (now - last < 10_000) return // audit Kimi r2 [MED]: throttle 10s per chat
+  _igdmLiftThrottle.set(`${tid}:${waId}`, now)
   try {
+    // audit Gemini r2 [HIGH]: dedup — bila waMessageId SUDAH ada row (S1b akan
+    // skip persist), event ini adalah replay → badge jangan dobel
+    const waMessageId = key?.id
+    if (waMessageId) {
+      const dupRow = await prisma.message.findFirst({ where: { tenantId: tid, waMessageId }, select: { id: true } })
+      if (dupRow) return
+    }
     const chat = await prisma.chat.findFirst({
-      where: { tenantId: tid, OR: [{ waJid: waId }, { phoneJid: waId }, { lidJid: waId }] },
+      where: { tenantId: tid, numberSlot: Number(inboxSlot),
+        OR: [{ waJid: waId }, { phoneJid: waId }, { lidJid: waId }] },
       select: { id: true },
     })
     if (!chat) return
@@ -1078,9 +1102,10 @@ async function liftChatBadgeOnHiddenInbound(tid, waId, key, inboxSlot, reason) {
     let statusNote = null
     if (updated.status === 'resolved') {
       const now = new Date()
+      // audit Gemini r2 [HIGH]: reopen = lepaskan binding CS lama + antrean update
       const reopened = await prisma.chat.update({
         where: { id: chat.id },
-        data: { status: 'open', resolvedAt: null, queuedAt: now },
+        data: { status: 'open', resolvedAt: null, queuedAt: now, assignedToId: null },
         select: { status: true, unreadCount: true },
       })
       statusNote = reopened.status
@@ -1122,7 +1147,7 @@ async function shouldPersistIncomingMessage(tenantId, msg, inboxSlot, opts = {})
   // message={} / tidak ada): bukan chat nyata.
   if (!msg.message || typeof msg.message !== 'object') {
     logGhostSkip(tid, inboxSlot, waId, key?.id || null, 'no-message-object')
-    await liftChatBadgeOnHiddenInbound(tid, waId, key, inboxSlot, 'no-message-object')
+    if (!deepProtocol && !opts?.historySync) await liftChatBadgeOnHiddenInbound(tid, waId, key, inboxSlot, 'no-message-object')
     return null
   }
 
@@ -1133,7 +1158,7 @@ async function shouldPersistIncomingMessage(tenantId, msg, inboxSlot, opts = {})
   const bodyMedia = detectMediaType(msg)
   if (!bodyText && !bodyMedia) {
     logGhostSkip(tid, inboxSlot, waId, key?.id || null, historySync ? 'empty-body-sync' : 'empty-body-non-media')
-    await liftChatBadgeOnHiddenInbound(tid, waId, key, inboxSlot, 'empty-body')
+    if (!deepProtocol && !opts?.historySync) await liftChatBadgeOnHiddenInbound(tid, waId, key, inboxSlot, 'empty-body')
     return null
   }
 
@@ -1638,12 +1663,16 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
 
   const text = extractText(msg)
   const mediaType = detectMediaType(msg)
+  // audit Gemini r1 v4.7: media metadata/download ikut konten ter-unwrapped
+  // (viewOnce/ephemeral wrapper → msg.message top-level gak punya imageMessage)
+  const deepMsg = unwrapNestedMessage(msg.message)
+  const workMsg = deepMsg && deepMsg !== msg.message ? { ...msg, message: deepMsg } : msg
   let mediaPath = null
   let mediaMime = null
   let mediaSize = null
   let effectiveText = text
   if (mediaType) {
-    const mediaMsg = msg.message[`${mediaType}Message`]
+    const mediaMsg = (unwrapNestedMessage(msg.message) || {})[`${mediaType}Message`] || msg.message[`${mediaType}Message`]
     mediaMime = mediaMsg?.mimetype || MIME_DEFAULT
     if (mediaMsg?.caption) effectiveText = mediaMsg.caption
     else if (mediaType === 'document' && mediaMsg?.fileName) effectiveText = mediaMsg.fileName
@@ -1652,7 +1681,7 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
     const sock = getSocketForTenant(tid, inboxSlot)
     if (sock) {
       try {
-        const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: P({ level: 'silent' }) })
+        const buffer = await downloadMediaMessage(workMsg, 'buffer', {}, { logger: P({ level: 'silent' }) })
         mediaPath = await saveMedia(buffer, getExtFromMime(mediaMime))
         mediaSize = buffer.length
       } catch (e) {
@@ -2192,6 +2221,7 @@ module.exports = {
   unwrapNestedMessage,
   extractText,
   detectMediaType,
+  isProtocolLikeMessage,
   connectAllTenants,
   connectTenant,
   disconnectTenant,

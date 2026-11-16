@@ -789,21 +789,33 @@ function enterSelectionModeFromMenu() {
 // v4.6.16 bug #3 — batch dipecah ke slice BATCH_CHUNK (100/call) supaya progress
 // tampil; server emit chat_update per item membuat list "kelip kelip" → overlay
 // layer transparan menutupinya selama proses.
-async function runBatchChunked(fnCall, label) {
+// audit Kimi r2 [MED]: chunk gagal → hasil parsial tetap dilaporkan (jangan dibuang)
+async function runBatchChunked(fnCall) {
   const ids = [...selectedIds.value]
   let done = 0
+  let err = null
   const agg = { resolved: [], marked: [], skipped: [] }
-  for (let i = 0; i < ids.length; i += BATCH_CHUNK) {
-    const chunk = ids.slice(i, i + BATCH_CHUNK)
-    batchProgress.value = { done, total: ids.length }
-    const data = await fnCall(chunk)
-    if (data.resolved) agg.resolved.push(...(data.resolved || []))
-    if (data.marked) agg.marked.push(...(data.marked || []))
-    agg.skipped.push(...(data.skipped || []))
-    done += chunk.length
-    batchProgress.value = { done, total: ids.length }
+  try {
+    for (let i = 0; i < ids.length; i += BATCH_CHUNK) {
+      const chunk = ids.slice(i, i + BATCH_CHUNK)
+      batchProgress.value = { done, total: ids.length }
+      try {
+        const data = await fnCall(chunk)
+        if (data.resolved) agg.resolved.push(...(data.resolved || []))
+        if (data.marked) agg.marked.push(...(data.marked || []))
+        agg.skipped.push(...(data.skipped || []))
+      } catch (e) {
+        err = e
+        throw e
+      } finally {
+        done += chunk.length
+        batchProgress.value = { done, total: ids.length }
+      }
+    }
+  } catch (e) {
+    // rethrow setelah progress final — caller pakai agg parsial utk toast
   }
-  return { agg, total: ids.length, label }
+  return { agg, total: ids.length, err }
 }
 
 async function batchResolveSelected() {

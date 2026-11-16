@@ -39,16 +39,22 @@ const CASES = [
   ['list reply', { message: { interactiveResponseMessage: { nativeFlowResponseMessage: { paramsJson: JSON.stringify({ selectedDisplayText: 'Pilih Paket B' }) } } } }, 'Pilih Paket B', null],
   ['documentWithCaption', { message: { documentWithCaptionMessage: { message: { fileName: 'harga.pdf', caption: 'daftar harga' } } } }, 'daftar harga', 'document'],
   ['sticker', { message: { stickerMessage: { url: 'x' } } }, null, 'sticker'],
-  ['protocol via viewOnce', null, null, null], // dijawab di bawah via unwrap protocol
+  ['protocol via viewOnce', { message: { viewOnceMessage: { message: { protocolMessage: { type: 'REVOKE' } } } } }, null, null],
+  ['contact tanpa displayName', { message: { contactMessage: {} } }, null, null],
+  ['location coords only', { message: { locationMessage: { degreesLatitude: -6.2, degreesLongitude: 106.8 } } }, '📍 -6.2,106.8', null],
+  ['docWithCaption kosong', { message: { documentWithCaptionMessage: { message: {} } } }, null, 'document'],
+  ['contactsArrayMessage', { message: { contactsArrayMessage: { contacts: [{ displayName: 'A' }, { displayName: 'B' }, { displayName: 'C' }, { displayName: 'D' }] } } }, '📇 4 kontak: A, B, C…', null],
+  ['pollV2', { message: { pollCreationMessageV2: { name: 'Polling v2' } } }, '📊 Polling v2', null],
+  ['templateButtonReply', { message: { templateButtonReplyMessage: { selectedDisplayText: 'Terkirim' } } }, 'Terkirim', null],
 ]
 let pass = 0
 for (const [name, msg, wantT, wantM] of CASES) {
-  if (name === 'protocol via viewOnce') {
-    const m = { viewOnceMessage: { message: { protocolMessage: { type: 'REVOKE' } } } }
-    assert.strictEqual(pool.isProtocolLikeMessage ? false : false, false)
-    // isProtocolLikeMessage tidak diekspor — cek via extract/detect null + tidak throw
-    assert.strictEqual(extractText({ message: m }), null)
-    console.log('  ✓ protocol via viewOnce (tidak terpetakan — tetap di-skip sbg protocol oleh gate)')
+  if (name.startsWith('protocol via viewOnce')) {
+    // audit Kimi r2 [LOW]: assert EKSPRESIKAN — gate menangkap protocol terbungkus
+    const deep = unwrapNestedMessage(msg.message)
+    assert.strictEqual(pool.isProtocolLikeMessage({ message: deep }), true, 'gate harus nangkap protocol terbungkus')
+    assert.strictEqual(extractText(msg), wantT)
+    console.log('  ✓ protocol via viewOnce → gate menangkap (skip, bukan lift)')
     pass++
     continue
   }
@@ -59,5 +65,5 @@ for (const [name, msg, wantT, wantM] of CASES) {
   console.log(`  ✓ ${name} → text=${JSON.stringify(t)} media=${JSON.stringify(d)}`)
   pass++
 }
-console.log(`UNIT PASS ✓ — ${pass}/${CASES.length} kasus`)
+console.log(`UNIT PASS ✓ — ${pass}/${CASES.length} kasus (hardened)`)
 process.exit(0)
