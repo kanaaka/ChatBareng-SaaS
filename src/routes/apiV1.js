@@ -695,7 +695,7 @@ router.get('/numbers', requireApiKey, requireScope('choose_slot'), async (req, r
   try {
     const tid = req.tenantId
     let rows = []
-    try { rows = (await wa.listTenantNumbers(tid)) || [] } catch (e) { rows = [] }
+    try { rows = (await wa.listTenantNumbers(tid)) || [] } catch (e) { console.error('[APIv1] GET /numbers listTenantNumbers error (fallback slot sintetis):', e.message); rows = [] }
     const seen = new Set()
     const numbers = []
     const push = (slot, label, synthetic) => {
@@ -707,7 +707,9 @@ router.get('/numbers', requireApiKey, requireScope('choose_slot'), async (req, r
         label: label || null,
         phoneNumber: st.phoneNumber || null,
         connected: !!st.connected,
-        status: st.status || null,
+        // audit Kimi/Gemini 2026-11-16: kontrak pool.getStatusForTenant → `state`
+        // (bukan `status`) — fallback st.status utk kompatibilitas aman.
+        status: st.state || st.status || null,
         _synthetic: !!synthetic,
       })
     }
