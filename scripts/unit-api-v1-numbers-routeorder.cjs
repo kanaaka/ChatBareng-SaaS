@@ -47,8 +47,13 @@ const stubs = new Map([
   }],
   [path.join(ROOT, 'src/socket/broadcast.js'), { emitToTenant: () => {} }],
   [path.join(ROOT, 'src/services/apiKeys.js'), {
-    // key stub: scopes choose_slot + send, plan gate OFF, rate OK
-    verify: async () => ({ apiKey: { id: 1, tenantId: 1, scopes: 'choose_slot,send', planGated: false } }),
+    // key stub utama: scopes choose_slot + send, plan gate OFF, rate OK.
+    // audit Gemini r1: key TANPA choose_slot (scope lain ada) → 403 SCOPE_MISSING
+    // harus ditgetest juga (bukan 200 diam-diam).
+    verify: async (raw) => {
+      const scopes = String(raw || '').startsWith('cbk_live_noslot') ? 'send' : 'choose_slot,send'
+      return { apiKey: { id: 1, tenantId: 1, scopes, planGated: false } }
+    },
     markUsed: () => {},
     checkRate: () => ({ allowed: true, retryAfter: 60 }),
     sha256Hex: (s) => s,
@@ -135,7 +140,13 @@ const AUTH = { Authorization: 'Bearer ' + KEY }
     assert.strictEqual(c.json.code, 'NOT_FOUND', 'C: code = NOT_FOUND')
     console.log('  [C ] GET /api/v1/bukan-endpoint + key → 404 ' + JSON.stringify(c.json) + ' ✓ (catch-all tetap berlaku)')
 
-    console.log('UNIT PASS ✓ — 4/4 asersi lolos (urutan registrasi + 3 kontrak endpoint)')
+    // D. key valid TANPA scope choose_slot → 403 SCOPE_MISSING (gate per-endpoint)
+    const d = await got('/api/v1/numbers', { Authorization: 'Bearer cbk_live_noslotxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' })
+    assert.strictEqual(d.status, 403, 'D: key tanpa choose_slot harus 403 (dapat ' + d.status + ')')
+    assert.strictEqual(d.json.code, 'SCOPE_MISSING', 'D: code = SCOPE_MISSING (dapat ' + JSON.stringify(d.json) + ')')
+    console.log('  [D ] GET /numbers + key tanpa choose_slot → 403 ' + JSON.stringify(d.json) + ' ✓ (scope gate per-endpoint)')
+
+    console.log('UNIT PASS ✓ — 5/5 asersi lolos (urutan registrasi + kontrak endpoint + scope gate + field kontrak pool)')
     process.exit(0)
   } catch (e) {
     console.error('UNIT FAIL ✗ —', e.message)
