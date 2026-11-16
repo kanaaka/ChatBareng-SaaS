@@ -11,7 +11,7 @@ const config = require('../config')
 const { encrypt, decrypt } = require('../utils/crypto')
 
 // v3.9.12 — path media PORTABEL (paket hosting, lapor Kanaka 24 Sep): DB lama
-// nyimpan path ABSOLUT dari host dev (/home/kanakxxx/...) yang mati di server
+// nyimpan path ABSOLUT dari host dev (/home/kanaka/...) yang mati di server
 // lain; DB baru nyimpan RELATIF (basename di mediaDir). Helper ini menyatukan
 // keduanya: absolut → pakai apa adanya bila file ada; kalau gak ada (host lain)
 // → fallback ke mediaDir sekarang by basename; relatif → mediaDir sekarang.

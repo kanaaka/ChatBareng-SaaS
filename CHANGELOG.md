@@ -4276,3 +4276,11 @@ All notable changes to this project will be documented in this file.
 - MEDIUM-1: proteksi 409 link-all — aktifkan menu "Semua nomor" saat shared AR teks aktif → 409.
 - MEDIUM-2: guard save-tanpa-centangan MenuGateway (frontend toast + backend 400 array kosong).
 - LOW-2 (XFF spoof smoke-test) = follow-up ops, tidak mengubah kode.
+
+## v4.6.15 (2026-11-16) — API v1.2 additive: GET /api/v1/numbers
+- **Endpoint baru `GET /api/v1/numbers` (scope `choose_slot`):** daftar nomor WA per slot (0..2) — `{numbers:[{slot,label,phoneNumber,connected,status}]}`, slot tanpa baris TenantNumber disertakan sintetis. Tujuan: integrasi eksternal (KolSaaS dkk.) bisa menampilkan nomor/label informatif di dropdown slot, bukan "0/1/2" abstrak (feedback Kanaka 2026-11-16).
+- Zero touch ke endpoint/route lama; additive only. Frontend/backend lama tidak berubah.
+- KolSaaS side (commit terpisah): fallback label manual per slot di Settings → ChatBareng bila CB versi lama (404 → label manual → "Slot N").
+- **FIX route-order (patched in-place, sebelum deploy produksi):** regristrasi `GET /numbers` SEBELUM catch-all 404 `router.use` — sebelumnya blok route ditempatkan SETELAH catch-all → Express shadow → semua request /numbers selalu 404 NOT_FOUND (self-test stub 3-kondisi PASS: 200 numbers / 401 no-key / 404 unknown).
+- **v4.6.15c (audit follow-up, 2026-11-16 14:2x):** dua review independen (Kimi K3.1 Pro + Gemini 4 Argon, GO-WITH-NOTES keduanya, temuan MEDIUM konvergen) → field `status` pada GET /api/v1/numbers kini dari `st.state` (kontrak pool.getStatusForTenant; sebelumnya selalu null); unit test + kasus D (403 SCOPE_MISSING), stub mengikuti kontrak asli, anchor route-order pakai token kode, error log pada fallback. LIVE di prod 14:4x: slot-0 6281133328880 (Klinik Laboratorium Parahita) & slot-1 6281133326888 (Parahita Diagnostic 26888) connected.
+- **v4.6.15c-UX (KolSaaS side, repo kanaaka/kolsaas 99c06c8):** dropdown "Default Slot Nomor" di Settings juga informatif (live numbers → label manual → "Slot N").

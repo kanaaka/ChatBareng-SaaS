@@ -25,7 +25,7 @@
  *   && PORT=5099 DATABASE_URL=file:/tmp/saas-v3-e2e.db WA_DISABLED=1 node src/server.js &
  *   node scripts/e2e-reset-superadmin.cjs && node scripts/e2e-v3925.cjs
  */
-const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 require(REPO + '/node_modules/dotenv').config({ path: REPO + '/.env' })
 const { PrismaClient } = require(REPO + '/node_modules/@prisma/client')

@@ -6,7 +6,7 @@
  * Skenario (spec §9): key lifecycle create→use→scope-deny→plan-gate→revoke→401
  * + tenant isolation (404/empty BUKAN 403 bocor) + rate limit 429 + health public.
  */
-const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 require(REPO + '/node_modules/dotenv').config({ path: REPO + '/.env' })
 const { PrismaClient } = require(REPO + '/node_modules/@prisma/client')
