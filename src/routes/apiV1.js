@@ -685,11 +685,6 @@ router.get('/chats', requireApiKey, requireScope('read'), async (req, res) => {
   }
 })
 
-// Semua method/paths lain di bawah /api/v1 = 404 JSON konsisten (bukan HTML error)
-router.use((req, res) => {
-  res.status(404).json({ error: 'Endpoint tidak ditemukan', code: 'NOT_FOUND' })
-})
-
 // ─── GET /api/v1/numbers (scope choose_slot) — v1.2 additive ───
 // Daftar nomor WA tenant per slot (0..2) — buat integrasi eksternal (KolSaaS
 // dkk.) menampilkan label/nomor informatif di dropdown slot, bukan "0/1/2".
@@ -724,6 +719,11 @@ router.get('/numbers', requireApiKey, requireScope('choose_slot'), async (req, r
     console.error('[APIv1] GET /numbers error:', e)
     return res.status(500).json({ error: 'Internal server error', code: 'INTERNAL' })
   }
+})
+
+// Semua method/paths lain di bawah /api/v1 = 404 JSON konsisten (bukan HTML error)
+router.use((req, res) => {
+  res.status(404).json({ error: 'Endpoint tidak ditemukan', code: 'NOT_FOUND' })
 })
 
 module.exports = { router, requireApiKey, requireScope }
