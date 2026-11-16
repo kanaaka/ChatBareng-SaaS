@@ -1657,12 +1657,25 @@ function scheduleAssignedToListSync() {
   }, 300)
 }
 
+// v4.6.16 bug #1 (kasus NURHIDAYAH@tenant-10 2026-11-16) — chat_update utk chat
+// yang TIDAK ada di list (window take-500 / filter) → refetch list throttled (1x/8s)
+// supaya chat tak lagi "tersembunyi" di balik window/filter — batch action tak perlu
+// dipakai sbg "alat cari" chat yang hilang.
+let _hiddenLiftFetchLast = 0
+
 function onChatUpdate(data) {
   // v0.14.6 — nama kontak manual di-sync server (PUT /api/contacts) → update
   // baris chatlist realtime (edit dari halaman Kontak / sesi user lain)
   if (data.contactName !== undefined) {
     const listChat = chats.chats.find(c => c.id === data.chatId)
     if (listChat) listChat.contactName = data.contactName
+  }
+  // v4.6.16 bug #1 — chat tak ada di list + punya unread/status baru → refetch
+  const listHas = chats.chats.some(c => c.id === data.chatId)
+  const nowMs = Date.now()
+  if (data.chatId != null && !listHas && nowMs - _hiddenLiftFetchLast > 8000) {
+    _hiddenLiftFetchLast = nowMs
+    if (typeof fetchChatsWithFilters === 'function') fetchChatsWithFilters().catch(() => {})
   }
   if (currentChat.value && data.chatId === currentChat.value.id) {
     if (data.unreadCount !== undefined) currentChat.value.unreadCount = data.unreadCount

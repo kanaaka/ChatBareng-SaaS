@@ -39,7 +39,7 @@ const rt = [requireAuth, requireTenant]
 //     lebih baru tetap/di atas, jika kalah turun. TIDAK ada zona, TIDAK ada flag.
 // TIDAK ada orderBy COALESCE/MAX di Prisma+SQLite → sort in-memory di handler
 // list 'mine' (di bawah). Helper di sini: kunci sort + urutan deterministik.
-const TAKE_LIMIT = 100
+const TAKE_LIMIT = 500  // v4.6.16 — 100→500 (bug #2: select-all cuma 100, lapor Kanaka 2026-11-16)
 function activitySortKey(c) {
   const ts = [
     c.lastMessageAt,
@@ -889,7 +889,7 @@ router.post('/take-next', ...rt, async (req, res) => {
 //   batch-read     ↔ POST /:id/read     (canAccessChat; receipts idempoten).
 // Loop server-side; broadcast per item + SATU emitQueueUpdate di akhir resolve.
 // Return jujur: { resolved|marked: [id], skipped: [{chatId, reason}] }.
-const BATCH_MAX_IDS = 100
+const BATCH_MAX_IDS = 500  // v4.6.16 — 100→500 (paralel dgn TAKE_LIMIT)
 function validBatchIds(raw) {
   return Array.isArray(raw) && raw.length > 0 && raw.length <= BATCH_MAX_IDS && raw.every(n => Number.isInteger(n)) ? [...new Set(raw)] : null
 }
