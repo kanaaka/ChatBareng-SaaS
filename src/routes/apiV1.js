@@ -690,4 +690,40 @@ router.use((req, res) => {
   res.status(404).json({ error: 'Endpoint tidak ditemukan', code: 'NOT_FOUND' })
 })
 
+// ─── GET /api/v1/numbers (scope choose_slot) — v1.2 additive ───
+// Daftar nomor WA tenant per slot (0..2) — buat integrasi eksternal (KolSaaS
+// dkk.) menampilkan label/nomor informatif di dropdown slot, bukan "0/1/2".
+// Response: { numbers: [{slot, label, phoneNumber, connected, status}] }
+// phoneNumber berasal dari sesi Baileys live (kosong/null bila belum konek);
+// label = TenantNumber.label bebas dari admin CB.
+router.get('/numbers', requireApiKey, requireScope('choose_slot'), async (req, res) => {
+  try {
+    const tid = req.tenantId
+    let rows = []
+    try { rows = (await wa.listTenantNumbers(tid)) || [] } catch (e) { rows = [] }
+    const seen = new Set()
+    const numbers = []
+    const push = (slot, label, synthetic) => {
+      if (seen.has(slot)) return
+      seen.add(slot)
+      const st = wa.getStatusForTenant(tid, slot) || {}
+      numbers.push({
+        slot,
+        label: label || null,
+        phoneNumber: st.phoneNumber || null,
+        connected: !!st.connected,
+        status: st.status || null,
+        _synthetic: !!synthetic,
+      })
+    }
+    for (const n of rows) push(Number(n.slot) || 0, n.label || null, !!n._synthetic)
+    for (const s of [0, 1, 2]) push(s, null, true) // slot tanpa baris → sintetis
+    numbers.sort((a, b) => a.slot - b.slot)
+    return res.status(200).json({ numbers })
+  } catch (e) {
+    console.error('[APIv1] GET /numbers error:', e)
+    return res.status(500).json({ error: 'Internal server error', code: 'INTERNAL' })
+  }
+})
+
 module.exports = { router, requireApiKey, requireScope }
