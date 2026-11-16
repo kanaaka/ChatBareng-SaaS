@@ -4276,3 +4276,8 @@ All notable changes to this project will be documented in this file.
 - MEDIUM-1: proteksi 409 link-all — aktifkan menu "Semua nomor" saat shared AR teks aktif → 409.
 - MEDIUM-2: guard save-tanpa-centangan MenuGateway (frontend toast + backend 400 array kosong).
 - LOW-2 (XFF spoof smoke-test) = follow-up ops, tidak mengubah kode.
+
+## v4.6.15 (2026-11-16) — API v1.2 additive: GET /api/v1/numbers
+- **Endpoint baru `GET /api/v1/numbers` (scope `choose_slot`):** daftar nomor WA per slot (0..2) — `{numbers:[{slot,label,phoneNumber,connected,status}]}`, slot tanpa baris TenantNumber disertakan sintetis. Tujuan: integrasi eksternal (KolSaaS dkk.) menampilkan nomor/label informatif di dropdown slot, bukan "0/1/2" abstrak (feedback Kanaka 2026-11-16).
+- Zero touch ke endpoint/route lama; additive only.
+- KolSaaS side (commit terpisah): fallback label manual per slot bila CB versi lama (404 → label manual → "Slot N").
