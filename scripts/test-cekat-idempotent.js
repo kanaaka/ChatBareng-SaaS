@@ -15,7 +15,7 @@ const { runHistoryImport, dedupKey } = require('../src/services/historyImport')
 const fs = require('fs')
 
 const SRC =
-  '/home/kanaka/.openclaw/workspace/media/inbound/openclaw-staged-3ba36d68-e701-434a-b29f-0222dd90ccd0/conversations_export_1789961471429---ac120c8e-a649-4224-bde6-084e1346b4b2.csv'
+  '/home/kanakxxx/.openclaw/workspace/media/inbound/openclaw-staged-3ba36d68-e701-434a-b29f-0222dd90ccd0/conversations_export_1789961471429---ac120c8e-a649-4224-bde6-084e1346b4b2.csv'
 
 const rows = parseCekatCsv(fs.readFileSync(SRC))
 const users = [

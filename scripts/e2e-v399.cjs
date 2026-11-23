@@ -8,7 +8,7 @@
  * Isolasi per-slot (slot lain gak ke-release) sudah tercover e2e-v394 T9 — tidak
  * diulang di sini (chat kontrol bisa ke-release oleh sync jalur lain → flaky).
  */
-const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 const LOG = '/tmp/saas_v3_e2e.log'
 require(REPO + '/node_modules/dotenv').config({ path: REPO + '/.env' })

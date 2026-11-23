@@ -30,7 +30,7 @@
  *  8  Regresi: take-FIFO (queue habis) + AR invariant (firstResponseAt hanya
  *     via reply manual) + search-all + analytics
  */
-const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 // KRITIS (lesson v4.1.x / v470): .env berisi DATABASE_URL PROD (ABSOLUTE path) →
 // DATABASE_URL dipaksa ke copy SETELAH dotenv — seluruh proses satu DB copy (service

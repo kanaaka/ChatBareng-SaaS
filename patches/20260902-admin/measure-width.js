@@ -1,8 +1,8 @@
 // v0.3.3 diagnosis — ukur empiris lebar card Templates vs Users di mobile viewport
 // Connect ke Chrome 18801 (CDP), login via JWT langsung, ukur geometry DOM beneran.
-const { chromium } = require('/home/kanaka/.openclaw/workspace/node_modules/playwright');
-const jwt = require('/home/kanaka/.openclaw/workspace/wa-cs-hub/node_modules/jsonwebtoken');
-const config = require('/home/kanaka/.openclaw/workspace/wa-cs-hub/src/config');
+const { chromium } = require('/home/kanakxxx/.openclaw/workspace/node_modules/playwright');
+const jwt = require('/home/kanakxxx/.openclaw/workspace/wa-cs-hub/node_modules/jsonwebtoken');
+const config = require('/home/kanakxxx/.openclaw/workspace/wa-cs-hub/src/config');
 
 (async () => {
   const token = jwt.sign({ id: 1, username: 'admin', role: 'admin' }, config.jwtSecret, { expiresIn: '10m' });

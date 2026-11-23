@@ -7,7 +7,7 @@
  * guard 400 (cross-chat/cross-tenant/purged/failed target), media+replyTo → 400,
  * extractQuote unit (media-quote included), read payload shape.
  */
-const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 require(REPO + '/node_modules/dotenv').config({ path: REPO + '/.env' })
 const { PrismaClient } = require(REPO + '/node_modules/@prisma/client')

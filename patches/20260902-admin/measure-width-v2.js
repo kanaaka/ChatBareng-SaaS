@@ -1,9 +1,9 @@
 // v0.3.3 diagnosis — ukur empiris lebar card Templates vs Users (mobile viewport)
 // Perbaikan v2: domcontentloaded+timeout (bukan networkidle — socket.io bikin hang),
 // cache dinonaktifkan via CDP, satu sesi untuk kedua halaman.
-const { chromium } = require('/home/kanaka/.openclaw/workspace/node_modules/playwright');
-const jwt = require('/home/kanaka/.openclaw/workspace/wa-cs-hub/node_modules/jsonwebtoken');
-const config = require('/home/kanaka/.openclaw/workspace/wa-cs-hub/src/config');
+const { chromium } = require('/home/kanakxxx/.openclaw/workspace/node_modules/playwright');
+const jwt = require('/home/kanakxxx/.openclaw/workspace/wa-cs-hub/node_modules/jsonwebtoken');
+const config = require('/home/kanakxxx/.openclaw/workspace/wa-cs-hub/src/config');
 
 (async () => {
   const token = jwt.sign({ id: 1, username: 'admin', role: 'admin' }, config.jwtSecret, { expiresIn: '10m' });

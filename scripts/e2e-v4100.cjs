@@ -34,7 +34,7 @@
  *        E2E_OK_SEND=1 E2E_DEBUG_INBOUND=1 node src/server.js &
  *   node scripts/e2e-reset-superadmin.cjs && set -a && . ./.env && set +a && node scripts/e2e-v4100.cjs
  */
-const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 // KRITIS (lesson E2E v4100): dotenv .env berisi DATABASE_URL PROD → service di bawah
 // (src/services/channelArchive.js → src/prisma.js) membaca process.env — kalaupun

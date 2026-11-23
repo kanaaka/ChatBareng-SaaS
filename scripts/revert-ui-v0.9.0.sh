@@ -21,10 +21,10 @@
 
 set -euo pipefail
 
-HUB="/home/kanaka/.openclaw/workspace/wa-cs-hub"
+HUB="/home/kanakxxx/.openclaw/workspace/wa-cs-hub"
 TAG="pre-v0.9.0-ui-revamp"
 SNAP="$HUB/backup/pre-v0.9.0-ui"
-REPO="/home/kanaka/.openclaw/workspace"   # git root workspace (hub adalah subfolder)
+REPO="/home/kanakxxx/.openclaw/workspace"   # git root workspace (hub adalah subfolder)
 
 MODE="${1:-}"
 [ "$MODE" = "--check" ] || [ "$MODE" = "--run" ] || {

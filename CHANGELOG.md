@@ -1,3 +1,62 @@
+# v4.6.17 — MediaViewer: Tombol Rotate 90° (siklus, tampilan saja) — 2026-11-23
+
+**Latar:** Admin CS melaporkan "tombol rotate di preview gambar tidak berfungsi".
+Setelah ditelusuri: fitur rotate **belum pernah ada** — `MediaViewer.vue` hanya punya
+zoom in/out, reset, wheel-zoom, drag-pan, dblclick, download, Esc. Request Kanaka
+2026-11-23 10:52: tampilan saja, siklus 90°.
+
+1. **Tombol rotate baru** (`frontend/src/components/MediaViewer.vue`):
+   - Siklus `0° → 90° → 180° → 270° → 0°`, satu tombol di toolbar (sebelum reset).
+   - Ikon lingkaran-panah; tombol diberi highlight `bg-white/30` selama rotasi ≠ 0.
+   - Shortcut keyboard `R` / `r`.
+   - `rotation` masuk ke `imgStyle` sebagai `... scale(s) rotate(Ndeg)`.
+
+2. **Reset kini mereset rotasi juga** (`reset()`): tombol reset dan tombol `0`
+   mengembalikan zoom DAN rotasi ke keadaan awal.
+
+3. **Pan di-reset tiap rotasi** — rotasi 90°/270° menukar sumbu gambar; mempertahankan
+   `tx`/`ty` lama membuat gambar tampak "melompat" keluar viewport.
+
+4. **Clamp pan memakai dimensi efektif** (`onPointerMove`): saat rotasi ganjil (90°/270°),
+   `offsetWidth`/`offsetHeight` ditukar. Sebelumnya clamp memakai dimensi layout apa adanya,
+   sehingga pada gambar terotasi batas geser jadi salah.
+
+5. **`zoomAt` DIPERBAIKI (temuan audit mandiri, bukan sekadar kompatibel)** —
+   versi lama mendeduksi layout box lewat `rect.width / S`. Itu hanya valid pada rotasi
+   0°; pada 90°/270° `getBoundingClientRect()` sudah tertukar (lebar bounding = tinggi
+   layout) dan pada 180° sumbu ikut terbalik, sehingga titik di bawah kursor BERGESER
+   saat zoom. Terukur pada simulasi transform: error **403–806 px** di 90°, **335–671 px**
+   di 180°, **224–447 px** di 270°. Model baru mengambil layout box dari
+   `offsetWidth/offsetHeight` (kebal transform), pusat visual dari `rect` (sudah termasuk
+   rotasi), lalu mengoreksi translate dengan vektor layar — sehingga berlaku untuk semua
+   sudut. Diukur ulang: error **0.000000 px** untuk 0/90/180/270 × zoom-in/zoom-out ×
+   klik tengah & luar-tengah (56 kasus).
+
+6. **Clipping gambar landscape di 1× (temuan MEDIUM audit Claude Haiku 5.5,
+   konvergen dengan Gemini 4 Argon)** — `max-w-[92vw] max-h-[86vh]` membatasi
+   layout box SEBELUM rotasi. Gambar landscape lebar (mis. 1239×929 pada layar
+   1920×1080) diputar 90° jadi setinggi 1239 px — melebihi viewport — dan
+   dipotong `overflow-hidden`, sementara pan terkunci di `scale <= 1` sehingga
+   bagian yang hilang tidak bisa dijangkau sama sekali. Perbaikan:
+   - Batas layout **ditukar** saat rotasi ganjil: `max-w-[86vh] max-h-[92vw]`.
+   - `canPan` — pan aktif bila sudah di-zoom ATAU gambar pada skala 1 masih
+     lebih besar dari viewport. Klik-untuk-zoom tetap jadi default di kondisi
+     normal.
+
+7. **Drag basi saat tombol `R` ditekan di tengah drag (temuan LOW audit Gemini
+   4 Argon)** — `rotate()` dan `reset()` kini membatalkan `dragging`; tanpa itu
+   `dragStart` masih menyimpan `tx`/`ty` lama dan `pointermove` berikutnya
+   mengembalikan posisi basi.
+
+**Batas lingkup:** murni tampilan. File asli tidak diubah dan tidak ada render ulang ke
+canvas / upload ulang ke pelanggan.
+
+**Nomor versi:** rilis ini memakai **v4.6.17** karena `main` IT sudah memuat
+`version.json = v4.6.16` (PR #19, merge 2026-11-23) sementara CHANGELOG belum
+mencatat entri v4.6.16 di branch `main`.
+
+---
+
 # v4.6.14 — Composer UX: Slash Template Anywhere, Auto-Focus Desktop, Mobile QueueBanner Guard & Media Attach Preview Modal — 2026-11-13
 
 **Latar:** 4 UX improvements untuk composer chat (request Kanaka 2026-11-13 10:55 & 11:07).
@@ -4282,5 +4341,3 @@ All notable changes to this project will be documented in this file.
 - Zero touch ke endpoint/route lama; additive only. Frontend/backend lama tidak berubah.
 - KolSaaS side (commit terpisah): fallback label manual per slot di Settings → ChatBareng bila CB versi lama (404 → label manual → "Slot N").
 - **FIX route-order (patched in-place, sebelum deploy produksi):** regristrasi `GET /numbers` SEBELUM catch-all 404 `router.use` — sebelumnya blok route ditempatkan SETELAH catch-all → Express shadow → semua request /numbers selalu 404 NOT_FOUND (self-test stub 3-kondisi PASS: 200 numbers / 401 no-key / 404 unknown).
-- **v4.6.15c (audit follow-up, 2026-11-16 14:2x):** dua review independen (Kimi K3.1 Pro + Gemini 4 Argon, GO-WITH-NOTES keduanya, temuan MEDIUM konvergen) → field `status` pada GET /api/v1/numbers kini dari `st.state` (kontrak pool.getStatusForTenant; sebelumnya selalu null); unit test + kasus D (403 SCOPE_MISSING), stub mengikuti kontrak asli, anchor route-order pakai token kode, error log pada fallback. LIVE di prod 14:4x: slot-0 6281133328880 (Klinik Laboratorium Parahita) & slot-1 6281133326888 (Parahita Diagnostic 26888) connected.
-- **v4.6.15c-UX (KolSaaS side, repo kanaaka/kolsaas 99c06c8):** dropdown "Default Slot Nomor" di Settings juga informatif (live numbers → label manual → "Slot N").

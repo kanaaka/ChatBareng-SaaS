@@ -1,7 +1,7 @@
 // MIGRASI wa-cs-hub (non-SaaS) → wa-cs-hub-saas-v3 tenant "Mazaya"
 //
-// Sumber: /home/kanaka/.openclaw/workspace/wa-cs-hub (SQLite, Chat.id = JID string)
-// Target: /home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3 tenant BARU "Mazaya"
+// Sumber: /home/kanakxxx/.openclaw/workspace/wa-cs-hub (SQLite, Chat.id = JID string)
+// Target: /home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3 tenant BARU "Mazaya"
 //
 // Transformasi kunci:
 //   - Chat.id JID string → Chat.id Int baru (map JID → newId), tenantId = Mazaya
@@ -19,8 +19,8 @@
 // backupLog (operasional), favoriteMessage (0 row).
 const path = require('path')
 const fs = require('fs')
-const PROJ_HUB = '/home/kanaka/.openclaw/workspace/wa-cs-hub'
-const PROJ_SAAS = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
+const PROJ_HUB = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub'
+const PROJ_SAAS = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
 const ENC_RE = /^enc:v1:/
 
 const hubPkg = path.join(PROJ_HUB, 'node_modules')

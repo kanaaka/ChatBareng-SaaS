@@ -14,8 +14,8 @@
 # jika code-only rollback tidak cukup / DB rusak.
 set -euo pipefail
 
-APP_DIR="/home/kanaka/.openclaw/workspace/wa-cs-hub"
-WS="/home/kanaka/.openclaw/workspace"
+APP_DIR="/home/kanakxxx/.openclaw/workspace/wa-cs-hub"
+WS="/home/kanakxxx/.openclaw/workspace"
 TAG="pre-v0.13.0-menu-gw"
 SNAP="$APP_DIR/backup/pre-v0.13.0-menu-gw-20260911-1920.db"
 DB="$APP_DIR/prisma/data/wa-cs-hub.db"

@@ -18,7 +18,7 @@
  * ZERO destructive DB op — hanya INSERT row test (Chat seed dgn firstIncomingAt dsb
  * utk isi chart) yang di-BUAT di COPY db. Production DB tidak dibuka script ini.
  */
-const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 require(REPO + '/node_modules/dotenv').config({ path: REPO + '/.env' })
 const { PrismaClient } = require(REPO + '/node_modules/@prisma/client')

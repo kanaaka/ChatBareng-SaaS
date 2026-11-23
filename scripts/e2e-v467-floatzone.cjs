@@ -32,7 +32,7 @@
  *  9  Regresi invariant AR (v0.13.3) + queue-count konsisten
  *  10 Search-all (200) + Analytics sanity + kontrak bersih (tanpa inFloatZone)
  */
-const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 const COPY_DB = process.env.E2E_COPY_DB || 'file:/tmp/saas-v3-e2e-floatzone-rev.db'
 const PORT = '5099'

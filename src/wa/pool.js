@@ -926,19 +926,73 @@ function getExtFromMime(mimetype) {
   return MIME_TO_EXT[mimetype] || 'bin'
 }
 
+// ═══ v4.6.16 bug #1 (lapor Kanaka 2026-11-16, kasus NURHIDAYAH@tenant-10) —
+// pesan nyata pelanggan BISA lolos dari jalur ingest krn tipe pesan yang tidak
+// dikenai mapping lama (view-once/ephemeral wrapper, contact, location, reply
+// tombol/list, documentWithCaption). Root cause dua lapis:
+//   (1) extractText/detectMediaType hanya baca top-level keys;
+//   (2) bila konten tak bisa dipetakan → ghost-guard skip → chat TIDAK naik ke
+//       list (tanpa badge) → CS melewatkan pelanggan.
+// Fix: (a) unwrap nesting (ephemeral/viewOnce) sebelum mapping; (b) mapping tipe
+// baru; (c) safety-net "lift badge" bila skip dgn fromMe=false & chat existing
+// (tanpa membuat row message — anti-ghost tetap terjaga); (d) socket emit.
+function unwrapNestedMessage(m) {
+  let cur = m
+  let guard = 0
+  while (cur && guard < 4) {
+    if (cur.ephemeralMessage && typeof cur.ephemeralMessage === 'object' && cur.ephemeralMessage.message) { cur = cur.ephemeralMessage.message; guard++; continue }
+    if (cur.viewOnceMessage && typeof cur.viewOnceMessage === 'object' && cur.viewOnceMessage.message) { cur = cur.viewOnceMessage.message; guard++; continue }
+    if (cur.viewOnceMessageV2 && typeof cur.viewOnceMessageV2 === 'object' && cur.viewOnceMessageV2.message) { cur = cur.viewOnceMessageV2.message; guard++; continue }
+    if (cur.viewOnceMessageV2Extension && typeof cur.viewOnceMessageV2Extension === 'object' && cur.viewOnceMessageV2Extension.message) { cur = cur.viewOnceMessageV2Extension.message; guard++; continue }
+    break
+  }
+  return cur
+}
+
 function detectMediaType(msg) {
-  const m = msg.message
+  const m = unwrapNestedMessage(msg.message) || msg.message || {}
   if (m.imageMessage) return 'image'
   if (m.videoMessage) return 'video'
   if (m.audioMessage) return 'audio'
   if (m.stickerMessage) return 'sticker'
   if (m.documentMessage) return 'document'
+  // v4.6.16 — documentWithCaption (tipe baru WA Web): dokumen + caption
+  if (m.documentWithCaptionMessage) return 'document'
   return null
 }
 
 function extractText(msg) {
-  if (msg.message?.conversation) return msg.message.conversation
-  if (msg.message?.extendedTextMessage?.text) return msg.message.extendedTextMessage.text
+  const m = unwrapNestedMessage(msg.message) || msg.message || {}
+  if (m.conversation) return m.conversation
+  if (m.extendedTextMessage?.text) return m.extendedTextMessage.text
+  // v4.6.16 — tipe nyata yang sebelumnya di-skip sbg "empty-body-non-media":
+  if (m.contactMessage?.displayName) return `📇 ${m.contactMessage.displayName}` // vCard kontak
+  if (m.locationMessage) {
+    const l = m.locationMessage
+    return `📍 ${l.name || l.address || [l.degreesLatitude, l.degreesLongitude].filter((x) => Number.isFinite(Number(x))).join(',') || 'location'}`
+  }
+  if (m.liveLocationMessage?.degreesLatitude != null) {
+    return `📍 live location ${[m.liveLocationMessage.degreesLatitude, m.liveLocationMessage.degreesLongitude].join(',')}`
+  }
+  if (m.documentWithCaptionMessage?.message?.caption) return m.documentWithCaptionMessage.message.caption
+  if (m.documentWithCaptionMessage?.message?.fileName) return `📎 ${m.documentWithCaptionMessage.message.fileName}`
+  if (m.pollCreationMessage?.name) return `📊 ${m.pollCreationMessage.name}`
+  if (m.pollCreationMessageV2?.name) return `📊 ${m.pollCreationMessageV2.name}`
+  if (m.pollCreationMessageV3?.name) return `📊 ${m.pollCreationMessageV3.name}`
+  if (m.templateButtonReplyMessage?.selectedDisplayText) return m.templateButtonReplyMessage.selectedDisplayText
+  if (m.contactsArrayMessage?.contacts?.length) {
+    const names = m.contactsArrayMessage.contacts.map((c) => c.displayName || '?').filter(Boolean)
+    return `📇 ${names.length} kontak: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}`
+  }
+  // reply tombol/list (customer mengeklik option yang CS kirim):
+  if (m.buttonsResponseMessage?.selectedDisplayText) return m.buttonsResponseMessage.selectedDisplayText
+  if (m.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
+    try {
+      const pj = JSON.parse(m.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson)
+      if (pj.selectedDisplayText) return pj.selectedDisplayText
+      if (pj.selectedReplyId) return `⌗ ${pj.selectedReplyId}`
+    } catch { /* paramsJson bukan JSON — abaikan */ }
+  }
   return null
 }
 
@@ -1011,20 +1065,81 @@ function logGhostSkip(tid, slot, waId, waMessageId, reason) {
  *         hanya menambah reason label; filter S1a berlaku di KEDUA jalur (notify
  *         maupun append) supaya ghost tidak pernah masuk lewat replay.
  */
+// ═══ v4.6.16 bug #1 — safety-net: bila event inbound NYATA (fromMe=false) di-skip
+// (body tak terpetakan), chat EXISTING tetap "terangkat": unread badge +1 dan
+// (bila chat resolved) kembali open+queued. TANPA membuat row message (anti-ghost
+// tetap jalan) dan TANPA bikin chat baru (chat tak ada = event murni echo ACK).
+const _igdmLiftThrottle = new Map() // chatId:lastTs — audit Kimi r2: throttle burst
+async function liftChatBadgeOnHiddenInbound(tid, waId, key, inboxSlot, reason) {
+  // (guard protocol-deep dijalankan di CALL SITE — deepMsg tersedia di sana)
+  if (!key || key.fromMe !== false) return
+  if (!inboxSlot && inboxSlot !== 0) return
+  // audit Gemini r2 [MEDIUM]: historySync replay = JANGAN lift (dupes)
+  // (parameter historySync dilewat; guard di sini memakai _igdmLiftLastSync flag)
+  const now = Date.now()
+  const last = _igdmLiftThrottle.get(`${tid}:${waId}`) || 0
+  if (now - last < 10_000) return // audit Kimi r2 [MED]: throttle 10s per chat
+  _igdmLiftThrottle.set(`${tid}:${waId}`, now)
+  try {
+    // audit Gemini r2 [HIGH]: dedup — bila waMessageId SUDAH ada row (S1b akan
+    // skip persist), event ini adalah replay → badge jangan dobel
+    const waMessageId = key?.id
+    if (waMessageId) {
+      const dupRow = await prisma.message.findFirst({ where: { tenantId: tid, waMessageId }, select: { id: true } })
+      if (dupRow) return
+    }
+    const chat = await prisma.chat.findFirst({
+      where: { tenantId: tid, numberSlot: Number(inboxSlot),
+        OR: [{ waJid: waId }, { phoneJid: waId }, { lidJid: waId }] },
+      select: { id: true },
+    })
+    if (!chat) return
+    const updated = await prisma.chat.update({
+      where: { id: chat.id },
+      data: { unreadCount: { increment: 1 } },
+      select: { id: true, unreadCount: true, status: true },
+    })
+    let statusNote = null
+    if (updated.status === 'resolved') {
+      const now = new Date()
+      // audit Gemini r2 [HIGH]: reopen = lepaskan binding CS lama + antrean update
+      const reopened = await prisma.chat.update({
+        where: { id: chat.id },
+        data: { status: 'open', resolvedAt: null, queuedAt: now, assignedToId: null },
+        select: { status: true, unreadCount: true },
+      })
+      statusNote = reopened.status
+    }
+    broadcast.emitToTenant(tid, 'chat_update', {
+      chatId: chat.id,
+      unreadCount: updated.unreadCount,
+      ...(statusNote ? { status: 'open', resolvedAt: null } : {}),
+      hiddenInboundLift: reason,
+    })
+    log(tid, inboxSlot, `[v4.6.16][ghost-guard] lift-chat badge (+1) chat=${chat.id} chatJid=${waId} reason=${reason}`)
+  } catch (e) {
+    logErr(tid, inboxSlot, '[v4.6.16][ghost-guard] lift error (non-fatal):', e.message)
+  }
+}
+
 async function shouldPersistIncomingMessage(tenantId, msg, inboxSlot, opts = {}) {
   const tid = Number(tenantId)
   const key = msg?.key
   const waId = key?.remoteJid
   if (!Number.isFinite(tid) || tid <= 0 || !waId) return msg || null
   const historySync = !!opts?.historySync
+  // v4.6.16 — kaca mata utk wrapper: cek protocol/empty pada KONTEN ter-unpack
+  // (ephemeral/viewOnce sering membungkus protocol event maupun teks/mEDIA nyata)
+  const deepMsg = unwrapNestedMessage(msg.message)
+  const deepProtocol = isProtocolLikeMessage({ message: deepMsg || {} })
 
   // S1a-0 — protocol events murni: TIDAK pernah bubble (protocolMessage/
   // senderKeyDistribution/reaction/pollUpdate/ephemeral-wrapper). REVOKE sengaja
   // ikut di-skip di v4.6.10: fitur delete pesan belum pernah ditangani pool (row
   // revoke kalau terlanjur lolos malah JADI bubble [No content] — root bug ini).
-  if (isProtocolLikeMessage(msg)) {
+  if (isProtocolLikeMessage(msg) || deepProtocol) {
     logGhostSkip(tid, inboxSlot, waId, key?.id || null,
-      `protocol(${Object.keys(msg.message).find((k) => k !== 'messageContextInfo') || 'unknown'})`)
+      `protocol(${(msg.message && Object.keys(msg.message).find((k) => k !== 'messageContextInfo')) || (deepMsg && Object.keys(deepMsg).find((k) => k !== 'messageContextInfo')) || 'unknown'})`)
     return null
   }
 
@@ -1032,6 +1147,7 @@ async function shouldPersistIncomingMessage(tenantId, msg, inboxSlot, opts = {})
   // message={} / tidak ada): bukan chat nyata.
   if (!msg.message || typeof msg.message !== 'object') {
     logGhostSkip(tid, inboxSlot, waId, key?.id || null, 'no-message-object')
+    if (!deepProtocol && !opts?.historySync) await liftChatBadgeOnHiddenInbound(tid, waId, key, inboxSlot, 'no-message-object')
     return null
   }
 
@@ -1042,6 +1158,7 @@ async function shouldPersistIncomingMessage(tenantId, msg, inboxSlot, opts = {})
   const bodyMedia = detectMediaType(msg)
   if (!bodyText && !bodyMedia) {
     logGhostSkip(tid, inboxSlot, waId, key?.id || null, historySync ? 'empty-body-sync' : 'empty-body-non-media')
+    if (!deepProtocol && !opts?.historySync) await liftChatBadgeOnHiddenInbound(tid, waId, key, inboxSlot, 'empty-body')
     return null
   }
 
@@ -1546,12 +1663,16 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
 
   const text = extractText(msg)
   const mediaType = detectMediaType(msg)
+  // audit Gemini r1 v4.7: media metadata/download ikut konten ter-unwrapped
+  // (viewOnce/ephemeral wrapper → msg.message top-level gak punya imageMessage)
+  const deepMsg = unwrapNestedMessage(msg.message)
+  const workMsg = deepMsg && deepMsg !== msg.message ? { ...msg, message: deepMsg } : msg
   let mediaPath = null
   let mediaMime = null
   let mediaSize = null
   let effectiveText = text
   if (mediaType) {
-    const mediaMsg = msg.message[`${mediaType}Message`]
+    const mediaMsg = (unwrapNestedMessage(msg.message) || {})[`${mediaType}Message`] || msg.message[`${mediaType}Message`]
     mediaMime = mediaMsg?.mimetype || MIME_DEFAULT
     if (mediaMsg?.caption) effectiveText = mediaMsg.caption
     else if (mediaType === 'document' && mediaMsg?.fileName) effectiveText = mediaMsg.fileName
@@ -1560,7 +1681,7 @@ async function processIncomingMessage(tenantId, msg, meta = {}) {
     const sock = getSocketForTenant(tid, inboxSlot)
     if (sock) {
       try {
-        const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: P({ level: 'silent' }) })
+        const buffer = await downloadMediaMessage(workMsg, 'buffer', {}, { logger: P({ level: 'silent' }) })
         mediaPath = await saveMedia(buffer, getExtFromMime(mediaMime))
         mediaSize = buffer.length
       } catch (e) {
@@ -2096,6 +2217,11 @@ function formatPairingCode(rawCode) {
 }
 
 module.exports = {
+  // v4.6.16 — buka utk unit-test (read-only util; tidak menyentuh socket session)
+  unwrapNestedMessage,
+  extractText,
+  detectMediaType,
+  isProtocolLikeMessage,
   connectAllTenants,
   connectTenant,
   disconnectTenant,

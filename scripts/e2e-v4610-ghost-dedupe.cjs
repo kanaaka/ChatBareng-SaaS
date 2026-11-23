@@ -32,7 +32,7 @@
  * dedupe diuji UNIT-LEVEL via pool.shouldPersistIncomingMessage (exported) — jalur
  * runtime asli upsert tetap diuji via /api/wa/inbound (notify path).
  */
-const REPO = '/home/kanaka/.openclaw/workspace/wa-cs-hub-saas-v3'
+const REPO = '/home/kanakxxx/.openclaw/workspace/wa-cs-hub-saas-v3'
 const BASE = process.env.E2E_BASE || 'http://127.0.0.1:5099'
 const COPY_DB = process.env.E2E_COPY_DB || 'file:/tmp/saas-v3-e2e-v4610.db'
 const PORT = '5099'
