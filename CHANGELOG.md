@@ -1,3 +1,63 @@
+# v4.6.19 — Halaman Publik Privacy Policy & Data Deletion (syarat Meta App Review) — 2026-11-27
+
+**Latar:** kanal Instagram DM untuk ChatBareng sudah siap di sisi API (permission
+`instagram_business_manage_messages` aktif dan terbukti membaca/mengirim pesan), tetapi
+Meta App Review mewajibkan app punya dua halaman publik: **Privacy Policy URL** dan
+**Data Deletion URL**. Keduanya belum ada di produksi.
+
+**Kondisi sebelum rilis (terukur):** `/privacy` dan `/data-deletion` membalas `200` tetapi
+body-nya **identik dengan `/login`** (4.032 byte) — itu SPA fallback `src/server.js`, bukan
+halaman legal. Reviewer Meta akan melihat form login, bukan kebijakan privasi.
+
+1. **Halaman `/privacy`** (`frontend/src/views/Privacy.vue`, baru):
+   - Halaman publik tanpa `meta.auth`, konten statis (nihil DB) — pola sama dengan `/guidebook`.
+   - 13 seksi: pengendali data (PT Cita Mulia), data yang dikumpulkan, **data dari Instagram/Meta**,
+     dasar hukum (UU 27/2022 PDP), pihak yang dapat mengakses, retensi, hak pengguna, keamanan, anak, perubahan.
+   - Menyatakan eksplisit bahwa data Instagram **tidak** dipakai untuk iklan, profiling,
+     retargeting, atau penjualan data.
+   - **Bilingual ID/EN** (default Inggris — reviewer Meta umumnya berbahasa Inggris).
+
+2. **Halaman `/data-deletion`** (`frontend/src/views/DataDeletion.vue`, baru):
+   - Halaman publik tanpa `meta.auth`, konten statis.
+   - Alur permintaan (4 langkah) + SLA tertulis: 7 hari umumnya, maksimum 30 hari.
+   - Tombol `mailto:` langsung ke `medical@labparahita.com` dengan subjek terisi.
+   - Cakupan penghapusan vs yang tetap disimpan (catatan keuangan, rekam medis, log server) —
+     membedakan jelas antara menghapus chat dan menghapus rekam medis.
+   - Bilingual ID/EN.
+
+3. **Route** (`frontend/src/router.js`): dua route **top-level** baru tanpa `meta.auth`.
+   Sengaja TIDAK ditaruh sebagai child `AdminShell` — sidebar shell memeriksa `auth.isAdmin`
+   sehingga reviewer tanpa login akan terlempar ke `/login`.
+
+**QA (dijalankan, bukan diklaim):**
+- `vite build` bersih 2,65 dtk; chunk `Privacy-Bh6QfMWt.js` (13,1 kB) + `DataDeletion-CIzmbP4e.js` (8,2 kB) terbentuk.
+- Server QA dijalankan di port 5199 (`WA_DISABLED=1`), lalu diuji di browser sungguhan via CDP:
+  - `/privacy` → `<title>Privacy Policy — ChatBareng`, **13 seksi, 10 bullets** terender.
+  - `/data-deletion` → `<title>Data Deletion — ChatBareng`, **4 langkah, 6 bullets**, CTA `mailto:` aktif.
+- **Uji sebagai reviewer:** cookie + localStorage dibersihkan lewat CDP, lalu kedua URL dibuka →
+  `token=none`, `loginForm=false`, konten penuh tampil. Tidak ada redirect ke `/login`.
+- Toggle ID/EN berfungsi dua arah; mode dark memakai token M3 (diverifikasi via `getComputedStyle`,
+  bukan hardcoded) sehingga kontras aman di tema terang maupun gelap.
+
+**Catatan penting untuk tim IT:**
+- **Tidak ada migration** dan **tidak ada perubahan backend** — rilis ini murni frontend.
+- SPA fallback sengaja tidak diubah: `express.static` tidak menemukan file `/privacy`, fallback
+  menyajikan `index.html`, lalu Vue Router merender halamannya. Yang wajib benar hanyalah route
+  tanpa `meta.auth` — sudah diverifikasi.
+- Setelah deploy, tempel kedua URL ke Meta App Dashboard → App Settings:
+  **Privacy Policy URL** = `/privacy`, **Data Deletion URL** = `/data-deletion`.
+- Verifikasi deploy: buka `https://wa.labparahita.co.id/privacy` di jendela incognito.
+  Bila yang muncul form login, berarti frontend belum ter-rebuild/deploy.
+
+**Batasan yang didokumentasikan (bukan bug, keputusan sadar):**
+- Endpoint callback `signed_request` Data Deletion **belum** dibangun. Halaman instruksi sudah
+  memenuhi syarat Meta; callback hanya dipakai bila app memakai Facebook Login. Bisa menyusul
+  sebagai rilis terpisah bila diperlukan.
+- Konten legal ditulis berdasarkan Kebijakan Developer Meta per 3 Februari 2026, termasuk
+  larangan pemrosesan data messaging untuk profil/iklan dan larangan penggunaan Instagram
+  Messaging untuk percakapan pasien–tenaga kesehatan. Kebijakan internal CS perlu memastikan
+  permintaan hasil medis dialihkan keluar kanal Instagram.
+
 # v4.6.17 — MediaViewer: Tombol Rotate 90° (siklus, tampilan saja) — 2026-11-23
 
 **Latar:** Admin CS melaporkan "tombol rotate di preview gambar tidak berfungsi".

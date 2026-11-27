@@ -4,6 +4,12 @@ import AdminShell from './components/AdminShell.vue'
 
 const routes = [
   { path: '/login', name: 'Login', component: () => import('./views/Login.vue') },
+  // v4.6.19 — Halaman legal PUBLIK (tanpa meta.auth), syarat Meta App Review untuk
+  // Instagram Messaging. WAJIB top-level, BUKAN child AdminShell: sidebar shell
+  // mengecek auth.isAdmin sehingga reviewer tanpa login akan terlempar ke '/login'.
+  // Konten statis (nihil DB), pola sama dengan /guidebook.
+  { path: '/privacy', name: 'Privacy', component: () => import('./views/Privacy.vue') },
+  { path: '/data-deletion', name: 'DataDeletion', component: () => import('./views/DataDeletion.vue') },
   // v0.13.6 r2 — AdminShell = ROUTE LAYOUT (fix lapor Kanaka 11:08 #2: sidebar harus
   // persist di SEMUA halaman modul, bukan cuma launcher). Semua route /admin/* +
   // /announcements + /guidebook = children dgn path ABSOLUT (URL tidak berubah).
